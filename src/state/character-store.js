@@ -12,6 +12,59 @@ export const STEPS = [
 ];
 
 const ABILITIES = ["str", "dex", "con", "int", "wis", "cha"];
+const SPELL_SLOT_LEVELS = [1, 2, 3, 4, 5, 6, 7, 8, 9];
+
+function getDefaultSpellSlots() {
+  return SPELL_SLOT_LEVELS.reduce((acc, lvl) => {
+    acc[String(lvl)] = { max: 0, used: 0 };
+    return acc;
+  }, {});
+}
+
+function getDefaultPlayState() {
+  return {
+    hpCurrent: null,
+    hpTemp: 0,
+    speed: 30,
+    initiativeBonus: 0,
+    saveProficiencies: {},
+    skillProficiencies: {},
+    preparedSpells: {},
+    spellSlots: getDefaultSpellSlots(),
+    attacks: [],
+    resources: [],
+    conditions: [],
+    notes: "",
+    deathSavesSuccess: 0,
+    deathSavesFail: 0,
+  };
+}
+
+function normalizeCharacter(character) {
+  const base = createInitialCharacter();
+  const play = {
+    ...getDefaultPlayState(),
+    ...(character.play ?? {}),
+    preparedSpells:
+      character.play?.preparedSpells && typeof character.play.preparedSpells === "object"
+        ? { ...character.play.preparedSpells }
+        : {},
+    spellSlots: {
+      ...getDefaultSpellSlots(),
+      ...(character.play?.spellSlots ?? {}),
+    },
+  };
+
+  return {
+    ...base,
+    ...character,
+    abilities: { ...base.abilities, ...(character.abilities ?? {}) },
+    inventory: Array.isArray(character.inventory) ? character.inventory : [],
+    spells: Array.isArray(character.spells) ? character.spells : [],
+    multiclass: Array.isArray(character.multiclass) ? character.multiclass : [],
+    play,
+  };
+}
 
 export function createInitialCharacter() {
   return {
@@ -34,14 +87,16 @@ export function createInitialCharacter() {
     spells: [],
     notes: "",
     multiclass: [],
+    play: getDefaultPlayState(),
   };
 }
 
 export function createStore(initialState) {
   const state = {
-    character: initialState ?? createInitialCharacter(),
+    character: normalizeCharacter(initialState ?? createInitialCharacter()),
     catalogs: { classes: [], races: [], backgrounds: [], spells: [], items: [] },
     stepIndex: 0,
+    mode: "build",
   };
   const listeners = new Set();
 
@@ -68,8 +123,12 @@ export function createStore(initialState) {
       state.stepIndex = Math.max(0, Math.min(STEPS.length - 1, index));
       notify();
     },
+    setMode(mode) {
+      state.mode = mode === "play" ? "play" : "build";
+      notify();
+    },
     updateCharacter(patch) {
-      state.character = { ...state.character, ...patch };
+      state.character = normalizeCharacter({ ...state.character, ...patch });
       notify();
     },
     updateAbility(key, value) {
@@ -92,6 +151,26 @@ export function createStore(initialState) {
       state.character = {
         ...state.character,
         spells: state.character.spells.filter((it) => it !== spellName),
+        play: {
+          ...state.character.play,
+          preparedSpells: Object.fromEntries(
+            Object.entries(state.character.play?.preparedSpells ?? {}).filter(([name]) => name !== spellName)
+          ),
+        },
+      };
+      notify();
+    },
+    setSpellPrepared(spellName, prepared) {
+      if (!spellName) return;
+      state.character = {
+        ...state.character,
+        play: {
+          ...state.character.play,
+          preparedSpells: {
+            ...(state.character.play?.preparedSpells ?? {}),
+            [spellName]: Boolean(prepared),
+          },
+        },
       };
       notify();
     },
@@ -112,7 +191,7 @@ export function createStore(initialState) {
       notify();
     },
     hydrate(character) {
-      state.character = character;
+      state.character = normalizeCharacter(character);
       notify();
     },
     getState,
