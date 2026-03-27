@@ -37,6 +37,8 @@ function getDefaultPlayState() {
     preparedSpells: {},
     spellSlots: getDefaultSpellSlots(),
     spellSlotMaxOverrides: {},
+    spellSlotUserOverrides: {},
+    spellSlotAutoDefaults: {},
     attacks: [],
     resources: [],
     conditions: [],
@@ -68,6 +70,14 @@ function normalizeCharacter(character) {
       character.play?.spellSlotMaxOverrides && typeof character.play.spellSlotMaxOverrides === "object"
         ? { ...character.play.spellSlotMaxOverrides }
         : legacySlotOverrides,
+    spellSlotUserOverrides:
+      character.play?.spellSlotUserOverrides && typeof character.play.spellSlotUserOverrides === "object"
+        ? { ...character.play.spellSlotUserOverrides }
+        : { ...legacySlotOverrides },
+    spellSlotAutoDefaults:
+      character.play?.spellSlotAutoDefaults && typeof character.play.spellSlotAutoDefaults === "object"
+        ? { ...character.play.spellSlotAutoDefaults }
+        : {},
   };
 
   return {

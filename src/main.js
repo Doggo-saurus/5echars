@@ -525,11 +525,14 @@ function renderSkillRows(state, options = {}) {
   }).join("");
 }
 
-function getClassSaveProficiencies(catalogs, className) {
-  const selectedName = String(className ?? "").trim();
-  if (!selectedName) return {};
+function getClassCatalogEntry(catalogs, className) {
+  const selectedName = String(className ?? "").trim().toLowerCase();
+  if (!selectedName || !Array.isArray(catalogs?.classes)) return null;
+  return catalogs.classes.find((entry) => String(entry?.name ?? "").trim().toLowerCase() === selectedName) ?? null;
+}
 
-  const classEntry = (catalogs?.classes ?? []).find((entry) => entry.name === selectedName);
+function getClassSaveProficiencies(catalogs, className) {
+  const classEntry = getClassCatalogEntry(catalogs, className);
   const profs = classEntry?.proficiency;
   if (!Array.isArray(profs)) return {};
 
@@ -590,6 +593,9 @@ function renderBuildEditor(state) {
         <label>Name <input id="name" value="${esc(character.name)}"></label>
         <label>Level <input type="number" min="1" max="20" id="level" value="${esc(character.level)}"></label>
       </div>
+      <div class="toolbar">
+        <button class="btn secondary" type="button" data-open-levelup>Level Up</button>
+      </div>
       <label>Notes <input id="notes" value="${esc(character.notes)}"></label>
     `;
   }
@@ -626,6 +632,7 @@ function renderBuildEditor(state) {
       </div>
       <div class="toolbar">
         <button class="btn secondary" id="open-multiclass">Edit Multiclass</button>
+        <button class="btn secondary" type="button" data-open-levelup>Level Up</button>
       </div>
     `;
   }
@@ -671,7 +678,7 @@ function renderBuildEditor(state) {
   }
   if (stepIndex === 6) {
     const play = character.play ?? {};
-    const defaultSpellSlots = getClassSpellSlotDefaults(catalogs, character.class, character.level);
+    const defaultSpellSlots = getCharacterSpellSlotDefaults(catalogs, character);
     return `
       <h2 class="title">Spells</h2>
       <p class="subtitle">Use modal for quick search and selection.</p>
@@ -682,7 +689,7 @@ function renderBuildEditor(state) {
         ${renderBuildSpellList(character, catalogs)}
       </div>
       <h4>Spell Slots (Edit Max)</h4>
-      <p class="muted spell-prep-help">Defaults are loaded from 5etools class progression for your current class and level. Override them only if needed.</p>
+      <p class="muted spell-prep-help">Defaults come from 5etools class progression, including multiclass caster-level rules when secondary classes are set. Override only when needed.</p>
       <div class="play-list spell-slot-grid">
         ${SPELL_SLOT_LEVELS.map((level) => renderBuildSpellSlotRow(play, defaultSpellSlots, level)).join("")}
       </div>
@@ -722,8 +729,13 @@ function renderSummary(state) {
   `;
 }
 
-function getClassSpellSlotDefaults(catalogs, className, classLevel) {
+function getEmptySpellSlotDefaults() {
   const defaults = Object.fromEntries(SPELL_SLOT_LEVELS.map((level) => [String(level), 0]));
+  return defaults;
+}
+
+function getClassSpellSlotDefaults(catalogs, className, classLevel) {
+  const defaults = getEmptySpellSlotDefaults();
   if (!catalogs || !Array.isArray(catalogs.classes)) return defaults;
 
   const normalizedClassName = String(className ?? "").trim().toLowerCase();
@@ -744,14 +756,104 @@ function getClassSpellSlotDefaults(catalogs, className, classLevel) {
   return defaults;
 }
 
+function getSpellProgressionRows(catalogs, className) {
+  if (!catalogs || !Array.isArray(catalogs.classes)) return null;
+  const normalizedClassName = String(className ?? "").trim().toLowerCase();
+  if (!normalizedClassName) return null;
+  const classEntry = catalogs.classes.find((entry) => String(entry?.name ?? "").trim().toLowerCase() === normalizedClassName);
+  if (!classEntry || !Array.isArray(classEntry.classTableGroups)) return null;
+  const progressionGroup = classEntry.classTableGroups.find((group) => Array.isArray(group?.rowsSpellProgression));
+  return Array.isArray(progressionGroup?.rowsSpellProgression) ? progressionGroup.rowsSpellProgression : null;
+}
+
+function getClassCasterType(catalogs, className) {
+  const classKey = getClassKey(className);
+  if (classKey === "warlock") return "pact";
+
+  const rows = getSpellProgressionRows(catalogs, className);
+  const level20Row = Array.isArray(rows?.[19]) ? rows[19] : null;
+  if (!level20Row) return "none";
+
+  const totalSlots = level20Row.reduce((sum, value) => sum + Math.max(0, toNumber(value, 0)), 0);
+  const highestSlotLevel = level20Row.reduce((highest, value, idx) => {
+    if (toNumber(value, 0) > 0) return Math.max(highest, idx + 1);
+    return highest;
+  }, 0);
+
+  // Pact magic does not use multiclass spellcasting slot progression.
+  if (highestSlotLevel > 0 && totalSlots <= 4) return "pact";
+  if (highestSlotLevel >= 9) return "full";
+  if (highestSlotLevel >= 5) return "half";
+  if (highestSlotLevel >= 4) return "third";
+  return "none";
+}
+
+function getClassCasterContribution(catalogs, className, classLevel) {
+  const casterType = getClassCasterType(catalogs, className);
+  const classKey = getClassKey(className);
+  const level = Math.max(0, toNumber(classLevel, 0));
+  if (casterType === "full") return level;
+  if (casterType === "half") {
+    if (classKey === "artificer") return Math.ceil(level / 2);
+    return Math.floor(level / 2);
+  }
+  if (casterType === "third") return Math.floor(level / 3);
+  return 0;
+}
+
+function getCharacterClassLevels(character) {
+  const totalLevel = Math.max(1, Math.min(20, toNumber(character?.level, 1)));
+  const multiclassEntries = Array.isArray(character?.multiclass) ? character.multiclass : [];
+  const cleanedMulticlass = multiclassEntries
+    .map((entry) => ({
+      class: String(entry?.class ?? "").trim(),
+      level: Math.max(1, Math.min(20, toNumber(entry?.level, 1))),
+    }))
+    .filter((entry) => entry.class);
+  const multiclassTotal = cleanedMulticlass.reduce((sum, entry) => sum + entry.level, 0);
+  const primaryLevel = Math.max(1, totalLevel - multiclassTotal);
+  return { totalLevel, primaryLevel, multiclass: cleanedMulticlass };
+}
+
+function getFullCasterSpellSlotsByLevel(catalogs, casterLevel) {
+  const defaults = getEmptySpellSlotDefaults();
+  const level = Math.max(0, Math.min(20, toNumber(casterLevel, 0)));
+  if (level <= 0 || !Array.isArray(catalogs?.classes)) return defaults;
+
+  const fullCaster = catalogs.classes.find((entry) => getClassCasterType(catalogs, entry?.name) === "full");
+  const rows = getSpellProgressionRows(catalogs, fullCaster?.name);
+  const row = Array.isArray(rows?.[level - 1]) ? rows[level - 1] : null;
+  if (!row) return defaults;
+  SPELL_SLOT_LEVELS.forEach((slotLevel, idx) => {
+    defaults[String(slotLevel)] = Math.max(0, toNumber(row[idx], 0));
+  });
+  return defaults;
+}
+
+function getCharacterSpellSlotDefaults(catalogs, character) {
+  const defaults = getEmptySpellSlotDefaults();
+  const primaryClassName = String(character?.class ?? "").trim();
+  if (!primaryClassName) return defaults;
+
+  const { primaryLevel, multiclass } = getCharacterClassLevels(character);
+  if (!multiclass.length) {
+    return getClassSpellSlotDefaults(catalogs, primaryClassName, primaryLevel);
+  }
+
+  const casterLevel = getClassCasterContribution(catalogs, primaryClassName, primaryLevel)
+    + multiclass.reduce((sum, entry) => sum + getClassCasterContribution(catalogs, entry.class, entry.level), 0);
+  return getFullCasterSpellSlotsByLevel(catalogs, casterLevel);
+}
+
 function getSpellSlotValues(play, defaults, level) {
   const key = String(level);
   const slot = play.spellSlots?.[key] ?? { max: 0, used: 0 };
-  const overrideMax = play.spellSlotMaxOverrides?.[key];
+  const hasUserOverride = Boolean(play.spellSlotUserOverrides?.[key]);
+  const overrideMax = hasUserOverride ? play.spellSlotMaxOverrides?.[key] : null;
   const baseMax = overrideMax == null ? toNumber(defaults?.[key], toNumber(slot.max, 0)) : toNumber(overrideMax, 0);
   const max = Math.max(0, baseMax);
   const used = Math.max(0, Math.min(max, toNumber(slot.used, 0)));
-  const isOverridden = overrideMax != null;
+  const isOverridden = hasUserOverride && overrideMax != null;
   return { max, used, isOverridden };
 }
 
@@ -1033,7 +1135,7 @@ function doesClassUsePreparedSpells(character) {
 
 function renderSpellGroupsByLevel(state) {
   const play = state.character.play ?? {};
-  const defaultSpellSlots = getClassSpellSlotDefaults(state.catalogs, state.character.class, state.character.level);
+  const defaultSpellSlots = getCharacterSpellSlotDefaults(state.catalogs, state.character);
   const usesPreparedSpells = doesClassUsePreparedSpells(state.character);
   const grouped = new Map();
 
@@ -1104,7 +1206,7 @@ function renderSpellGroupsByLevel(state) {
 function renderPlayView(state) {
   const { character, derived } = state;
   const play = character.play ?? {};
-  const defaultSpellSlots = getClassSpellSlotDefaults(state.catalogs, character.class, character.level);
+  const defaultSpellSlots = getCharacterSpellSlotDefaults(state.catalogs, character);
   const hpTotal = derived.hp;
   const hpCurrent = play.hpCurrent == null ? hpTotal : play.hpCurrent;
   const hpTemp = toNumber(play.hpTemp, 0);
@@ -1356,6 +1458,154 @@ function renderPlayView(state) {
   `;
 }
 
+function toTitleCase(value) {
+  return String(value ?? "")
+    .replace(/[_-]/g, " ")
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+    .join(" ");
+}
+
+function normalizeAbilityLabel(value) {
+  const key = String(value ?? "").trim().toLowerCase();
+  if (ABILITY_LABELS[key]) return ABILITY_LABELS[key];
+  return toTitleCase(key);
+}
+
+function formatClassPrimaryAbility(classEntry) {
+  const values = Array.isArray(classEntry?.primaryAbility) ? classEntry.primaryAbility : [];
+  if (!values.length) return "";
+  const labels = values
+    .map((entry) => {
+      if (!entry || typeof entry !== "object") return "";
+      const keys = Object.entries(entry)
+        .filter(([, enabled]) => enabled)
+        .map(([key]) => normalizeAbilityLabel(key));
+      return keys.join(" / ");
+    })
+    .filter(Boolean);
+  return labels.join(" or ");
+}
+
+function formatClassStartingSkills(classEntry) {
+  const skills = classEntry?.startingProficiencies?.skills;
+  if (!Array.isArray(skills) || !skills.length) return "";
+
+  const labels = skills
+    .map((entry) => {
+      const choose = entry?.choose;
+      if (choose && Array.isArray(choose.from)) {
+        const count = toNumber(choose.count, 0);
+        const fromList = choose.from.map((skill) => toTitleCase(skill)).join(", ");
+        return count > 0 ? `Choose ${count}: ${fromList}` : fromList;
+      }
+      if (typeof entry === "string") return toTitleCase(entry);
+      return "";
+    })
+    .filter(Boolean);
+
+  return labels.join("; ");
+}
+
+function formatClassRequirementSet(requirements) {
+  if (!requirements || typeof requirements !== "object") return "";
+  const pairs = Object.entries(requirements)
+    .filter(([, score]) => Number.isFinite(toNumber(score, NaN)))
+    .map(([ability, score]) => `${normalizeAbilityLabel(ability)} ${toNumber(score, 0)}`);
+  return pairs.join(" and ");
+}
+
+function formatClassMulticlassRequirements(classEntry) {
+  const requirements = classEntry?.multiclassing?.requirements;
+  if (!requirements || typeof requirements !== "object") return "";
+
+  if (Array.isArray(requirements.or) && requirements.or.length) {
+    const alternatives = requirements.or.map((set) => formatClassRequirementSet(set)).filter(Boolean);
+    if (alternatives.length) return alternatives.join(" or ");
+  }
+
+  return formatClassRequirementSet(requirements);
+}
+
+function getClassFeatureRows(classEntry) {
+  const features = Array.isArray(classEntry?.classFeatures) ? classEntry.classFeatures : [];
+  return features
+    .map((feature) => {
+      const token = typeof feature === "string" ? feature : feature?.classFeature;
+      if (!token) return null;
+      const [name = "", , , levelRaw = ""] = String(token).split("|");
+      const level = toNumber(levelRaw, NaN);
+      if (!name.trim()) return null;
+      return {
+        name: cleanSpellInlineTags(name),
+        level: Number.isFinite(level) ? level : null,
+      };
+    })
+    .filter(Boolean);
+}
+
+function openClassDetailsModal(state) {
+  const className = state.character?.class;
+  if (!className) {
+    setDiceResult("Class details unavailable: no class selected.", true);
+    return;
+  }
+
+  const classEntry = getClassCatalogEntry(state.catalogs, className);
+  if (!classEntry) {
+    setDiceResult(`Class details unavailable: ${className}`, true);
+    return;
+  }
+
+  const currentLevel = Math.max(1, Math.min(20, toNumber(state.character?.level, 1)));
+  const hitDie = classEntry?.hd?.faces ? `d${classEntry.hd.faces}` : "";
+  const saveProficiencies = Array.isArray(classEntry?.proficiency)
+    ? classEntry.proficiency.map((ability) => normalizeAbilityLabel(ability)).join(", ")
+    : "";
+  const armorProficiencies = Array.isArray(classEntry?.startingProficiencies?.armor)
+    ? classEntry.startingProficiencies.armor.map((entry) => toTitleCase(entry)).join(", ")
+    : "";
+  const weaponProficiencies = Array.isArray(classEntry?.startingProficiencies?.weapons)
+    ? classEntry.startingProficiencies.weapons.map((entry) => toTitleCase(entry)).join(", ")
+    : "";
+  const skillChoices = formatClassStartingSkills(classEntry);
+  const primaryAbility = formatClassPrimaryAbility(classEntry);
+  const multiclassRequirements = formatClassMulticlassRequirements(classEntry);
+
+  const metaRows = [
+    { label: "Source", value: classEntry.sourceLabel ?? classEntry.source ?? "" },
+    { label: "Hit Die", value: hitDie },
+    { label: "Primary Ability", value: primaryAbility },
+    { label: "Saving Throws", value: saveProficiencies },
+    { label: "Armor Proficiencies", value: armorProficiencies },
+    { label: "Weapon Proficiencies", value: weaponProficiencies },
+    { label: "Skill Proficiencies", value: skillChoices },
+    { label: "Multiclass Requirement", value: multiclassRequirements },
+  ].filter((row) => row.value);
+
+  const featureRows = getClassFeatureRows(classEntry)
+    .filter((row) => row.level == null || row.level <= currentLevel)
+    .map((row) => `<li><span class="class-feature-level">Lv ${row.level ?? "?"}</span><span>${esc(row.name)}</span></li>`)
+    .join("");
+
+  openModal({
+    title: `${classEntry.name} Details`,
+    bodyHtml: `
+      <div class="spell-meta-grid">
+        ${metaRows.map((row) => `<div><strong>${esc(row.label)}:</strong> ${esc(row.value)}</div>`).join("")}
+      </div>
+      <h4>Class Features Through Level ${currentLevel}</h4>
+      ${
+        featureRows
+          ? `<ul class="class-feature-list">${featureRows}</ul>`
+          : "<p class='muted'>No class feature list available for this entry.</p>"
+      }
+    `,
+    actions: [{ label: "Close", secondary: true, onClick: (done) => done() }],
+  });
+}
+
 function bindModeEvents() {
   app.querySelectorAll("[data-mode]").forEach((button) => {
     button.addEventListener("click", () => store.setMode(button.dataset.mode));
@@ -1379,22 +1629,33 @@ function bindBuildEvents(state) {
     });
   }
 
-  [["#name", "name"], ["#level", "level"], ["#notes", "notes"], ["#race", "race"], ["#background", "background"], ["#subclass", "subclass"]].forEach(([sel, field]) => {
+  [["#name", "name"], ["#notes", "notes"], ["#race", "race"], ["#background", "background"], ["#subclass", "subclass"]].forEach(([sel, field]) => {
     const el = app.querySelector(sel);
     if (!el) return;
-    const handler = () => store.updateCharacter({ [field]: sel === "#level" ? Number(el.value || 1) : el.value });
+    const handler = () => store.updateCharacter({ [field]: el.value });
     el.addEventListener("input", handler);
     el.addEventListener("change", handler);
   });
 
+  const levelEl = app.querySelector("#level");
+  if (levelEl) {
+    const handleLevelChange = () => {
+      updateCharacterWithRequiredSettings(
+        state,
+        {
+          level: Math.max(1, Math.min(20, toNumber(levelEl.value, 1))),
+        },
+        { preserveUserOverrides: true }
+      );
+    };
+    levelEl.addEventListener("input", handleLevelChange);
+    levelEl.addEventListener("change", handleLevelChange);
+  }
+
   const classEl = app.querySelector("#class");
   if (classEl) {
     classEl.addEventListener("change", () => {
-      const nextClass = classEl.value || "";
-      const saveProficiencies = getClassSaveProficiencies(state.catalogs, nextClass);
-      const nextPlay = structuredClone(state.character.play ?? {});
-      nextPlay.saveProficiencies = saveProficiencies;
-      store.updateCharacter({ class: nextClass, play: nextPlay });
+      updateCharacterWithRequiredSettings(state, { class: classEl.value || "" }, { preserveUserOverrides: true });
     });
   }
 
@@ -1429,6 +1690,9 @@ function bindBuildEvents(state) {
   app.querySelector("#open-spells")?.addEventListener("click", () => openSpellModal(state));
   app.querySelector("#open-items")?.addEventListener("click", () => openItemModal(state));
   app.querySelector("#open-multiclass")?.addEventListener("click", () => openMulticlassModal(state));
+  app.querySelectorAll("[data-open-levelup]").forEach((button) => {
+    button.addEventListener("click", () => openLevelUpModal(state));
+  });
   app.querySelectorAll("[data-build-spell-open]").forEach((button) => {
     button.addEventListener("click", () => {
       const spellName = button.dataset.buildSpellOpen;
@@ -1436,7 +1700,7 @@ function bindBuildEvents(state) {
       openSpellDetailsModal(state, spellName);
     });
   });
-  const defaultSpellSlots = getClassSpellSlotDefaults(state.catalogs, state.character.class, state.character.level);
+  const defaultSpellSlots = getCharacterSpellSlotDefaults(state.catalogs, state.character);
   app.querySelectorAll("[data-build-slot-max]").forEach((input) => {
     input.addEventListener("input", () => {
       const level = String(input.dataset.buildSlotMax);
@@ -1445,9 +1709,14 @@ function bindBuildEvents(state) {
       withUpdatedPlay(state, (play) => {
         const previous = play.spellSlots?.[level] ?? { max: defaultMax, used: 0 };
         const overrides = { ...(play.spellSlotMaxOverrides ?? {}) };
+        const userOverrides = { ...(play.spellSlotUserOverrides ?? {}) };
         if (nextMax === defaultMax) delete overrides[level];
         else overrides[level] = nextMax;
+        if (nextMax === defaultMax) delete userOverrides[level];
+        else userOverrides[level] = true;
         play.spellSlotMaxOverrides = overrides;
+        play.spellSlotUserOverrides = userOverrides;
+        play.spellSlotAutoDefaults = { ...(play.spellSlotAutoDefaults ?? {}), [level]: defaultMax };
         play.spellSlots = {
           ...(play.spellSlots ?? {}),
           [level]: { ...previous, max: nextMax, used: Math.min(toNumber(previous.used, 0), nextMax) },
@@ -1462,8 +1731,12 @@ function bindBuildEvents(state) {
       withUpdatedPlay(state, (play) => {
         const previous = play.spellSlots?.[level] ?? { max: defaultMax, used: 0 };
         const overrides = { ...(play.spellSlotMaxOverrides ?? {}) };
+        const userOverrides = { ...(play.spellSlotUserOverrides ?? {}) };
         delete overrides[level];
+        delete userOverrides[level];
         play.spellSlotMaxOverrides = overrides;
+        play.spellSlotUserOverrides = userOverrides;
+        play.spellSlotAutoDefaults = { ...(play.spellSlotAutoDefaults ?? {}), [level]: defaultMax };
         play.spellSlots = {
           ...(play.spellSlots ?? {}),
           [level]: { ...previous, max: defaultMax, used: Math.min(toNumber(previous.used, 0), defaultMax) },
@@ -1489,6 +1762,9 @@ function withUpdatedPlay(state, updater) {
 }
 
 function bindPlayEvents(state) {
+  app.querySelectorAll("[data-open-levelup]").forEach((button) => {
+    button.addEventListener("click", () => openLevelUpModal(state));
+  });
   const diceStyleEl = app.querySelector("#dice-style-select");
   if (diceStyleEl) {
     diceStyleEl.addEventListener("change", () => {
@@ -1498,6 +1774,9 @@ function bindPlayEvents(state) {
   }
   app.querySelector("#reroll-last-roll")?.addEventListener("click", () => {
     rerollLastRoll();
+  });
+  app.querySelector("[data-open-class-info]")?.addEventListener("click", () => {
+    openClassDetailsModal(state);
   });
 
   const hpCurrentEl = app.querySelector("#play-hp-current");
@@ -1652,7 +1931,7 @@ function bindPlayEvents(state) {
         withUpdatedPlay(state, (play) => {
           const values = getSpellSlotValues(
             play,
-            getClassSpellSlotDefaults(state.catalogs, state.character.class, state.character.level),
+            getCharacterSpellSlotDefaults(state.catalogs, state.character),
             spellLevel
           );
           const previous = play.spellSlots?.[slotLevel] ?? { max: values.max, used: values.used };
@@ -1741,7 +2020,7 @@ function bindPlayEvents(state) {
     button.addEventListener("click", () => {
       const level = button.dataset.slotDelta;
       const delta = toNumber(button.dataset.delta, 0);
-      const defaults = getClassSpellSlotDefaults(state.catalogs, state.character.class, state.character.level);
+      const defaults = getCharacterSpellSlotDefaults(state.catalogs, state.character);
       withUpdatedPlay(state, (play) => {
         const values = getSpellSlotValues(play, defaults, level);
         const previous = play.spellSlots?.[level] ?? { max: values.max, used: values.used };
@@ -2112,6 +2391,310 @@ function openItemModal(state) {
   renderItemRows();
 }
 
+function syncSpellSlotsWithDefaults(play, defaults, options = {}) {
+  const preserveUserOverrides = options.preserveUserOverrides !== false;
+  const nextSlots = { ...(play.spellSlots ?? {}) };
+  const nextMaxOverrides = { ...(play.spellSlotMaxOverrides ?? {}) };
+  const nextUserOverrides = { ...(play.spellSlotUserOverrides ?? {}) };
+  const nextAutoDefaults = { ...(play.spellSlotAutoDefaults ?? {}) };
+
+  SPELL_SLOT_LEVELS.forEach((level) => {
+    const key = String(level);
+    const defaultMax = Math.max(0, toNumber(defaults?.[key], 0));
+    const previousSlot = nextSlots[key] ?? { max: defaultMax, used: 0 };
+    const legacyOverride = nextMaxOverrides[key];
+    const hasExplicitOverride = Boolean(nextUserOverrides[key]) || (nextUserOverrides[key] == null && legacyOverride != null);
+    const shouldUseOverride = preserveUserOverrides && hasExplicitOverride;
+    const overrideMax = toNumber(legacyOverride, defaultMax);
+    const nextMax = shouldUseOverride ? Math.max(0, overrideMax) : defaultMax;
+
+    if (shouldUseOverride) {
+      nextMaxOverrides[key] = nextMax;
+      nextUserOverrides[key] = true;
+    } else {
+      delete nextMaxOverrides[key];
+      delete nextUserOverrides[key];
+    }
+
+    nextAutoDefaults[key] = defaultMax;
+    nextSlots[key] = {
+      max: nextMax,
+      used: Math.max(0, Math.min(nextMax, toNumber(previousSlot.used, 0))),
+    };
+  });
+
+  play.spellSlots = nextSlots;
+  play.spellSlotMaxOverrides = nextMaxOverrides;
+  play.spellSlotUserOverrides = nextUserOverrides;
+  play.spellSlotAutoDefaults = nextAutoDefaults;
+}
+
+function updateCharacterWithRequiredSettings(state, patch, options = {}) {
+  const nextCharacter = { ...state.character, ...patch };
+  const nextPlay = structuredClone(state.character.play ?? {});
+  nextPlay.saveProficiencies = getClassSaveProficiencies(state.catalogs, nextCharacter.class);
+  const defaultSpellSlots = getCharacterSpellSlotDefaults(state.catalogs, nextCharacter);
+  syncSpellSlotsWithDefaults(nextPlay, defaultSpellSlots, { preserveUserOverrides: options.preserveUserOverrides !== false });
+  store.updateCharacter({ ...patch, play: nextPlay });
+}
+
+function createLevelUpDraft(character) {
+  const { totalLevel, multiclass } = getCharacterClassLevels(character);
+  return {
+    totalLevel,
+    primaryClass: String(character?.class ?? "").trim(),
+    multiclass: multiclass.map((entry) => ({ ...entry })),
+  };
+}
+
+function sanitizeLevelUpDraft(draft) {
+  const totalLevel = Math.max(1, Math.min(20, toNumber(draft?.totalLevel, 1)));
+  const primaryClass = String(draft?.primaryClass ?? "").trim();
+  const multiclass = (Array.isArray(draft?.multiclass) ? draft.multiclass : [])
+    .map((entry) => ({
+      class: String(entry?.class ?? "").trim(),
+      level: Math.max(1, Math.min(20, toNumber(entry?.level, 1))),
+    }))
+    .filter((entry) => entry.class);
+  return { totalLevel, primaryClass, multiclass };
+}
+
+function getSaveProficiencyLabelMap(saveProficiencies) {
+  return SAVE_ABILITIES.filter((ability) => Boolean(saveProficiencies?.[ability])).map((ability) => ABILITY_LABELS[ability]);
+}
+
+function getLevelUpPreview(state, draft) {
+  const currentCharacter = state.character;
+  const nextCharacter = {
+    ...currentCharacter,
+    class: draft.primaryClass,
+    level: draft.totalLevel,
+    multiclass: draft.multiclass,
+  };
+
+  const currentSlots = getCharacterSpellSlotDefaults(state.catalogs, currentCharacter);
+  const nextSlots = getCharacterSpellSlotDefaults(state.catalogs, nextCharacter);
+  const changedSlotLevels = SPELL_SLOT_LEVELS.filter((level) => toNumber(currentSlots[String(level)], 0) !== toNumber(nextSlots[String(level)], 0));
+  const currentSaves = getClassSaveProficiencies(state.catalogs, currentCharacter.class);
+  const nextSaves = getClassSaveProficiencies(state.catalogs, nextCharacter.class);
+  return {
+    currentSlots,
+    nextSlots,
+    changedSlotLevels,
+    currentSaves,
+    nextSaves,
+    classLevels: getCharacterClassLevels(nextCharacter),
+  };
+}
+
+function renderLevelUpContributionRows(catalogs, draft, classLevels) {
+  const rows = [];
+  const primaryContribution = getClassCasterContribution(catalogs, draft.primaryClass, classLevels.primaryLevel);
+  rows.push(
+    `<div class="levelup-contrib-row"><span>${esc(draft.primaryClass || "Primary class")} ${esc(classLevels.primaryLevel)}</span><span>${esc(primaryContribution)}</span></div>`
+  );
+
+  classLevels.multiclass.forEach((entry) => {
+    const contribution = getClassCasterContribution(catalogs, entry.class, entry.level);
+    rows.push(`<div class="levelup-contrib-row"><span>${esc(entry.class)} ${esc(entry.level)}</span><span>${esc(contribution)}</span></div>`);
+  });
+
+  const totalCasterLevel = [primaryContribution, ...classLevels.multiclass.map((entry) => getClassCasterContribution(catalogs, entry.class, entry.level))]
+    .reduce((sum, value) => sum + value, 0);
+  rows.push(`<div class="levelup-contrib-row is-total"><span>Total caster level</span><span>${esc(totalCasterLevel)}</span></div>`);
+  return rows.join("");
+}
+
+function renderLevelUpBody(state, draft) {
+  const preview = getLevelUpPreview(state, draft);
+  const classOptions = optionList(state.catalogs.classes, "");
+  const multiclassTotal = draft.multiclass.reduce((sum, entry) => sum + Math.max(1, toNumber(entry.level, 1)), 0);
+  const budgetRemaining = draft.totalLevel - multiclassTotal;
+  const slotChangesHtml = preview.changedSlotLevels.length
+    ? preview.changedSlotLevels
+        .map((level) => {
+          const key = String(level);
+          const from = toNumber(preview.currentSlots[key], 0);
+          const to = toNumber(preview.nextSlots[key], 0);
+          return `<div class="levelup-slot-change"><span>Level ${level}</span><span>${from} -> ${to}</span></div>`;
+        })
+        .join("")
+    : "<p class='muted levelup-empty'>No spell slot changes.</p>";
+  const currentSaveLabels = getSaveProficiencyLabelMap(preview.currentSaves);
+  const nextSaveLabels = getSaveProficiencyLabelMap(preview.nextSaves);
+
+  return `
+    <div class="levelup-shell">
+      <p class="subtitle">Plan level changes for both play and edit mode. Required class settings are updated from 5etools data.</p>
+      <div class="levelup-grid">
+        <section class="levelup-card">
+          <h4>Class Levels</h4>
+          <div class="row">
+            <label>Total Level
+              <input id="levelup-total-level" type="number" min="1" max="20" value="${esc(draft.totalLevel)}">
+            </label>
+            <label>Primary Class
+              <select id="levelup-primary-class">
+                <option value="">Select class</option>
+                ${classOptions}
+              </select>
+            </label>
+          </div>
+          <div class="levelup-budget ${budgetRemaining < 1 ? "is-invalid" : ""}">
+            <span>Primary class level</span>
+            <strong>${esc(preview.classLevels.primaryLevel)}</strong>
+          </div>
+          <div class="levelup-budget ${budgetRemaining < 1 ? "is-invalid" : ""}">
+            <span>Secondary levels allocated</span>
+            <strong>${esc(multiclassTotal)}</strong>
+          </div>
+          <div class="levelup-budget ${budgetRemaining < 1 ? "is-invalid" : ""}">
+            <span>Remaining primary level budget</span>
+            <strong>${esc(budgetRemaining)}</strong>
+          </div>
+          <h5>Secondary Classes</h5>
+          <div class="levelup-rows">
+            ${
+              draft.multiclass.length
+                ? draft.multiclass
+                    .map(
+                      (entry, idx) => `
+                <div class="levelup-row">
+                  <label>Class
+                    <select data-levelup-mc-class="${idx}">
+                      <option value="">Select class</option>
+                      ${optionList(state.catalogs.classes, entry.class)}
+                    </select>
+                  </label>
+                  <label>Level
+                    <input type="number" min="1" max="20" data-levelup-mc-level="${idx}" value="${esc(entry.level)}">
+                  </label>
+                  <button type="button" class="btn secondary" data-levelup-mc-remove="${idx}">Remove</button>
+                </div>
+              `
+                    )
+                    .join("")
+                : "<p class='muted levelup-empty'>No secondary class levels yet.</p>"
+            }
+          </div>
+          <div class="toolbar">
+            <button type="button" class="btn secondary" data-levelup-add-mc>Add Secondary Class</button>
+          </div>
+        </section>
+        <section class="levelup-card">
+          <h4>Required Updates Preview</h4>
+          <div class="levelup-preview-block">
+            <h5>Save Proficiencies</h5>
+            <div class="levelup-save-row">
+              <span class="muted">Current</span>
+              <span>${esc(currentSaveLabels.join(", ") || "None")}</span>
+            </div>
+            <div class="levelup-save-row">
+              <span class="muted">After Apply</span>
+              <span>${esc(nextSaveLabels.join(", ") || "None")}</span>
+            </div>
+          </div>
+          <div class="levelup-preview-block">
+            <h5>Spell Slot Default Changes</h5>
+            <div class="levelup-slot-list">${slotChangesHtml}</div>
+          </div>
+          <div class="levelup-preview-block">
+            <h5>Caster Contribution</h5>
+            <div class="levelup-contrib-list">
+              ${renderLevelUpContributionRows(state.catalogs, draft, preview.classLevels)}
+            </div>
+          </div>
+        </section>
+      </div>
+    </div>
+  `;
+}
+
+function openLevelUpModal(state) {
+  const draft = createLevelUpDraft(state.character);
+  const close = openModal({
+    title: "Level Up",
+    bodyHtml: `<div id="levelup-editor"></div>`,
+    actions: [
+      {
+        label: "Apply",
+        onClick: (done) => {
+          const sanitized = sanitizeLevelUpDraft(draft);
+          if (!sanitized.primaryClass) {
+            alert("Select a primary class.");
+            return;
+          }
+          const multiclassTotal = sanitized.multiclass.reduce((sum, entry) => sum + entry.level, 0);
+          if (multiclassTotal >= sanitized.totalLevel) {
+            alert("Secondary class levels must be lower than total level.");
+            return;
+          }
+          updateCharacterWithRequiredSettings(
+            state,
+            {
+              class: sanitized.primaryClass,
+              level: sanitized.totalLevel,
+              multiclass: sanitized.multiclass,
+            },
+            { preserveUserOverrides: true }
+          );
+          done();
+        },
+      },
+      { label: "Cancel", secondary: true, onClick: (done) => done() },
+    ],
+  });
+
+  const root = document.getElementById("levelup-editor");
+  if (!root) return close;
+
+  const renderEditor = () => {
+    root.innerHTML = renderLevelUpBody(state, draft);
+    const primaryClassEl = document.getElementById("levelup-primary-class");
+    if (primaryClassEl) primaryClassEl.value = draft.primaryClass;
+
+    document.getElementById("levelup-total-level")?.addEventListener("input", (evt) => {
+      draft.totalLevel = Math.max(1, Math.min(20, toNumber(evt.target.value, 1)));
+      renderEditor();
+    });
+    primaryClassEl?.addEventListener("change", (evt) => {
+      draft.primaryClass = evt.target.value;
+      renderEditor();
+    });
+    root.querySelector("[data-levelup-add-mc]")?.addEventListener("click", () => {
+      draft.multiclass.push({ class: "", level: 1 });
+      renderEditor();
+    });
+    root.querySelectorAll("[data-levelup-mc-remove]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const idx = toNumber(button.dataset.levelupMcRemove, -1);
+        if (idx < 0) return;
+        draft.multiclass.splice(idx, 1);
+        renderEditor();
+      });
+    });
+    root.querySelectorAll("[data-levelup-mc-class]").forEach((select) => {
+      select.addEventListener("change", () => {
+        const idx = toNumber(select.dataset.levelupMcClass, -1);
+        if (idx < 0 || !draft.multiclass[idx]) return;
+        draft.multiclass[idx].class = select.value;
+        renderEditor();
+      });
+    });
+    root.querySelectorAll("[data-levelup-mc-level]").forEach((input) => {
+      input.addEventListener("input", () => {
+        const idx = toNumber(input.dataset.levelupMcLevel, -1);
+        if (idx < 0 || !draft.multiclass[idx]) return;
+        draft.multiclass[idx].level = Math.max(1, Math.min(20, toNumber(input.value, 1)));
+        renderEditor();
+      });
+    });
+  };
+
+  renderEditor();
+  return close;
+}
+
 function openMulticlassModal(state) {
   const existing = state.character.multiclass;
   const close = openModal({
@@ -2140,7 +2723,7 @@ function openMulticlassModal(state) {
           const levelEl = document.getElementById("mc-level");
           if (!classEl.value) return;
           const multiclass = [...existing, { class: classEl.value, level: Number(levelEl.value || 1) }];
-          store.updateCharacter({ multiclass });
+          updateCharacterWithRequiredSettings(state, { multiclass }, { preserveUserOverrides: true });
           done();
         },
       },
@@ -2189,6 +2772,10 @@ function dockDiceOverlay(isPlayMode) {
 }
 
 function renderPlayMode(state) {
+  const className = String(state.character.class ?? "").trim();
+  const classHtml = className
+    ? `<button type="button" class="class-info-btn" data-open-class-info title="View class details">${esc(className)}</button>`
+    : "Adventurer";
   return `
     <main class="layout layout-play">
       <section>
@@ -2198,7 +2785,13 @@ function renderPlayMode(state) {
               <h1 class="title">Character Builder</h1>
               <p class="subtitle">Play Mode: one-page session sheet.</p>
               ${getModeToggle(state.mode)}
-              <p class="muted">${esc(state.character.name || "Unnamed Hero")} - Level ${esc(state.character.level)} ${esc(state.character.class || "Adventurer")}</p>
+              <p class="muted">
+                ${esc(state.character.name || "Unnamed Hero")} - Level ${esc(state.character.level)}
+                ${classHtml}
+              </p>
+              <div class="toolbar">
+                <button class="btn secondary" type="button" data-open-levelup>Level Up</button>
+              </div>
             </div>
             <div id="play-header-dice-slot" class="play-header-dice-slot"></div>
           </div>
