@@ -1784,7 +1784,7 @@ async function loadCatalogsForCharacter(character) {
   store.setCatalogs(catalogs);
 }
 
-async function applyRemoteCharacterPayload(payload, fallbackId = null) {
+async function applyRemoteCharacterPayload(payload, fallbackId = null, defaultMode = "build") {
   const parsed = getCharacterFromApiPayload(payload, fallbackId);
   updatePersistenceStatusFromPayload(payload);
   showOnboardingHome = false;
@@ -1792,7 +1792,7 @@ async function applyRemoteCharacterPayload(payload, fallbackId = null) {
   isRemoteSaveSuppressed = true;
   try {
     store.hydrate(parsed.character);
-    store.setMode("build");
+    store.setMode(defaultMode);
     store.setStep(0);
     await loadCatalogsForCharacter(parsed.character);
   } finally {
@@ -1819,7 +1819,7 @@ async function loadCharacterById(characterId) {
     selected.source === "local"
       ? { ...payload, id: characterId, character: localCharacter }
       : payload;
-  await applyRemoteCharacterPayload(selectedPayload, characterId);
+  await applyRemoteCharacterPayload(selectedPayload, characterId, "play");
 
   if (selected.source === "local" && localCharacter) {
     try {
