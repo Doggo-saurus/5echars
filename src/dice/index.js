@@ -59,7 +59,7 @@ export function createDiceUi(deps) {
     const messageEl = panel.querySelector(".dice-offscreen-panel-message");
     if (!messageEl) return;
 
-    messageEl.textContent = message;
+    messageEl.innerHTML = formatDiceResultHtml(message);
     panel.classList.toggle("is-error", Boolean(isError));
     panel.hidden = false;
 
@@ -93,10 +93,15 @@ export function createDiceUi(deps) {
       .join("");
   }
 
+  function formatDiceResultHtml(message) {
+    const safeMessage = esc(String(message ?? ""));
+    return safeMessage.replace(/=\s*(-?\d+)(?!.*=\s*-?\d+)/, '= <span class="dice-result-total">$1</span>');
+  }
+
   function syncDiceResultElements() {
     const resultEls = [document.getElementById("dice-result"), document.getElementById("dice-result-inline")].filter(Boolean);
     resultEls.forEach((resultEl) => {
-      resultEl.textContent = uiState.latestDiceResultMessage;
+      resultEl.innerHTML = formatDiceResultHtml(uiState.latestDiceResultMessage);
       resultEl.classList.toggle("is-error", uiState.latestDiceResultIsError);
     });
   }

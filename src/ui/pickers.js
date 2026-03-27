@@ -261,6 +261,95 @@ export function createPickers(deps) {
     const sourceEl = document.getElementById("item-source");
     const listEl = document.getElementById("item-list");
 
+    function normalizeItemTypeCode(value) {
+      return String(value ?? "")
+        .split("|")[0]
+        .trim()
+        .toUpperCase();
+    }
+
+    function parseNumericBonus(value, fallback = 0) {
+      if (typeof value === "number" && Number.isFinite(value)) return value;
+      const text = String(value ?? "").trim();
+      if (!text) return fallback;
+      const direct = Number(text);
+      if (Number.isFinite(direct)) return direct;
+      const match = text.match(/[+\-]?\d+/);
+      if (!match) return fallback;
+      const parsed = Number(match[0]);
+      return Number.isFinite(parsed) ? parsed : fallback;
+    }
+
+    function extractWeaponBonusFromName(name) {
+      const match = String(name ?? "").match(/(?:^|\s)\+(\d+)(?:\s|$|\))/i);
+      if (!match) return 0;
+      const parsed = Number(match[1]);
+      return Number.isFinite(parsed) ? parsed : 0;
+    }
+
+    function firstNonEmpty(...values) {
+      for (const value of values) {
+        if (value == null) continue;
+        if (typeof value === "string" && !value.trim()) continue;
+        return value;
+      }
+      return "";
+    }
+
+    function mergeProperties(...sets) {
+      return [...new Set(sets.flatMap((set) => (Array.isArray(set) ? set : [])).map((prop) => String(prop ?? "").trim()).filter(Boolean))];
+    }
+
+    function buildInventoryEntry(item, nameOverride = "", options = {}) {
+      const variantItem = options.variantItem ?? null;
+      const inherits = variantItem?.inherits && typeof variantItem.inherits === "object" ? variantItem.inherits : {};
+      const name = String(nameOverride || variantItem?.name || item?.name || "").trim();
+      if (!name) return null;
+      const source = String(variantItem?.source ?? item?.source ?? "").trim();
+      const sourceLabel = String(variantItem?.sourceLabel ?? item?.sourceLabel ?? source).trim();
+      const typeCode = normalizeItemTypeCode(firstNonEmpty(variantItem?.type, inherits?.type, item?.type));
+      const acValue = Number(firstNonEmpty(variantItem?.ac, inherits?.ac, item?.ac));
+      const damageType = String(firstNonEmpty(variantItem?.dmgType, inherits?.dmgType, item?.dmgType) ?? "").trim();
+      const damageDice = String(firstNonEmpty(variantItem?.dmg1, inherits?.dmg1, item?.dmg1, variantItem?.dmg2, inherits?.dmg2, item?.dmg2) ?? "").trim();
+      const nameBonus = extractWeaponBonusFromName(name);
+      const sharedWeaponBonus = parseNumericBonus(firstNonEmpty(variantItem?.bonusWeapon, inherits?.bonusWeapon, item?.bonusWeapon), 0);
+      const attackBonus = parseNumericBonus(
+        firstNonEmpty(variantItem?.bonusWeaponAttack, inherits?.bonusWeaponAttack, item?.bonusWeaponAttack),
+        sharedWeaponBonus || nameBonus
+      );
+      const damageBonus = parseNumericBonus(
+        firstNonEmpty(variantItem?.bonusWeaponDamage, inherits?.bonusWeaponDamage, item?.bonusWeaponDamage),
+        sharedWeaponBonus || nameBonus
+      );
+      const properties = mergeProperties(item?.property, inherits?.property, variantItem?.property);
+      const weaponCategory = String(firstNonEmpty(variantItem?.weaponCategory, inherits?.weaponCategory, item?.weaponCategory) ?? "").trim();
+      const weaponFlag =
+        Boolean(variantItem?.weapon) || Boolean(inherits?.weapon) || Boolean(item?.weapon) || Boolean(damageDice) || Boolean(weaponCategory);
+      const armorFlag =
+        Boolean(variantItem?.armor) ||
+        Boolean(inherits?.armor) ||
+        Boolean(item?.armor) ||
+        ["LA", "MA", "HA", "S"].includes(typeCode);
+      return {
+        id: buildEntityId(["inv", name, source, Date.now(), Math.random()]),
+        itemId: buildEntityId(["item", variantItem?.name || item?.name, source]),
+        name,
+        source,
+        sourceLabel,
+        itemType: typeCode,
+        weaponCategory,
+        damageDice,
+        damageType,
+        properties,
+        ac: Number.isFinite(acValue) ? acValue : null,
+        weapon: weaponFlag,
+        armor: armorFlag,
+        weaponAttackBonus: attackBonus,
+        weaponDamageBonus: damageBonus,
+        equipped: false,
+      };
+    }
+
     function normalizeItemType(value) {
       return String(value ?? "")
         .split("|")[0]
@@ -377,24 +466,28 @@ export function createPickers(deps) {
               )
               .join("")
           : "<p class='muted'>No base items match these filters.</p>";
+
+        baseListEl.querySelectorAll("[data-variant-base-pick]").forEach((button) => {
+          button.addEventListener("mousedown", (evt) => {
+            evt.preventDefault();
+          });
+          button.addEventListener("click", () => {
+            const idx = toNumber(button.dataset.variantBasePick, -1);
+            const baseItem = filteredVariantCandidates[idx];
+            if (!baseItem) return;
+            const concreteName = buildVariantItemName(variantItem, baseItem);
+            if (!concreteName) return;
+            const inventoryEntry = buildInventoryEntry(baseItem, concreteName, { variantItem });
+            if (!inventoryEntry) return;
+            store.addItem(inventoryEntry);
+            closeVariantPicker();
+          });
+        });
       }
 
-      baseListEl.addEventListener("click", (evt) => {
-        const button = evt.target.closest("[data-variant-base-pick]");
-        if (!button || !baseListEl.contains(button)) return;
-        const idx = toNumber(button.dataset.variantBasePick, -1);
-        const baseItem = filteredVariantCandidates[idx];
-        if (!baseItem) return;
-        const concreteName = buildVariantItemName(variantItem, baseItem);
-        if (!concreteName) return;
-        store.addItem(concreteName);
-        closeVariantPicker();
-      });
-
-      [baseSearchEl, baseSourceEl].forEach((el) => {
-        el.addEventListener("input", renderVariantBaseRows);
-        el.addEventListener("change", renderVariantBaseRows);
-      });
+      baseSearchEl?.addEventListener("input", renderVariantBaseRows);
+      baseSourceEl?.addEventListener("input", renderVariantBaseRows);
+      baseSourceEl?.addEventListener("change", renderVariantBaseRows);
       renderVariantBaseRows();
     }
 
@@ -421,32 +514,37 @@ export function createPickers(deps) {
             )
             .join("")
         : "<p class='muted'>No items match these filters.</p>";
+
+      listEl.querySelectorAll("[data-item-pick]").forEach((button) => {
+        button.addEventListener("mousedown", (evt) => {
+          evt.preventDefault();
+        });
+        button.addEventListener("click", () => {
+          const idx = toNumber(button.dataset.itemPick, -1);
+          const item = filteredItems[idx];
+          if (!item) return;
+          const isMagicVariant = Array.isArray(item.requires) && item.requires.length > 0;
+          if (isMagicVariant) {
+            close();
+            openVariantBasePicker(item);
+            return;
+          }
+          const inventoryEntry = buildInventoryEntry(item);
+          if (!inventoryEntry) return;
+          store.addItem(inventoryEntry);
+          close();
+        });
+      });
     }
 
     let filteredItems = [];
-    listEl.addEventListener("click", (evt) => {
-      const button = evt.target.closest("[data-item-pick]");
-      if (!button || !listEl.contains(button)) return;
-      const idx = toNumber(button.dataset.itemPick, -1);
-      const item = filteredItems[idx];
-      if (!item) return;
-      const isMagicVariant = Array.isArray(item.requires) && item.requires.length > 0;
-      if (isMagicVariant) {
-        close();
-        openVariantBasePicker(item);
-        return;
-      }
-      store.addItem(item.name);
-      close();
-    });
 
-    [searchEl, sourceEl].forEach((el) => {
-      el.addEventListener("input", renderItemRows);
-      el.addEventListener("change", renderItemRows);
-    });
+    searchEl?.addEventListener("input", renderItemRows);
+    sourceEl?.addEventListener("input", renderItemRows);
+    sourceEl?.addEventListener("change", renderItemRows);
     renderItemRows();
   }
-
+ 
   function getFeatSlotById(character, slotId) {
     const slots = Array.isArray(character?.progression?.featSlots) ? character.progression.featSlots : [];
     return slots.find((slot) => slot.id === slotId) ?? null;

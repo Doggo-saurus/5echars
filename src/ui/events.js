@@ -40,6 +40,61 @@ export function createEvents(deps) {
     diceStylePresets,
   } = deps;
 
+  function normalizeItemTypeCode(value) {
+    return String(value ?? "")
+      .split("|")[0]
+      .trim()
+      .toUpperCase();
+  }
+
+  function isBodyArmorEntry(entry) {
+    const typeCode = normalizeItemTypeCode(entry?.itemType ?? entry?.type);
+    return ["LA", "MA", "HA"].includes(typeCode);
+  }
+
+  function isShieldEntry(entry) {
+    const typeCode = normalizeItemTypeCode(entry?.itemType ?? entry?.type);
+    return typeCode === "S" || Boolean(entry?.isShield);
+  }
+
+  function toggleInventoryItemEquipped(itemId) {
+    const id = String(itemId ?? "").trim();
+    if (!id) return;
+    const currentState = store.getState();
+    const currentInventory = Array.isArray(currentState.character?.inventory) ? currentState.character.inventory : [];
+    let shouldEquip = false;
+    let toggledEntry = null;
+
+    currentInventory.forEach((entry) => {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) return;
+      if (String(entry.id ?? "").trim() !== id) return;
+      shouldEquip = !Boolean(entry.equipped);
+      toggledEntry = entry;
+    });
+    if (!toggledEntry) return;
+
+    const nextInventory = currentInventory.map((entry) => {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) return entry;
+      const entryId = String(entry.id ?? "").trim();
+      if (entryId === id) return { ...entry, equipped: shouldEquip };
+      if (!shouldEquip) return entry;
+      if (isBodyArmorEntry(toggledEntry) && isBodyArmorEntry(entry)) return { ...entry, equipped: false };
+      if (isShieldEntry(toggledEntry) && isShieldEntry(entry)) return { ...entry, equipped: false };
+      return entry;
+    });
+    store.updateCharacter({ inventory: nextInventory });
+  }
+
+  function removeInventoryItemByIndex(indexRaw) {
+    const index = toNumber(indexRaw, -1);
+    const currentState = store.getState();
+    const currentInventory = Array.isArray(currentState.character?.inventory) ? currentState.character.inventory : [];
+    if (index < 0 || index >= currentInventory.length) return;
+    const nextInventory = [...currentInventory];
+    nextInventory.splice(index, 1);
+    store.updateCharacter({ inventory: nextInventory });
+  }
+
   function bindBuildEvents(state) {
     app.querySelectorAll("[data-step]").forEach((btn) => {
       btn.addEventListener("click", () => store.setStep(Number(btn.dataset.step)));
@@ -58,10 +113,23 @@ export function createEvents(deps) {
       });
     }
 
-    [["#name", "name"], ["#notes", "notes"], ["#race", "race"], ["#background", "background"]].forEach(([sel, field]) => {
+    [["#name", "name"], ["#notes", "notes"]].forEach(([sel, field]) => {
       const el = app.querySelector(sel);
       if (!el) return;
       const handler = () => store.updateCharacter({ [field]: el.value });
+      el.addEventListener("input", handler);
+      el.addEventListener("change", handler);
+    });
+    [["#race", "race"], ["#background", "background"]].forEach(([sel, field]) => {
+      const el = app.querySelector(sel);
+      if (!el) return;
+      const handler = () => {
+        updateCharacterWithRequiredSettings(
+          state,
+          { [field]: el.value },
+          { preserveUserOverrides: true }
+        );
+      };
       el.addEventListener("input", handler);
       el.addEventListener("change", handler);
     });
@@ -126,13 +194,100 @@ export function createEvents(deps) {
     app.querySelectorAll("[data-ability]").forEach((input) => {
       input.addEventListener("input", () => store.updateAbility(input.dataset.ability, input.value));
     });
+    app.querySelectorAll("[data-auto-choice-input]").forEach((input) => {
+      input.addEventListener("change", () => {
+        const sourceKey = String(input.dataset.autoChoiceSource ?? "").trim();
+        const choiceId = String(input.dataset.autoChoiceId ?? "").trim();
+        const value = String(input.dataset.autoChoiceValue ?? "").trim().toLowerCase();
+        if (!sourceKey || !choiceId || !value) return;
+        const maxCount = Math.max(1, toNumber(input.dataset.autoChoiceMax, 1));
+        const nextPlay =
+          state.character.play && typeof state.character.play === "object" && !Array.isArray(state.character.play)
+            ? structuredClone(state.character.play)
+            : {};
+        const selections =
+          nextPlay.autoChoiceSelections && typeof nextPlay.autoChoiceSelections === "object" && !Array.isArray(nextPlay.autoChoiceSelections)
+            ? { ...nextPlay.autoChoiceSelections }
+            : {};
+        const sourceSelections =
+          selections[sourceKey] && typeof selections[sourceKey] === "object" && !Array.isArray(selections[sourceKey])
+            ? { ...selections[sourceKey] }
+            : {};
+        const currentValues = Array.isArray(sourceSelections[choiceId])
+          ? sourceSelections[choiceId].map((entry) => String(entry ?? "").trim().toLowerCase()).filter(Boolean)
+          : [];
+        const uniqueValues = currentValues.filter((entry, index) => currentValues.indexOf(entry) === index);
+        const isChecked = input.checked;
+        let nextValues = isChecked
+          ? [...uniqueValues.filter((entry) => entry !== value), value]
+          : uniqueValues.filter((entry) => entry !== value);
+        if (nextValues.length > maxCount) nextValues = nextValues.slice(nextValues.length - maxCount);
+        sourceSelections[choiceId] = nextValues;
+        selections[sourceKey] = sourceSelections;
+        nextPlay.autoChoiceSelections = selections;
+        updateCharacterWithRequiredSettings(state, { play: nextPlay }, { preserveUserOverrides: true });
+      });
+    });
+    app.querySelectorAll("[data-asi-choice-select]").forEach((input) => {
+      input.addEventListener("change", () => {
+        const sourceKey = String(input.dataset.autoChoiceSource ?? "").trim();
+        const choiceId = String(input.dataset.autoChoiceId ?? "").trim();
+        if (!sourceKey || !choiceId) return;
+        const maxCount = Math.max(1, toNumber(input.dataset.autoChoiceMax, 1));
+        const nextPlay =
+          state.character.play && typeof state.character.play === "object" && !Array.isArray(state.character.play)
+            ? structuredClone(state.character.play)
+            : {};
+        const selections =
+          nextPlay.autoChoiceSelections && typeof nextPlay.autoChoiceSelections === "object" && !Array.isArray(nextPlay.autoChoiceSelections)
+            ? { ...nextPlay.autoChoiceSelections }
+            : {};
+        const sourceSelections =
+          selections[sourceKey] && typeof selections[sourceKey] === "object" && !Array.isArray(selections[sourceKey])
+            ? { ...selections[sourceKey] }
+            : {};
+        const nextValues = Array.from(app.querySelectorAll("[data-asi-choice-select]"))
+          .filter((selectEl) => {
+            const selectSource = String(selectEl.dataset.autoChoiceSource ?? "").trim();
+            const selectChoiceId = String(selectEl.dataset.autoChoiceId ?? "").trim();
+            return selectSource === sourceKey && selectChoiceId === choiceId;
+          })
+          .map((selectEl) => String(selectEl.value ?? "").trim().toLowerCase())
+          .filter(Boolean)
+          .slice(0, maxCount);
+        sourceSelections[choiceId] = nextValues;
+        selections[sourceKey] = sourceSelections;
+        nextPlay.autoChoiceSelections = selections;
+        updateCharacterWithRequiredSettings(state, { play: nextPlay }, { preserveUserOverrides: true });
+      });
+    });
+    app.querySelectorAll("[data-ability-step]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const ability = button.dataset.abilityStep;
+        if (!ability) return;
+        const delta = toNumber(button.dataset.stepDelta, 0);
+        if (!delta) return;
+        const currentValue = toNumber(state.character.abilities?.[ability], 10);
+        const nextValue = Math.max(1, Math.min(30, currentValue + delta));
+        store.updateAbility(ability, nextValue);
+      });
+    });
 
     app.querySelectorAll("[data-save-prof-btn]").forEach((button) => {
       button.addEventListener("click", () => {
         const ability = button.dataset.saveProfBtn;
         withUpdatedPlay(state, (play) => {
           const current = Boolean(play.saveProficiencies?.[ability]);
-          play.saveProficiencies = { ...(play.saveProficiencies ?? {}), [ability]: !current };
+          const next = !current;
+          const autoValue = Boolean(play.autoSaveProficiencies?.[ability]);
+          const overrides =
+            play.saveProficiencyOverrides && typeof play.saveProficiencyOverrides === "object" && !Array.isArray(play.saveProficiencyOverrides)
+              ? { ...play.saveProficiencyOverrides }
+              : {};
+          if (next === autoValue) delete overrides[ability];
+          else overrides[ability] = next;
+          play.saveProficiencyOverrides = overrides;
+          play.saveProficiencies = { ...(play.saveProficiencies ?? {}), [ability]: next };
         });
       });
     });
@@ -145,13 +300,34 @@ export function createEvents(deps) {
         const key = button.dataset.skillProfBtn;
         withUpdatedPlay(state, (play) => {
           const current = Boolean(play.skillProficiencies?.[key]);
-          play.skillProficiencies = { ...(play.skillProficiencies ?? {}), [key]: !current };
+          const next = !current;
+          const autoValue = Boolean(play.autoSkillProficiencies?.[key]);
+          const overrides =
+            play.skillProficiencyOverrides
+            && typeof play.skillProficiencyOverrides === "object"
+            && !Array.isArray(play.skillProficiencyOverrides)
+              ? { ...play.skillProficiencyOverrides }
+              : {};
+          if (next === autoValue) delete overrides[key];
+          else overrides[key] = next;
+          play.skillProficiencyOverrides = overrides;
+          play.skillProficiencies = { ...(play.skillProficiencies ?? {}), [key]: next };
         });
       });
     });
 
     app.querySelector("#open-spells")?.addEventListener("click", () => openSpellModal(state));
     app.querySelector("#open-items")?.addEventListener("click", () => openItemModal(state));
+    app.querySelectorAll("[data-toggle-item-equipped]").forEach((button) => {
+      button.addEventListener("click", () => {
+        toggleInventoryItemEquipped(button.dataset.toggleItemEquipped);
+      });
+    });
+    app.querySelectorAll("[data-remove-item-index]").forEach((button) => {
+      button.addEventListener("click", () => {
+        removeInventoryItemByIndex(button.dataset.removeItemIndex);
+      });
+    });
     app.querySelectorAll("[data-open-feat-picker]").forEach((button) => {
       button.addEventListener("click", () => {
         const slotId = button.dataset.openFeatPicker;
@@ -258,6 +434,246 @@ export function createEvents(deps) {
   }
 
   function bindPlayEvents(state) {
+    const LONG_PRESS_CHOOSER_DELAY_MS = 500;
+    const longPressRollChooser = (() => {
+      let overlayEl = null;
+      let hintEl = null;
+      let advantageButtonEl = null;
+      let disadvantageButtonEl = null;
+      let hideTimer = null;
+      let pendingHandlers = null;
+
+      const positionNearElement = (targetEl) => {
+        if (!overlayEl) return;
+        const rect = targetEl?.getBoundingClientRect?.();
+        if (!rect) {
+          overlayEl.style.left = "50%";
+          overlayEl.style.top = "auto";
+          overlayEl.style.bottom = "1.3rem";
+          overlayEl.style.transform = "translate(-50%, 0)";
+          return;
+        }
+        const left = rect.left + rect.width / 2;
+        const top = Math.max(10, rect.top - 8);
+        overlayEl.style.left = `${Math.round(left)}px`;
+        overlayEl.style.top = `${Math.round(top)}px`;
+        overlayEl.style.bottom = "auto";
+        overlayEl.style.transform = "translate(-50%, -100%)";
+      };
+
+      const hide = (delayMs = 0) => {
+        if (!overlayEl) return;
+        if (hideTimer != null) {
+          window.clearTimeout(hideTimer);
+          hideTimer = null;
+        }
+        const runHide = () => {
+          pendingHandlers = null;
+          overlayEl?.classList.remove("is-visible", "is-ready");
+        };
+        if (delayMs > 0) hideTimer = window.setTimeout(runHide, delayMs);
+        else runHide();
+      };
+
+      const choose = (mode) => {
+        const handler = pendingHandlers?.[mode];
+        hide();
+        if (typeof handler === "function") handler();
+      };
+
+      const ensure = () => {
+        if (overlayEl) return;
+        overlayEl = document.createElement("div");
+        overlayEl.className = "long-press-roll-overlay";
+        hintEl = document.createElement("div");
+        hintEl.className = "long-press-roll-overlay-hint";
+        const actionsEl = document.createElement("div");
+        actionsEl.className = "long-press-roll-overlay-actions";
+        advantageButtonEl = document.createElement("button");
+        advantageButtonEl.type = "button";
+        advantageButtonEl.className = "long-press-roll-overlay-btn";
+        advantageButtonEl.textContent = "Advantage";
+        disadvantageButtonEl = document.createElement("button");
+        disadvantageButtonEl.type = "button";
+        disadvantageButtonEl.className = "long-press-roll-overlay-btn";
+        disadvantageButtonEl.textContent = "Disadvantage";
+        actionsEl.append(advantageButtonEl, disadvantageButtonEl);
+        overlayEl.append(hintEl, actionsEl);
+        advantageButtonEl.addEventListener("click", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          choose("advantage");
+        });
+        disadvantageButtonEl.addEventListener("click", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          choose("disadvantage");
+        });
+        document.addEventListener(
+          "pointerdown",
+          (event) => {
+            if (!overlayEl?.classList.contains("is-visible")) return;
+            if (overlayEl.contains(event.target)) return;
+            hide();
+          },
+          true
+        );
+        document.body.appendChild(overlayEl);
+      };
+
+      return {
+        showHint(targetEl, message) {
+          ensure();
+          if (hideTimer != null) {
+            window.clearTimeout(hideTimer);
+            hideTimer = null;
+          }
+          pendingHandlers = null;
+          if (hintEl) hintEl.textContent = String(message ?? "");
+          positionNearElement(targetEl);
+          overlayEl?.classList.remove("is-ready");
+          overlayEl?.classList.add("is-visible");
+        },
+        showChooser(targetEl, handlers = {}) {
+          ensure();
+          if (hideTimer != null) {
+            window.clearTimeout(hideTimer);
+            hideTimer = null;
+          }
+          pendingHandlers = {
+            advantage: typeof handlers.advantage === "function" ? handlers.advantage : null,
+            disadvantage: typeof handlers.disadvantage === "function" ? handlers.disadvantage : null,
+          };
+          if (hintEl) hintEl.textContent = "Choose roll mode";
+          positionNearElement(targetEl);
+          overlayEl?.classList.add("is-visible", "is-ready");
+        },
+        hide,
+      };
+    })();
+
+    const bindClickAndLongPress = (element, onClick, onLongPress) => {
+      if (!element || typeof onClick !== "function") return;
+      let chooserTimer = null;
+      let pressPointerId = null;
+      let isPressing = false;
+      let longPressTriggered = false;
+      let suppressNextClick = false;
+      let suppressTimer = null;
+
+      const clearHoldTimers = () => {
+        if (chooserTimer != null) {
+          window.clearTimeout(chooserTimer);
+          chooserTimer = null;
+        }
+      };
+
+      const cancelPress = () => {
+        clearHoldTimers();
+        pressPointerId = null;
+        isPressing = false;
+      };
+
+      const clearSuppress = () => {
+        suppressNextClick = false;
+        if (suppressTimer != null) {
+          window.clearTimeout(suppressTimer);
+          suppressTimer = null;
+        }
+      };
+
+      element.addEventListener("pointerdown", (event) => {
+        if (typeof onLongPress !== "function") return;
+        if (event.button !== 0) return;
+        isPressing = true;
+        longPressTriggered = false;
+        pressPointerId = event.pointerId;
+        longPressRollChooser.hide();
+        clearHoldTimers();
+        chooserTimer = window.setTimeout(() => {
+          if (!isPressing) return;
+          longPressTriggered = true;
+          suppressNextClick = true;
+          if (suppressTimer != null) window.clearTimeout(suppressTimer);
+          suppressTimer = window.setTimeout(() => {
+            suppressNextClick = false;
+            suppressTimer = null;
+          }, 700);
+          longPressRollChooser.showChooser(element, {
+            advantage: () => onLongPress("advantage"),
+            disadvantage: () => onLongPress("disadvantage"),
+          });
+        }, LONG_PRESS_CHOOSER_DELAY_MS);
+      });
+
+      const handlePressEnd = (event) => {
+        if (!isPressing) return;
+        if (pressPointerId != null && event.pointerId !== pressPointerId) return;
+        const consumedByLongPress = longPressTriggered;
+        cancelPress();
+        if (!consumedByLongPress) longPressRollChooser.hide();
+      };
+
+      element.addEventListener("pointerup", handlePressEnd);
+      element.addEventListener("pointercancel", () => {
+        cancelPress();
+        clearSuppress();
+        longPressRollChooser.hide();
+      });
+      element.addEventListener("pointerleave", () => {
+        if (!isPressing || longPressTriggered) return;
+        cancelPress();
+        longPressRollChooser.hide();
+      });
+
+      element.addEventListener("click", (event) => {
+        if (suppressNextClick || longPressTriggered) {
+          event.preventDefault();
+          event.stopPropagation();
+          longPressTriggered = false;
+          clearSuppress();
+          return;
+        }
+        onClick();
+      });
+    };
+
+    const parseD20ModifierFromNotation = (value) => {
+      const notation = extractSimpleNotation(value);
+      if (!notation) return null;
+      const match = notation.replace(/\s+/g, "").match(/^1d20(?:([+\-]\d+))?$/i);
+      if (!match) return null;
+      const modifier = toNumber(match[1], 0);
+      return Number.isFinite(modifier) ? modifier : null;
+    };
+
+    const rollToHitValue = (attackName, value, rollMode = "normal") => {
+      if (/[dD]/.test(value)) {
+        const notation = extractSimpleNotation(value);
+        if (!notation) {
+          setDiceResult(`${attackName}: invalid to-hit dice notation.`, true);
+          return;
+        }
+        if (rollMode === "advantage" || rollMode === "disadvantage") {
+          const modifier = parseD20ModifierFromNotation(notation);
+          if (modifier == null) {
+            setDiceResult(`${attackName}: advantage/disadvantage supports to-hit values like 1d20+X.`, true);
+            return;
+          }
+          rollVisualD20(`${attackName} to-hit`, modifier, rollMode);
+          return;
+        }
+        rollVisualNotation(`${attackName} to-hit`, notation);
+        return;
+      }
+      const modifier = toNumber(value, Number.NaN);
+      if (!Number.isFinite(modifier)) {
+        setDiceResult(`${attackName}: invalid to-hit value.`, true);
+        return;
+      }
+      rollVisualD20(`${attackName} to-hit`, modifier, rollMode);
+    };
+
     app.querySelectorAll("[data-open-levelup]").forEach((button) => {
       button.addEventListener("click", () => openLevelUpModal(state));
     });
@@ -408,26 +824,119 @@ export function createEvents(deps) {
     });
 
     app.querySelectorAll("[data-save-roll-btn]").forEach((button) => {
-      button.addEventListener("click", () => {
-        const ability = button.dataset.saveRollBtn;
-        const mod = toNumber(state.derived.mods?.[ability], 0);
-        const isProf = Boolean(state.character.play?.saveProficiencies?.[ability]);
-        const bonus = mod + (isProf ? state.derived.proficiencyBonus : 0);
-        rollVisualD20(`${ability.toUpperCase()} save`, bonus);
-      });
+      bindClickAndLongPress(
+        button,
+        () => {
+          const ability = button.dataset.saveRollBtn;
+          const mod = toNumber(state.derived.mods?.[ability], 0);
+          const isProf = Boolean(state.character.play?.saveProficiencies?.[ability]);
+          const bonus = mod + (isProf ? state.derived.proficiencyBonus : 0);
+          rollVisualD20(`${ability.toUpperCase()} save`, bonus);
+        },
+        (rollMode) => {
+          const ability = button.dataset.saveRollBtn;
+          const mod = toNumber(state.derived.mods?.[ability], 0);
+          const isProf = Boolean(state.character.play?.saveProficiencies?.[ability]);
+          const bonus = mod + (isProf ? state.derived.proficiencyBonus : 0);
+          rollVisualD20(`${ability.toUpperCase()} save`, bonus, rollMode);
+        }
+      );
     });
 
     app.querySelectorAll("[data-skill-roll-btn]").forEach((button) => {
-      button.addEventListener("click", () => {
-        const key = button.dataset.skillRollBtn;
-        const skill = SKILLS.find((entry) => entry.key === key);
-        if (!skill) return;
-        const mod = toNumber(state.derived.mods?.[skill.ability], 0);
-        const isProf = Boolean(state.character.play?.skillProficiencies?.[key]);
-        const bonus = mod + (isProf ? state.derived.proficiencyBonus : 0);
-        rollVisualD20(skill.label, bonus);
-      });
+      bindClickAndLongPress(
+        button,
+        () => {
+          const key = button.dataset.skillRollBtn;
+          const skill = SKILLS.find((entry) => entry.key === key);
+          if (!skill) return;
+          const mod = toNumber(state.derived.mods?.[skill.ability], 0);
+          const isProf = Boolean(state.character.play?.skillProficiencies?.[key]);
+          const bonus = mod + (isProf ? state.derived.proficiencyBonus : 0);
+          rollVisualD20(skill.label, bonus);
+        },
+        (rollMode) => {
+          const key = button.dataset.skillRollBtn;
+          const skill = SKILLS.find((entry) => entry.key === key);
+          if (!skill) return;
+          const mod = toNumber(state.derived.mods?.[skill.ability], 0);
+          const isProf = Boolean(state.character.play?.skillProficiencies?.[key]);
+          const bonus = mod + (isProf ? state.derived.proficiencyBonus : 0);
+          rollVisualD20(skill.label, bonus, rollMode);
+        }
+      );
     });
+
+    const handleDeathSaveRoll = async (rollMode = "normal") => {
+      const result = await rollVisualD20("Death save", 0, rollMode);
+      if (!result || result.dieValue == null) return;
+
+      withUpdatedPlay(state, (play) => {
+        let success = Math.max(0, Math.min(3, toNumber(play.deathSavesSuccess, 0)));
+        let fail = Math.max(0, Math.min(3, toNumber(play.deathSavesFail, 0)));
+        const currentHp = play.hpCurrent == null ? state.derived.hp : toNumber(play.hpCurrent, state.derived.hp);
+        const maxHp = Math.max(0, state.derived.hp);
+
+        if (result.dieValue === 20) {
+          play.hpCurrent = Math.min(maxHp, Math.max(1, currentHp));
+          success = 0;
+          fail = 0;
+        } else if (result.dieValue === 1) {
+          fail = Math.min(3, fail + 2);
+        } else if (result.dieValue >= 10) {
+          success = Math.min(3, success + 1);
+        } else {
+          fail = Math.min(3, fail + 1);
+        }
+
+        play.deathSavesSuccess = success;
+        play.deathSavesFail = fail;
+      });
+    };
+
+    app.querySelectorAll("[data-ability-roll]").forEach((button) => {
+      bindClickAndLongPress(
+        button,
+        () => {
+          const ability = button.dataset.abilityRoll;
+          const mod = toNumber(state.derived.mods?.[ability], 0);
+          rollVisualD20(`${ability.toUpperCase()} check`, mod);
+        },
+        (rollMode) => {
+          const ability = button.dataset.abilityRoll;
+          const mod = toNumber(state.derived.mods?.[ability], 0);
+          rollVisualD20(`${ability.toUpperCase()} check`, mod, rollMode);
+        }
+      );
+    });
+
+    const initiativeButton = app.querySelector("[data-roll-initiative]");
+    if (initiativeButton) {
+      bindClickAndLongPress(
+        initiativeButton,
+        () => {
+          const bonus = toNumber(state.character.play?.initiativeBonus, 0);
+          rollVisualD20("Initiative", bonus);
+        },
+        (rollMode) => {
+          const bonus = toNumber(state.character.play?.initiativeBonus, 0);
+          rollVisualD20("Initiative", bonus, rollMode);
+        }
+      );
+    }
+
+    const deathSaveButton = app.querySelector("[data-roll-death-save]");
+    if (deathSaveButton) {
+      bindClickAndLongPress(
+        deathSaveButton,
+        () => {
+          handleDeathSaveRoll();
+        },
+        (rollMode) => {
+          handleDeathSaveRoll(rollMode);
+        }
+      );
+    }
 
     app.querySelectorAll("[data-spell-prepared-btn]").forEach((button) => {
       button.addEventListener("click", () => {
@@ -438,10 +947,14 @@ export function createEvents(deps) {
           const isPrepared = Boolean(current);
           const spell = getSpellByName(state, spellName);
           const isCantrip = toNumber(spell?.level, 0) === 0;
+          if (isCantrip) {
+            play.preparedSpells = { ...(play.preparedSpells ?? {}), [spellName]: true };
+            return;
+          }
           if (!isPrepared) {
             const preparedCount = countPreparedSpells(state, play);
             const preparedLimit = getPreparedSpellLimit(state);
-            if (!isCantrip && preparedCount >= preparedLimit) return;
+            if (preparedCount >= preparedLimit) return;
           }
           play.preparedSpells = { ...(play.preparedSpells ?? {}), [spellName]: !isPrepared };
         });
@@ -514,46 +1027,6 @@ export function createEvents(deps) {
       });
     });
 
-    app.querySelectorAll("[data-ability-roll]").forEach((button) => {
-      button.addEventListener("click", () => {
-        const ability = button.dataset.abilityRoll;
-        const mod = toNumber(state.derived.mods?.[ability], 0);
-        rollVisualD20(`${ability.toUpperCase()} check`, mod);
-      });
-    });
-
-    app.querySelector("[data-roll-initiative]")?.addEventListener("click", () => {
-      const bonus = toNumber(state.character.play?.initiativeBonus, 0);
-      rollVisualD20("Initiative", bonus);
-    });
-
-    app.querySelector("[data-roll-death-save]")?.addEventListener("click", async () => {
-      const result = await rollVisualD20("Death save", 0);
-      if (!result || result.dieValue == null) return;
-
-      withUpdatedPlay(state, (play) => {
-        let success = Math.max(0, Math.min(3, toNumber(play.deathSavesSuccess, 0)));
-        let fail = Math.max(0, Math.min(3, toNumber(play.deathSavesFail, 0)));
-        const currentHp = play.hpCurrent == null ? state.derived.hp : toNumber(play.hpCurrent, state.derived.hp);
-        const maxHp = Math.max(0, state.derived.hp);
-
-        if (result.dieValue === 20) {
-          play.hpCurrent = Math.min(maxHp, Math.max(1, currentHp));
-          success = 0;
-          fail = 0;
-        } else if (result.dieValue === 1) {
-          fail = Math.min(3, fail + 2);
-        } else if (result.dieValue >= 10) {
-          success = Math.min(3, success + 1);
-        } else {
-          fail = Math.min(3, fail + 1);
-        }
-
-        play.deathSavesSuccess = success;
-        play.deathSavesFail = fail;
-      });
-    });
-
     app.querySelectorAll("[data-slot-delta]").forEach((button) => {
       button.addEventListener("click", () => {
         const level = button.dataset.slotDelta;
@@ -599,46 +1072,85 @@ export function createEvents(deps) {
     });
 
     app.querySelectorAll("[data-attack-roll]").forEach((button) => {
-      button.addEventListener("click", () => {
-        const [idxStr, field] = String(button.dataset.attackRoll || "").split(":");
-        const idx = toNumber(idxStr, -1);
+      const [idxStr, field] = String(button.dataset.attackRoll || "").split(":");
+      const idx = toNumber(idxStr, -1);
+      const getAttackContext = () => {
         const attack = state.character.play?.attacks?.[idx] ?? null;
-        if (!attack) return;
-
+        if (!attack) return null;
         const attackName = attack.name?.trim() || `Attack ${idx + 1}`;
         const value = String(attack[field] || "").trim();
         if (!value) {
           setDiceResult(`${attackName}: no roll value entered.`, true);
+          return null;
+        }
+        return { attackName, value };
+      };
+      if (field === "toHit") {
+        bindClickAndLongPress(
+          button,
+          () => {
+            const context = getAttackContext();
+            if (!context) return;
+            rollToHitValue(context.attackName, context.value);
+          },
+          (rollMode) => {
+            const context = getAttackContext();
+            if (!context) return;
+            rollToHitValue(context.attackName, context.value, rollMode);
+          }
+        );
+        return;
+      }
+      button.addEventListener("click", () => {
+        const context = getAttackContext();
+        if (!context) return;
+        const notation = extractSimpleNotation(context.value);
+        if (!notation) {
+          setDiceResult(`${context.attackName}: invalid damage dice notation.`, true);
           return;
         }
+        rollVisualNotation(`${context.attackName} damage`, notation);
+      });
+    });
 
-        if (field === "toHit") {
-          if (/[dD]/.test(value)) {
-            const notation = extractSimpleNotation(value);
-            if (!notation) {
-              setDiceResult(`${attackName}: invalid to-hit dice notation.`, true);
-              return;
-            }
-            rollVisualNotation(`${attackName} to-hit`, notation);
-            return;
+    app.querySelectorAll("[data-auto-attack-roll]").forEach((button) => {
+      const [, field] = String(button.dataset.autoAttackRoll || "").split(":");
+      const getAttackContext = () => {
+        const attackName = String(button.dataset.autoAttackName || "Equipped Weapon").trim();
+        const toHit = String(button.dataset.autoAttackToHit || "").trim();
+        const damage = String(button.dataset.autoAttackDamage || "").trim();
+        const value = field === "toHit" ? toHit : damage;
+        if (!value) {
+          setDiceResult(`${attackName}: no roll value entered.`, true);
+          return null;
+        }
+        return { attackName, value };
+      };
+      if (field === "toHit") {
+        bindClickAndLongPress(
+          button,
+          () => {
+            const context = getAttackContext();
+            if (!context) return;
+            rollToHitValue(context.attackName, context.value);
+          },
+          (rollMode) => {
+            const context = getAttackContext();
+            if (!context) return;
+            rollToHitValue(context.attackName, context.value, rollMode);
           }
-          const modifier = toNumber(value, Number.NaN);
-          if (!Number.isFinite(modifier)) {
-            setDiceResult(`${attackName}: invalid to-hit value.`, true);
-            return;
-          }
-          rollVisualD20(`${attackName} to-hit`, modifier);
+        );
+        return;
+      }
+      button.addEventListener("click", () => {
+        const context = getAttackContext();
+        if (!context) return;
+        const notation = extractSimpleNotation(context.value);
+        if (!notation) {
+          setDiceResult(`${context.attackName}: invalid damage dice notation.`, true);
           return;
         }
-
-        if (field === "damage") {
-          const notation = extractSimpleNotation(value);
-          if (!notation) {
-            setDiceResult(`${attackName}: invalid damage dice notation.`, true);
-            return;
-          }
-          rollVisualNotation(`${attackName} damage`, notation);
-        }
+        rollVisualNotation(`${context.attackName} damage`, notation);
       });
     });
 
@@ -654,6 +1166,16 @@ export function createEvents(deps) {
     });
 
     app.querySelector("#play-open-items")?.addEventListener("click", () => openItemModal(state));
+    app.querySelectorAll("[data-toggle-item-equipped]").forEach((button) => {
+      button.addEventListener("click", () => {
+        toggleInventoryItemEquipped(button.dataset.toggleItemEquipped);
+      });
+    });
+    app.querySelectorAll("[data-remove-item-index]").forEach((button) => {
+      button.addEventListener("click", () => {
+        removeInventoryItemByIndex(button.dataset.removeItemIndex);
+      });
+    });
 
     app.querySelector("#add-condition")?.addEventListener("click", () => {
       const input = app.querySelector("#play-condition-input");

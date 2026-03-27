@@ -20,6 +20,18 @@ function toNumber(value, fallback = 0) {
   return Number.isFinite(out) ? out : fallback;
 }
 
+function getCatalogSpell(state, spellName) {
+  const target = String(spellName ?? "").trim().toLowerCase();
+  if (!target) return null;
+  const spells = Array.isArray(state?.catalogs?.spells) ? state.catalogs.spells : [];
+  return spells.find((spell) => String(spell?.name ?? "").trim().toLowerCase() === target) ?? null;
+}
+
+function isCantripSpell(state, spellName) {
+  const spell = getCatalogSpell(state, spellName);
+  return toNumber(spell?.level, 0) === 0;
+}
+
 function getDefaultSpellSlots() {
   return SPELL_SLOT_LEVELS.reduce((acc, lvl) => {
     acc[String(lvl)] = { max: 0, used: 0 };
@@ -35,6 +47,12 @@ function getDefaultPlayState() {
     initiativeBonus: 0,
     saveProficiencies: {},
     skillProficiencies: {},
+    autoSaveProficiencies: {},
+    autoSkillProficiencies: {},
+    saveProficiencyOverrides: {},
+    skillProficiencyOverrides: {},
+    autoAbilityBonuses: {},
+    autoChoiceSelections: {},
     preparedSpells: {},
     spellSlots: getDefaultSpellSlots(),
     spellSlotMaxOverrides: {},
@@ -50,7 +68,37 @@ function getDefaultPlayState() {
   };
 }
 
+function createInventoryEntryId() {
+  const stamp = Date.now().toString(36);
+  const rand = Math.random().toString(36).slice(2, 8);
+  return `inv_${stamp}_${rand}`;
+}
+
+function normalizeInventoryEntry(entry) {
+  if (typeof entry === "string") return entry;
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
+  const name = String(entry.name ?? "").trim();
+  if (!name) return null;
+  return {
+    ...entry,
+    id: String(entry.id ?? "").trim() || createInventoryEntryId(),
+    name,
+    equipped: Boolean(entry.equipped),
+  };
+}
+
 function normalizeCharacter(character) {
+  const incomingAutoChoiceSelections =
+    character.play?.autoChoiceSelections && typeof character.play.autoChoiceSelections === "object" && !Array.isArray(character.play.autoChoiceSelections)
+      ? character.play.autoChoiceSelections
+      : {};
+  const normalizedAutoChoiceSelections = Object.fromEntries(
+    Object.entries(incomingAutoChoiceSelections).map(([sourceKey, choiceMap]) => [
+      sourceKey,
+      choiceMap && typeof choiceMap === "object" && !Array.isArray(choiceMap) ? { ...choiceMap } : {},
+    ])
+  );
+
   const incomingClassSelection =
     character.classSelection && typeof character.classSelection === "object" ? character.classSelection : {};
   const incomingSubclass =
@@ -97,6 +145,28 @@ function normalizeCharacter(character) {
       character.play?.featureUses && typeof character.play.featureUses === "object"
         ? { ...character.play.featureUses }
         : {},
+    autoSaveProficiencies:
+      character.play?.autoSaveProficiencies && typeof character.play.autoSaveProficiencies === "object"
+        ? { ...character.play.autoSaveProficiencies }
+        : {},
+    autoSkillProficiencies:
+      character.play?.autoSkillProficiencies && typeof character.play.autoSkillProficiencies === "object"
+        ? { ...character.play.autoSkillProficiencies }
+        : {},
+    saveProficiencyOverrides:
+      character.play?.saveProficiencyOverrides && typeof character.play.saveProficiencyOverrides === "object"
+        ? { ...character.play.saveProficiencyOverrides }
+        : {},
+    skillProficiencyOverrides:
+      character.play?.skillProficiencyOverrides && typeof character.play.skillProficiencyOverrides === "object"
+        ? { ...character.play.skillProficiencyOverrides }
+        : {},
+    autoAbilityBonuses:
+      character.play?.autoAbilityBonuses && typeof character.play.autoAbilityBonuses === "object"
+        ? { ...character.play.autoAbilityBonuses }
+        : {},
+    autoChoiceSelections:
+      normalizedAutoChoiceSelections,
   };
 
   return {
@@ -104,7 +174,11 @@ function normalizeCharacter(character) {
     ...character,
     id: typeof character.id === "string" && character.id.trim() ? character.id.trim() : null,
     abilities: { ...base.abilities, ...(character.abilities ?? {}) },
-    inventory: Array.isArray(character.inventory) ? character.inventory : [],
+    abilityBase:
+      character.abilityBase && typeof character.abilityBase === "object"
+        ? { ...base.abilities, ...character.abilityBase }
+        : { ...base.abilities, ...(character.abilities ?? {}) },
+    inventory: Array.isArray(character.inventory) ? character.inventory.map((entry) => normalizeInventoryEntry(entry)).filter(Boolean) : [],
     spells: Array.isArray(character.spells) ? character.spells : [],
     multiclass: Array.isArray(character.multiclass) ? character.multiclass : [],
     feats: Array.isArray(character.feats)
@@ -178,6 +252,14 @@ export function createInitialCharacter() {
     class: "",
     subclass: "",
     abilities: {
+      str: 10,
+      dex: 10,
+      con: 10,
+      int: 10,
+      wis: 10,
+      cha: 10,
+    },
+    abilityBase: {
       str: 10,
       dex: 10,
       con: 10,
@@ -261,9 +343,13 @@ export function createStore(initialState) {
     },
     updateAbility(key, value) {
       if (!ABILITIES.includes(key)) return;
+      const nextScore = Math.max(1, Math.min(30, Number(value) || 0));
+      const autoBonus = toNumber(state.character.play?.autoAbilityBonuses?.[key], 0);
+      const nextBase = Math.max(1, Math.min(30, nextScore - autoBonus));
       state.character = {
         ...state.character,
-        abilities: { ...state.character.abilities, [key]: Number(value) || 0 },
+        abilityBase: { ...(state.character.abilityBase ?? {}), [key]: nextBase },
+        abilities: { ...state.character.abilities, [key]: nextScore },
       };
       notify();
     },
@@ -290,31 +376,53 @@ export function createStore(initialState) {
     },
     setSpellPrepared(spellName, prepared) {
       if (!spellName) return;
+      const nextPrepared = isCantripSpell(state, spellName) ? true : Boolean(prepared);
       state.character = {
         ...state.character,
         play: {
           ...state.character.play,
           preparedSpells: {
             ...(state.character.play?.preparedSpells ?? {}),
-            [spellName]: Boolean(prepared),
+            [spellName]: nextPrepared,
           },
         },
       };
       notify();
     },
-    addItem(itemName) {
-      if (!itemName) return;
+    addItem(itemEntry) {
+      if (!itemEntry) return;
+      const normalized = normalizeInventoryEntry(itemEntry);
+      if (normalized == null && typeof itemEntry !== "string") return;
       state.character = {
         ...state.character,
-        inventory: [...state.character.inventory, itemName],
+        inventory: [...state.character.inventory, normalized ?? String(itemEntry)],
       };
       notify();
     },
-    removeItem(itemName) {
-      const idx = state.character.inventory.indexOf(itemName);
-      if (idx < 0) return;
+    removeItem(itemSelector) {
+      const current = Array.isArray(state.character.inventory) ? state.character.inventory : [];
+      let idx = -1;
+      if (typeof itemSelector === "number") idx = itemSelector;
+      else if (typeof itemSelector === "string") {
+        idx = current.findIndex((entry) => {
+          if (typeof entry === "string") return entry === itemSelector;
+          return String(entry?.id ?? "").trim() === itemSelector || String(entry?.name ?? "").trim() === itemSelector;
+        });
+      }
+      if (idx < 0 || idx >= current.length) return;
       const next = [...state.character.inventory];
       next.splice(idx, 1);
+      state.character = { ...state.character, inventory: next };
+      notify();
+    },
+    toggleItemEquipped(itemId) {
+      const id = String(itemId ?? "").trim();
+      if (!id) return;
+      const next = (state.character.inventory ?? []).map((entry) => {
+        if (!entry || typeof entry !== "object" || Array.isArray(entry)) return entry;
+        if (String(entry.id ?? "").trim() !== id) return entry;
+        return { ...entry, equipped: !Boolean(entry.equipped) };
+      });
       state.character = { ...state.character, inventory: next };
       notify();
     },

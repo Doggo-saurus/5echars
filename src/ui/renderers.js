@@ -19,6 +19,7 @@ export function createRenderers(deps) {
     getSpellByName,
     getSpellLevelLabel,
     spellSchoolLabels,
+    getRuleDescriptionLines,
     doesClassUsePreparedSpells,
     getPreparedSpellLimit,
     countPreparedSpells,
@@ -33,6 +34,7 @@ export function createRenderers(deps) {
     renderCharacterHistorySelector,
     renderPersistenceNotice,
     getModeToggle,
+    getAutoAttacks,
   } = deps;
 
   function renderSaveRowsImpl(state, options = {}) {
@@ -149,6 +151,357 @@ export function createRenderers(deps) {
       .join("");
   }
 
+  function findCatalogEntryByName(entries, selectedName) {
+    if (!Array.isArray(entries)) return null;
+    const normalized = String(selectedName ?? "").trim().toLowerCase();
+    if (!normalized) return null;
+    return entries.find((entry) => String(entry?.name ?? "").trim().toLowerCase() === normalized) ?? null;
+  }
+
+  function normalizeAbilityKey(value) {
+    const key = String(value ?? "").trim().toLowerCase();
+    return saveAbilities.includes(key) ? key : "";
+  }
+
+  function normalizeSkillKey(value) {
+    const token = String(value ?? "")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z]/g, "");
+    const skillMatch =
+      skills.find((skill) => String(skill.key ?? "").toLowerCase().replace(/[^a-z]/g, "") === token)
+      ?? skills.find((skill) => String(skill.label ?? "").toLowerCase().replace(/[^a-z]/g, "") === token);
+    return skillMatch?.key ?? "";
+  }
+
+  function isAbilityScoreImprovementSlot(slot) {
+    return /ability score improvement/i.test(String(slot?.slotType ?? ""));
+  }
+
+  function getAsiChoiceSourceKey(slotId) {
+    return `asi:${String(slotId ?? "").trim()}`;
+  }
+
+  function getAutoChoiceSelectionMap(character, sourceKey) {
+    const selections = character?.play?.autoChoiceSelections;
+    if (!selections || typeof selections !== "object" || Array.isArray(selections)) return {};
+    const sourceSelections = selections[sourceKey];
+    if (!sourceSelections || typeof sourceSelections !== "object" || Array.isArray(sourceSelections)) return {};
+    return sourceSelections;
+  }
+
+  function getSelectedChoiceValues(character, sourceKey, choiceId, from, count) {
+    const selectionMap = getAutoChoiceSelectionMap(character, sourceKey);
+    const storedRaw = selectionMap[choiceId];
+    const stored = (Array.isArray(storedRaw) ? storedRaw : [])
+      .map((entry) => String(entry ?? "").trim().toLowerCase())
+      .filter((entry) => from.includes(entry));
+    const uniqueStored = stored.filter((entry, index) => stored.indexOf(entry) === index);
+    const normalizedByOrder = from.filter((entry) => uniqueStored.includes(entry));
+    if (!normalizedByOrder.length) return from.slice(0, Math.max(0, Math.min(from.length, count)));
+    return normalizedByOrder.slice(0, Math.max(0, Math.min(from.length, count)));
+  }
+
+  function getStoredChoiceValuesOnly(character, sourceKey, choiceId, from, count, options = {}) {
+    const allowDuplicates = Boolean(options?.allowDuplicates);
+    const selectionMap = getAutoChoiceSelectionMap(character, sourceKey);
+    const storedRaw = selectionMap[choiceId];
+    const stored = (Array.isArray(storedRaw) ? storedRaw : [])
+      .map((entry) => String(entry ?? "").trim().toLowerCase())
+      .filter((entry) => from.includes(entry));
+    if (allowDuplicates) return stored.slice(0, Math.max(0, Math.min(from.length, count)));
+    const uniqueStored = stored.filter((entry, index) => stored.indexOf(entry) === index);
+    const normalizedByOrder = from.filter((entry) => uniqueStored.includes(entry));
+    return normalizedByOrder.slice(0, Math.max(0, Math.min(from.length, count)));
+  }
+
+  function applyAbilityChoiceBonuses(choice, bonuses, context = {}) {
+    if (!choice || typeof choice !== "object") return;
+    const weighted = choice.weighted && typeof choice.weighted === "object" ? choice.weighted : null;
+    const fromRaw = Array.isArray(weighted?.from) ? weighted.from : Array.isArray(choice.from) ? choice.from : [];
+    const from = fromRaw
+      .map((entry) => normalizeAbilityKey(entry))
+      .filter(Boolean)
+      .filter((ability, index, list) => list.indexOf(ability) === index);
+    if (!from.length) return;
+    const weightValues = Array.isArray(weighted?.weights)
+      ? weighted.weights.map((entry) => Math.max(0, toNumber(entry, 0))).filter((entry) => entry > 0)
+      : [];
+    const fallbackAmount = Math.max(1, toNumber(choice.amount ?? weighted?.amount, 1));
+    const count = Math.max(1, Math.min(from.length, toNumber(choice.count ?? weighted?.count, weightValues.length || 1)));
+    const choiceId = `a:${context.optionIndex ?? 0}:choose:${context.choiceIndex ?? 0}`;
+    const selected = getSelectedChoiceValues(context.character, context.sourceKey, choiceId, from, count);
+    for (let idx = 0; idx < selected.length; idx += 1) {
+      const ability = selected[idx];
+      if (!ability) continue;
+      const amount = Math.max(1, toNumber(weightValues[idx], fallbackAmount));
+      bonuses[ability] = Math.max(0, toNumber(bonuses[ability], 0) + amount);
+    }
+  }
+
+  function getAbilityBonusesSummary(entry, sourceKey, character) {
+    const bonuses = saveAbilities.reduce((acc, ability) => {
+      acc[ability] = 0;
+      return acc;
+    }, {});
+    const abilityOptions = Array.isArray(entry?.ability) ? entry.ability : [];
+    const optionIndex = abilityOptions.findIndex((option) => option && typeof option === "object");
+    const selected = optionIndex >= 0 ? abilityOptions[optionIndex] : null;
+    if (!selected) return "";
+    let abilityChoiceIndex = 0;
+    Object.entries(selected).forEach(([key, value]) => {
+      const ability = normalizeAbilityKey(key);
+      if (ability) {
+        bonuses[ability] = Math.max(0, toNumber(bonuses[ability], 0) + Math.max(0, toNumber(value, 0)));
+        return;
+      }
+      if (key !== "choose") return;
+      if (Array.isArray(value)) {
+        value.forEach((choice) => {
+          applyAbilityChoiceBonuses(choice, bonuses, { character, sourceKey, optionIndex, choiceIndex: abilityChoiceIndex });
+          abilityChoiceIndex += 1;
+        });
+      } else if (value && typeof value === "object") {
+        applyAbilityChoiceBonuses(value, bonuses, { character, sourceKey, optionIndex, choiceIndex: abilityChoiceIndex });
+      }
+    });
+    return saveAbilities
+      .filter((ability) => toNumber(bonuses[ability], 0) > 0)
+      .map((ability) => `${abilityLabels[ability] ?? ability.toUpperCase()} +${toNumber(bonuses[ability], 0)}`)
+      .join(", ");
+  }
+
+  function getSkillProficiencySummary(entry, sourceKey, character) {
+    const options = Array.isArray(entry?.skillProficiencies) ? entry.skillProficiencies : [];
+    const optionIndex = options.findIndex((option) => option && typeof option === "object");
+    const selected = optionIndex >= 0 ? options[optionIndex] : null;
+    if (!selected) return "";
+    const activeSkills = new Set();
+    Object.entries(selected).forEach(([key, value]) => {
+      if (key === "choose" || key === "any") return;
+      if (value !== true) return;
+      const skillKey = normalizeSkillKey(key);
+      if (skillKey) activeSkills.add(skillKey);
+    });
+    const anyCount = Math.max(0, toNumber(selected.any, 0));
+    if (anyCount > 0) {
+      const available = skills.map((skill) => skill.key).filter((skillKey) => !activeSkills.has(skillKey));
+      const selectedAny = getSelectedChoiceValues(character, sourceKey, `s:${optionIndex}:any`, available, anyCount);
+      selectedAny.forEach((skillKey) => activeSkills.add(skillKey));
+    }
+    const choose = selected.choose && typeof selected.choose === "object" ? selected.choose : null;
+    if (choose) {
+      const from = (Array.isArray(choose.from) ? choose.from : [])
+        .map((item) => normalizeSkillKey(item))
+        .filter(Boolean)
+        .filter((skillKey, index, list) => list.indexOf(skillKey) === index);
+      const count = Math.max(1, toNumber(choose.count, 1));
+      const available = from.filter((skillKey) => !activeSkills.has(skillKey));
+      const selectedChoose = getSelectedChoiceValues(character, sourceKey, `s:${optionIndex}:choose`, available, count);
+      selectedChoose.forEach((skillKey) => activeSkills.add(skillKey));
+    }
+    return skills
+      .filter((skill) => activeSkills.has(skill.key))
+      .map((skill) => skill.label)
+      .join(", ");
+  }
+
+  function renderChoiceCheckboxes(sourceKey, choiceId, count, options, selectedValues, labelFn) {
+    return `
+      <div class="auto-choice-group">
+        <p class="muted auto-choice-label">Pick ${count}</p>
+        <div class="auto-choice-options">
+          ${options
+            .map((optionValue) => {
+              const option = String(optionValue ?? "").trim().toLowerCase();
+              if (!option) return "";
+              const checked = selectedValues.includes(option);
+              return `
+                <label class="auto-choice-option">
+                  <input
+                    type="checkbox"
+                    data-auto-choice-input="1"
+                    data-auto-choice-source="${esc(sourceKey)}"
+                    data-auto-choice-id="${esc(choiceId)}"
+                    data-auto-choice-value="${esc(option)}"
+                    data-auto-choice-max="${esc(count)}"
+                    ${checked ? "checked" : ""}
+                  >
+                  <span>${esc(labelFn(option))}</span>
+                </label>
+              `;
+            })
+            .join("")}
+        </div>
+      </div>
+    `;
+  }
+
+  function renderChoiceSelects(sourceKey, choiceId, count, options, selectedValues, labelFn) {
+    return `
+      <div class="auto-choice-group">
+        <p class="muted auto-choice-label">Spend ${count} points</p>
+        <div class="auto-choice-selects">
+          ${Array.from({ length: count }, (_, index) => {
+            const selected = String(selectedValues[index] ?? "").trim().toLowerCase();
+            return `
+              <label class="auto-choice-select">
+                <span class="muted">Point ${index + 1}</span>
+                <select
+                  data-asi-choice-select="1"
+                  data-auto-choice-source="${esc(sourceKey)}"
+                  data-auto-choice-id="${esc(choiceId)}"
+                  data-auto-choice-max="${esc(count)}"
+                >
+                  <option value="">(none)</option>
+                  ${options
+                    .map((optionValue) => {
+                      const option = String(optionValue ?? "").trim().toLowerCase();
+                      if (!option) return "";
+                      const isSelected = option === selected;
+                      return `<option value="${esc(option)}" ${isSelected ? "selected" : ""}>${esc(labelFn(option))}</option>`;
+                    })
+                    .join("")}
+                </select>
+              </label>
+            `;
+          }).join("")}
+        </div>
+      </div>
+    `;
+  }
+
+  function renderAutoChoiceEditorsForEntity(entry, sourceKey, character) {
+    const blocks = [];
+    const abilityOptions = Array.isArray(entry?.ability) ? entry.ability : [];
+    const abilityOptionIndex = abilityOptions.findIndex((option) => option && typeof option === "object");
+    const abilityOption = abilityOptionIndex >= 0 ? abilityOptions[abilityOptionIndex] : null;
+    if (abilityOption && abilityOption.choose) {
+      const choices = Array.isArray(abilityOption.choose) ? abilityOption.choose : [abilityOption.choose];
+      choices.forEach((choice, choiceIndex) => {
+        if (!choice || typeof choice !== "object") return;
+        const weighted = choice.weighted && typeof choice.weighted === "object" ? choice.weighted : null;
+        const fromRaw = Array.isArray(weighted?.from) ? weighted.from : Array.isArray(choice.from) ? choice.from : [];
+        const from = fromRaw
+          .map((entryValue) => normalizeAbilityKey(entryValue))
+          .filter(Boolean)
+          .filter((ability, index, list) => list.indexOf(ability) === index);
+        if (!from.length) return;
+        const weightValues = Array.isArray(weighted?.weights)
+          ? weighted.weights.map((entryValue) => Math.max(0, toNumber(entryValue, 0))).filter((entryValue) => entryValue > 0)
+          : [];
+        const count = Math.max(1, Math.min(from.length, toNumber(choice.count ?? weighted?.count, weightValues.length || 1)));
+        const choiceId = `a:${abilityOptionIndex}:choose:${choiceIndex}`;
+        const selected = getSelectedChoiceValues(character, sourceKey, choiceId, from, count);
+        blocks.push(`
+          <div class="auto-choice-card">
+            <p class="muted"><strong>${esc(sourceKey === "race" ? "Race" : "Background")} ability choice</strong></p>
+            ${renderChoiceCheckboxes(sourceKey, choiceId, count, from, selected, (ability) => abilityLabels[ability] ?? ability.toUpperCase())}
+          </div>
+        `);
+      });
+    }
+
+    const skillOptions = Array.isArray(entry?.skillProficiencies) ? entry.skillProficiencies : [];
+    const skillOptionIndex = skillOptions.findIndex((option) => option && typeof option === "object");
+    const skillOption = skillOptionIndex >= 0 ? skillOptions[skillOptionIndex] : null;
+    if (skillOption && typeof skillOption === "object") {
+      const choose = skillOption.choose && typeof skillOption.choose === "object" ? skillOption.choose : null;
+      const anyCount = Math.max(0, toNumber(skillOption.any, 0));
+      const fixedSkills = Object.entries(skillOption)
+        .filter(([key, value]) => key !== "choose" && key !== "any" && value === true)
+        .map(([key]) => normalizeSkillKey(key))
+        .filter(Boolean);
+      const taken = new Set(fixedSkills);
+      if (anyCount > 0) {
+        const pool = skills.map((skill) => skill.key).filter((skillKey) => !taken.has(skillKey));
+        const choiceId = `s:${skillOptionIndex}:any`;
+        const selected = getSelectedChoiceValues(character, sourceKey, choiceId, pool, anyCount);
+        selected.forEach((skillKey) => taken.add(skillKey));
+        blocks.push(`
+          <div class="auto-choice-card">
+            <p class="muted"><strong>${esc(sourceKey === "race" ? "Race" : "Background")} skill choice</strong></p>
+            ${renderChoiceCheckboxes(sourceKey, choiceId, anyCount, pool, selected, (skillKey) => skills.find((skill) => skill.key === skillKey)?.label ?? skillKey)}
+          </div>
+        `);
+      }
+      if (choose) {
+        const from = (Array.isArray(choose.from) ? choose.from : [])
+          .map((entryValue) => normalizeSkillKey(entryValue))
+          .filter(Boolean)
+          .filter((skillKey, index, list) => list.indexOf(skillKey) === index)
+          .filter((skillKey) => !taken.has(skillKey));
+        const count = Math.max(1, Math.min(from.length, toNumber(choose.count, 1)));
+        if (from.length && count > 0) {
+          const choiceId = `s:${skillOptionIndex}:choose`;
+          const selected = getSelectedChoiceValues(character, sourceKey, choiceId, from, count);
+          blocks.push(`
+            <div class="auto-choice-card">
+              <p class="muted"><strong>${esc(sourceKey === "race" ? "Race" : "Background")} skill choice</strong></p>
+              ${renderChoiceCheckboxes(
+                sourceKey,
+                choiceId,
+                count,
+                from,
+                selected,
+                (skillKey) => skills.find((skill) => skill.key === skillKey)?.label ?? skillKey
+              )}
+            </div>
+          `);
+        }
+      }
+    }
+    return blocks.join("");
+  }
+
+  function normalizeInventoryEntry(entry, index) {
+    if (typeof entry === "string") {
+      return {
+        id: "",
+        index,
+        name: entry,
+        equipped: false,
+        isLegacy: true,
+      };
+    }
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
+    const name = String(entry.name ?? "").trim();
+    if (!name) return null;
+    return {
+      id: String(entry.id ?? "").trim(),
+      index,
+      name,
+      equipped: Boolean(entry.equipped),
+      isLegacy: false,
+    };
+  }
+
+  function renderInventoryRowsImpl(character) {
+    const entries = (Array.isArray(character?.inventory) ? character.inventory : [])
+      .map((entry, index) => normalizeInventoryEntry(entry, index))
+      .filter(Boolean);
+    if (!entries.length) return "<span class='muted'>No items selected.</span>";
+    return entries
+      .map((entry) => {
+        return `
+        <div class="inventory-row">
+          <div class="inventory-row-main">
+            <span class="inventory-item-name">${esc(entry.name)}</span>
+          </div>
+          <div class="inventory-row-actions">
+            ${
+              entry.isLegacy
+                ? `<button type="button" class="btn secondary" disabled title="Legacy entries do not support equip state">Legacy</button>`
+                : `<button type="button" class="btn secondary" data-toggle-item-equipped="${esc(entry.id)}">${entry.equipped ? "Unequip" : "Equip"}</button>`
+            }
+            <button type="button" class="btn secondary" data-remove-item-index="${esc(entry.index)}">Remove</button>
+          </div>
+        </div>
+      `;
+      })
+      .join("");
+  }
+
   function renderBuildSpellSlotRowImpl(play, defaults, level) {
     const { max, used, isOverridden } = getSpellSlotValues(play, defaults, level);
     const defaultMax = Math.max(0, toNumber(defaults?.[String(level)], 0));
@@ -222,13 +575,14 @@ export function createRenderers(deps) {
     (state.character.spells ?? []).forEach((name) => {
       const spell = getSpellByName(state, name);
       const level = spell ? toNumber(spell.level, 0) : 99;
+      const isCantrip = level === 0;
       const existing = play.preparedSpells?.[name];
-      const isPrepared = usesPreparedSpells ? Boolean(existing) : true;
+      const isPrepared = usesPreparedSpells ? (isCantrip ? true : Boolean(existing)) : true;
       const slotInfo = level > 0 ? getSpellSlotValues(play, defaultSpellSlots, level) : { max: Infinity, used: 0 };
       const hasSlotsAvailable = level === 0 || toNumber(slotInfo.max, 0) - toNumber(slotInfo.used, 0) > 0;
       const stateClass = !isPrepared ? "is-unprepared" : hasSlotsAvailable ? "is-prepared-available" : "is-prepared-unavailable";
-      const canToggleToPrepared = isPrepared || level === 0 || preparedCount < preparedLimit;
-      const row = { name, spell, level, isPrepared, canToggleToPrepared };
+      const canTogglePrepared = !isCantrip && (isPrepared || preparedCount < preparedLimit);
+      const row = { name, spell, level, isPrepared, canTogglePrepared, isCantrip };
       const list = grouped.get(level) ?? [];
       list.push({ ...row, stateClass, hasSlotsAvailable });
       grouped.set(level, list);
@@ -242,14 +596,18 @@ export function createRenderers(deps) {
         const title = level === 99 ? "Unknown Level" : getSpellLevelLabel(level);
         const body = rows
           .sort((a, b) => a.name.localeCompare(b.name))
-          .map(({ name, spell, isPrepared, stateClass, hasSlotsAvailable, canToggleToPrepared }) => {
+          .map(({ name, spell, isPrepared, stateClass, hasSlotsAvailable, canTogglePrepared, isCantrip }) => {
             const school = spell?.school ? spellSchoolLabels[spell.school] ?? spell.school : "";
             const source = spell?.sourceLabel ?? spell?.source ?? "";
             const meta = [school, source].filter(Boolean).join(" - ");
             const knownTag = usesPreparedSpells ? (isPrepared ? "Prepared" : "Unprepared") : "Known";
             const slotTag = toNumber(spell?.level, 0) > 0 && isPrepared ? (hasSlotsAvailable ? "Slots OK" : "No Slots") : "";
             const knownAndSlotTag = slotTag ? `${knownTag} · ${slotTag}` : knownTag;
-            const prepButtonTitle = !isPrepared && !canToggleToPrepared ? "Preparation limit reached" : "Toggle prepared";
+            const prepButtonTitle = isCantrip
+              ? "Cantrips are always prepared"
+              : !isPrepared && !canTogglePrepared
+                ? "Preparation limit reached"
+                : "Toggle prepared";
             return `
             <div class="spell-row ${stateClass}">
               ${
@@ -261,7 +619,7 @@ export function createRenderers(deps) {
                   data-spell-prepared-btn="${esc(name)}"
                   aria-pressed="${isPrepared ? "true" : "false"}"
                   title="${prepButtonTitle}"
-                  ${!canToggleToPrepared ? "disabled" : ""}
+                  ${!canTogglePrepared ? "disabled" : ""}
                 >
                   ${isPrepared ? "P" : "-"}
                 </button>
@@ -301,35 +659,74 @@ export function createRenderers(deps) {
     const skillsHtml = renderSkillRowsImpl(state, { canToggle: false, includeRollButtons: true });
 
     const attackMode = play.attackMode === "edit" ? "edit" : "view";
-    const attacksHtml = (play.attacks ?? [])
+    const autoAttacksRaw = getAutoAttacks?.(state);
+    const autoAttacks = Array.isArray(autoAttacksRaw) ? autoAttacksRaw : [];
+    const manualAttacks = Array.isArray(play.attacks) ? play.attacks : [];
+    const attacksHtml = [...autoAttacks, ...manualAttacks]
       .map((attack, idx) => {
+        const isAutoAttack = attack?.source === "auto";
         const attackName = attack.name?.trim() || `Attack ${idx + 1}`;
         if (attackMode === "edit") {
+          if (isAutoAttack) {
+            return `
+          <div class="attack-card attack-card-view">
+            <div class="attack-row-top">
+              <strong class="attack-title">${esc(attackName)}</strong>
+            </div>
+            <p class="attack-help muted">Auto from equipped weapon (${String(attack.ability ?? "").toUpperCase()}${attack.proficient ? ", proficient" : ", not proficient"}).</p>
+            <div class="attack-row-stats attack-row-stats-view">
+              <button
+                type="button"
+                class="pill pill-btn attack-pill"
+                data-auto-attack-roll="${esc(idx)}:toHit"
+                data-auto-attack-name="${esc(attackName)}"
+                data-auto-attack-to-hit="${esc(attack.toHit || "")}"
+                data-auto-attack-damage="${esc(attack.damage || "")}"
+                aria-label="Roll ${esc(attackName)} to hit"
+              >
+                To Hit: ${esc(attack.toHit || "n/a")}
+              </button>
+              <button
+                type="button"
+                class="pill pill-btn attack-pill"
+                data-auto-attack-roll="${esc(idx)}:damage"
+                data-auto-attack-name="${esc(attackName)}"
+                data-auto-attack-to-hit="${esc(attack.toHit || "")}"
+                data-auto-attack-damage="${esc(attack.damage || "")}"
+                aria-label="Roll ${esc(attackName)} damage"
+              >
+                Damage: ${esc(attack.damage || "n/a")}
+              </button>
+            </div>
+          </div>
+        `;
+          }
+          const manualIdx = idx - autoAttacks.length;
           return `
           <div class="attack-card">
             <div class="attack-row-top">
               <input
-                id="attack-name-${idx}"
+                id="attack-name-${manualIdx}"
                 placeholder="Attack name"
                 value="${esc(attack.name ?? "")}"
-                data-attack-field="${idx}:name"
+                data-attack-field="${manualIdx}:name"
               >
               <div class="attack-row-actions">
-                <button type="button" class="btn secondary" data-remove-attack="${idx}">Remove</button>
+                <button type="button" class="btn secondary" data-remove-attack="${manualIdx}">Remove</button>
               </div>
             </div>
             <div class="attack-row-stats">
               <input
-                id="attack-hit-${idx}"
+                id="attack-hit-${manualIdx}"
                 placeholder="+To hit"
                 value="${esc(attack.toHit ?? "")}"
-                data-attack-field="${idx}:toHit"
+                data-attack-field="${manualIdx}:toHit"
               >
               <input
-                id="attack-dmg-${idx}"
+                id="attack-dmg-${manualIdx}"
                 placeholder="Damage"
                 value="${esc(attack.damage ?? "")}"
-                data-attack-field="${idx}:damage"
+                data-attack-field="${manualIdx}:damage"
               >
             </div>
           </div>
@@ -345,7 +742,8 @@ export function createRenderers(deps) {
             <button
               type="button"
               class="pill pill-btn attack-pill"
-              data-attack-roll="${idx}:toHit"
+              ${isAutoAttack ? `data-auto-attack-roll="${esc(idx)}:toHit"` : `data-attack-roll="${esc(idx - autoAttacks.length)}:toHit"`}
+              ${isAutoAttack ? `data-auto-attack-name="${esc(attackName)}" data-auto-attack-to-hit="${esc(attack.toHit || "")}" data-auto-attack-damage="${esc(attack.damage || "")}"` : ""}
               aria-label="Roll ${esc(attackName)} to hit"
             >
               To Hit: ${esc(attack.toHit || "n/a")}
@@ -353,7 +751,8 @@ export function createRenderers(deps) {
             <button
               type="button"
               class="pill pill-btn attack-pill"
-              data-attack-roll="${idx}:damage"
+              ${isAutoAttack ? `data-auto-attack-roll="${esc(idx)}:damage"` : `data-attack-roll="${esc(idx - autoAttacks.length)}:damage"`}
+              ${isAutoAttack ? `data-auto-attack-name="${esc(attackName)}" data-auto-attack-to-hit="${esc(attack.toHit || "")}" data-auto-attack-damage="${esc(attack.damage || "")}"` : ""}
               aria-label="Roll ${esc(attackName)} damage"
             >
               Damage: ${esc(attack.damage || "n/a")}
@@ -377,7 +776,18 @@ export function createRenderers(deps) {
       )
       .join("");
     const unlockedFeatures = Array.isArray(character?.progression?.unlockedFeatures) ? character.progression.unlockedFeatures : [];
+    const featSlots = Array.isArray(character?.progression?.featSlots) ? character.progression.featSlots : [];
     const selectedFeats = Array.isArray(character?.feats) ? character.feats : [];
+    const selectedFeatSlotIds = new Set(
+      selectedFeats
+        .map((feat) => String(feat?.slotId ?? "").trim())
+        .filter(Boolean)
+    );
+    const selectedAsiSlotKeys = new Set(
+      featSlots
+        .filter((slot) => isAbilityScoreImprovementSlot(slot) && selectedFeatSlotIds.has(String(slot?.id ?? "").trim()))
+        .map((slot) => `${String(slot?.className ?? "").trim().toLowerCase()}|${toNumber(slot?.level, 0)}`)
+    );
     const featureUses =
       play.featureUses && typeof play.featureUses === "object" && !Array.isArray(play.featureUses) ? play.featureUses : {};
     const formatRecharge = (recharge) => {
@@ -392,6 +802,9 @@ export function createRenderers(deps) {
       ? unlockedFeatures
           .map((feature) => {
             const subtitle = feature.type === "subclass" && feature.subclassName ? ` (${feature.subclassName})` : "";
+            const isAsiFeature = isAbilityScoreImprovementSlot({ slotType: feature?.name ?? "" });
+            const asiFeatureKey = `${String(feature?.className ?? "").trim().toLowerCase()}|${toNumber(feature?.level, 0)}`;
+            const displayName = isAsiFeature && selectedAsiSlotKeys.has(asiFeatureKey) ? "Feat" : String(feature?.name ?? "");
             const useKey = `${autoResourceIdPrefix}${feature.id}`;
             const tracker = featureUses[useKey];
             const trackerHtml = tracker
@@ -408,7 +821,7 @@ export function createRenderers(deps) {
               <span class="class-feature-level">Lv ${esc(feature.level ?? "?")}</span>
               <div class="feature-main">
                 <button type="button" class="spell-name-btn feature-name-btn" data-open-feature="${esc(feature.id)}">${esc(
-                  `${feature.name}${subtitle}`
+                  `${displayName}${subtitle}`
                 )}</button>
                 ${trackerHtml}
               </div>
@@ -420,6 +833,28 @@ export function createRenderers(deps) {
     const featListHtml = selectedFeats.length
       ? selectedFeats
           .map((feat) => {
+            const featName = String(feat?.name ?? "").trim();
+            const featSource = String(feat?.source ?? "").trim();
+            const normalizedFeatName = featName.toLowerCase();
+            const normalizedFeatSource = featSource.toLowerCase();
+            const featCatalog = Array.isArray(state.catalogs?.feats) ? state.catalogs.feats : [];
+            const detail =
+              featCatalog.find((entry) => {
+                const entryName = String(entry?.name ?? "").trim().toLowerCase();
+                if (entryName !== normalizedFeatName) return false;
+                const entrySource = String(entry?.source ?? "").trim().toLowerCase();
+                if (!normalizedFeatSource) return true;
+                return entrySource === normalizedFeatSource;
+              })
+              ?? featCatalog.find((entry) => String(entry?.name ?? "").trim().toLowerCase() === normalizedFeatName)
+              ?? null;
+            const sourceLabel = String((detail?.sourceLabel ?? detail?.source ?? featSource) || "UNK");
+            const prerequisites = Array.isArray(detail?.prerequisite) ? detail.prerequisite : [];
+            const descriptionLines = getRuleDescriptionLines(detail);
+            const summaryRaw = String(descriptionLines.find(Boolean) ?? "").trim();
+            const summaryText = summaryRaw
+              ? (summaryRaw.length > 180 ? `${summaryRaw.slice(0, 177).trimEnd()}...` : summaryRaw)
+              : "No preview available. Click to open full feat details.";
             const useKey = `${autoResourceIdPrefix}${feat.id}`;
             const tracker = featureUses[useKey];
             const trackerHtml = tracker
@@ -434,9 +869,18 @@ export function createRenderers(deps) {
             return `
             <div class="feature-row feature-row-feat">
               <div class="feature-main">
-                <button type="button" class="pill pill-btn feature-name-pill" data-open-feat="${esc(feat.id)}">${esc(feat.name)} (${esc(
-                  feat.source || "UNK"
-                )})</button>
+                <button type="button" class="feat-tile-btn" data-open-feat="${esc(feat.id)}" aria-label="Open ${esc(featName)} details">
+                  <span class="feat-tile-head">
+                    <strong class="feat-tile-title">${esc(featName)}</strong>
+                    <span class="pill">${esc(sourceLabel)}</span>
+                  </span>
+                  <span class="feat-tile-meta">
+                    ${feat.levelGranted ? `Lv ${esc(feat.levelGranted)}` : "Level n/a"} - ${esc(feat.via || "feat slot")}${
+                      prerequisites.length ? ` - Prerequisite (${esc(prerequisites.length)})` : ""
+                    }
+                  </span>
+                  <span class="feat-tile-summary">${esc(summaryText)}</span>
+                </button>
                 ${trackerHtml}
               </div>
             </div>
@@ -448,10 +892,9 @@ export function createRenderers(deps) {
     const spellStatus = latestSpellCastStatus();
 
     return `
-    <section class="card">
-      <div class="play-sheet-head">
-        <h2 class="title">Play Sheet</h2>
-        <div class="play-sheet-head-right">
+    <section class="play-sheet-shell">
+      <section class="card play-sheet-dice-card">
+        <div class="play-sheet-head">
           <div class="dice-result-wrap" tabindex="0" aria-label="Recent roll history">
             <div id="dice-result-inline" class="dice-result muted">${esc(defaultDiceResultMessage)}</div>
             <div id="dice-history-popover" class="dice-history-popover" role="status" aria-live="polite">
@@ -467,15 +910,14 @@ export function createRenderers(deps) {
             <button type="button" class="btn secondary custom-roll-open-btn" id="open-custom-roll">Custom</button>
           </div>
         </div>
-      </div>
-      <p class="subtitle">Live session view with quick trackers.</p>
+      </section>
       <div class="play-grid">
         <article class="card">
           <h3 class="title">Core Stats</h3>
           <div class="summary-grid">
             <div class="pill">HP ${hpCurrent}/${hpTotal}</div>
             <div class="pill">AC ${derived.ac}</div>
-            <div class="pill">Prof +${derived.proficiencyBonus}</div>
+            <div class="pill">Proficiency +${derived.proficiencyBonus}</div>
             <div class="pill">Passive Perception ${derived.passivePerception}</div>
             <button type="button" class="pill pill-btn" data-roll-initiative title="Roll initiative">
               Initiative ${initiativeBonus >= 0 ? "+" : ""}${initiativeBonus}
@@ -609,12 +1051,12 @@ export function createRenderers(deps) {
           <div class="toolbar">
             <button class="btn secondary" id="play-open-items">Add Item</button>
           </div>
-          <div>${character.inventory.map((it) => `<span class="pill">${esc(it)}</span>`).join(" ") || "<span class='muted'>No items selected.</span>"}</div>
+          <div class="inventory-list">${renderInventoryRowsImpl(character)}</div>
           <div class="play-inline-row">
             <input id="play-condition-input" placeholder="Add condition (e.g. Poisoned)">
             <button class="btn secondary" id="add-condition">Add</button>
           </div>
-          <div>${conditionText || "<span class='muted'>No conditions tracked.</span>"}</div>
+          <div class="pill-list">${conditionText || "<span class='muted'>No conditions tracked.</span>"}</div>
           <div class="play-inline-row">
             ${(play.conditions ?? []).map((condition, idx) => `<button class="btn secondary" data-remove-condition="${idx}">Remove ${esc(condition)}</button>`).join("")}
           </div>
@@ -671,6 +1113,14 @@ export function createRenderers(deps) {
     `;
     }
     if (stepIndex === 2) {
+      const selectedRace = findCatalogEntryByName(catalogs.races, character.race);
+      const selectedBackground = findCatalogEntryByName(catalogs.backgrounds, character.background);
+      const raceAbilitySummary = getAbilityBonusesSummary(selectedRace, "race", character);
+      const raceSkillSummary = getSkillProficiencySummary(selectedRace, "race", character);
+      const backgroundAbilitySummary = getAbilityBonusesSummary(selectedBackground, "background", character);
+      const backgroundSkillSummary = getSkillProficiencySummary(selectedBackground, "background", character);
+      const raceChoiceEditors = renderAutoChoiceEditorsForEntity(selectedRace, "race", character);
+      const backgroundChoiceEditors = renderAutoChoiceEditorsForEntity(selectedBackground, "background", character);
       return `
       <h2 class="title">Ancestry & Background</h2>
       <div class="row">
@@ -686,6 +1136,30 @@ export function createRenderers(deps) {
             ${optionList(catalogs.backgrounds, character.background)}
           </select>
         </label>
+      </div>
+      <div class="play-list">
+        <p class="muted">
+          <strong>Race bonuses:</strong>
+          ${
+            raceAbilitySummary || raceSkillSummary
+              ? [raceAbilitySummary ? `Abilities ${raceAbilitySummary}` : "", raceSkillSummary ? `Skills ${raceSkillSummary}` : ""]
+                  .filter(Boolean)
+                  .join(" - ")
+              : "No automatic ability or skill bonuses."
+          }
+        </p>
+        ${raceChoiceEditors ? `<div class="auto-choice-shell">${raceChoiceEditors}</div>` : ""}
+        <p class="muted">
+          <strong>Background bonuses:</strong>
+          ${
+            backgroundAbilitySummary || backgroundSkillSummary
+              ? [backgroundAbilitySummary ? `Abilities ${backgroundAbilitySummary}` : "", backgroundSkillSummary ? `Skills ${backgroundSkillSummary}` : ""]
+                  .filter(Boolean)
+                  .join(" - ")
+              : "No automatic ability or skill bonuses."
+          }
+        </p>
+        ${backgroundChoiceEditors ? `<div class="auto-choice-shell">${backgroundChoiceEditors}</div>` : ""}
       </div>
     `;
     }
@@ -730,17 +1204,30 @@ export function createRenderers(deps) {
       const skillRows = renderSkillRowsImpl(state, { canToggle: true, includeRollButtons: false });
       return `
       <h2 class="title">Abilities</h2>
-      <div class="row">
+      <div class="row ability-edit-grid">
         ${Object.entries(character.abilities)
           .map(
             ([key, val]) => `
-          <label>${esc(key.toUpperCase())}
-            <input id="ability-${esc(key)}" type="number" min="1" max="30" data-ability="${esc(key)}" value="${esc(val)}">
+          <label class="ability-edit-field">${esc(key.toUpperCase())}${toNumber(character.play?.autoAbilityBonuses?.[key], 0) > 0 ? ` <span class="muted">(auto +${esc(
+            toNumber(character.play?.autoAbilityBonuses?.[key], 0)
+          )})</span>` : ""}
+            <div class="num-input-wrap">
+              <input id="ability-${esc(key)}" type="number" min="1" max="30" data-ability="${esc(key)}" value="${esc(val)}">
+              <div class="num-stepper">
+                <button type="button" class="num-step-btn" data-ability-step="${esc(key)}" data-step-delta="1" aria-label="Increase ${esc(
+                  key.toUpperCase()
+                )}">+</button>
+                <button type="button" class="num-step-btn" data-ability-step="${esc(key)}" data-step-delta="-1" aria-label="Decrease ${esc(
+                  key.toUpperCase()
+                )}">-</button>
+              </div>
+            </div>
           </label>
         `
           )
           .join("")}
       </div>
+      <p class="muted">Ability scores shown here include automatic race/background bonuses.</p>
       <h3 class="title">Proficiencies</h3>
       <p class="subtitle">Toggle skill and save proficiencies for your character sheet.</p>
       <div class="play-grid">
@@ -762,7 +1249,7 @@ export function createRenderers(deps) {
       <div class="toolbar">
         <button class="btn secondary" id="open-items">Pick Items</button>
       </div>
-      <div>${character.inventory.map((it) => `<span class="pill">${esc(it)}</span>`).join(" ") || "<span class='muted'>No items selected.</span>"}</div>
+      <div class="inventory-list">${renderInventoryRowsImpl(character)}</div>
     `;
     }
     if (stepIndex === 6) {
@@ -845,12 +1332,36 @@ export function createRenderers(deps) {
     if (!slots.length) return "<p class='muted'>No feat slots available from current class progression.</p>";
     return slots
       .map((slot) => {
-        const slotLabel = `${slot.className} Lv ${slot.level} - ${slot.slotType || "Feat"}`;
+        const isAsiSlot = isAbilityScoreImprovementSlot(slot);
+        const hasSelectedFeat = Boolean(slot.feat);
+        const slotTypeLabel = isAsiSlot && hasSelectedFeat ? "Feat" : (slot.slotType || "Feat");
+        const slotLabel = `${slot.className} Lv ${slot.level} - ${slotTypeLabel}`;
+        const asiChoiceId = "a:0:choose:0";
+        const asiSourceKey = getAsiChoiceSourceKey(slot.id);
+        const asiSelected = !hasSelectedFeat && isAsiSlot
+          ? getStoredChoiceValuesOnly(character, asiSourceKey, asiChoiceId, saveAbilities, 2, { allowDuplicates: true })
+          : [];
+        const asiEditorHtml = !hasSelectedFeat && isAsiSlot
+          ? `
+            <div class="auto-choice-shell">
+              <p class="muted"><strong>ASI choice</strong> Pick up to two abilities to gain +1 each.</p>
+              ${renderChoiceSelects(
+                asiSourceKey,
+                asiChoiceId,
+                2,
+                saveAbilities,
+                asiSelected,
+                (ability) => abilityLabels[ability] ?? ability.toUpperCase()
+              )}
+            </div>
+          `
+          : "";
         return `
         <div class="option-row">
           <div>
             <strong>${esc(slotLabel)}</strong>
             <div class="muted">${slot.feat ? `${esc(slot.feat.name)} (${esc(slot.feat.source || "UNK")})` : "No feat selected."}</div>
+            ${asiEditorHtml}
           </div>
           <div class="option-row-actions">
             <button type="button" class="btn secondary" data-open-feat-picker="${esc(slot.id)}">${slot.feat ? "Replace" : "Pick Feat"}</button>

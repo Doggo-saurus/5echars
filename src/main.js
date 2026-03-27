@@ -107,6 +107,18 @@ const SKILLS = [
   { key: "survival", label: "Survival", ability: "wis" },
 ];
 
+const SKILL_KEY_BY_CANONICAL = SKILLS.reduce((acc, skill) => {
+  const keyToken = String(skill.key ?? "")
+    .toLowerCase()
+    .replace(/[^a-z]/g, "");
+  const labelToken = String(skill.label ?? "")
+    .toLowerCase()
+    .replace(/[^a-z]/g, "");
+  if (keyToken) acc[keyToken] = skill.key;
+  if (labelToken) acc[labelToken] = skill.key;
+  return acc;
+}, {});
+
 const SAVE_ABILITIES = ["str", "dex", "con", "int", "wis", "cha"];
 const ABILITY_LABELS = {
   str: "STR",
@@ -372,16 +384,36 @@ function extractSimpleNotation(value) {
   return parseSimpleNotation(candidate) ? candidate : "";
 }
 
-function formatD20ResultMessage(label, modifier, dieValue, total) {
-  const inputExpression = formatNotationWithModifier("1d20", modifier);
+function normalizeD20RollMode(value) {
+  if (value === "advantage" || value === "disadvantage") return value;
+  return "normal";
+}
+
+function selectD20ResultFromRolls(rolls, rollMode) {
+  const candidates = Array.isArray(rolls) ? rolls.filter((value) => value >= 1 && value <= 20) : [];
+  if (!candidates.length) return null;
+  if (rollMode === "advantage") return Math.max(...candidates);
+  if (rollMode === "disadvantage") return Math.min(...candidates);
+  return candidates[0] ?? null;
+}
+
+function formatD20ResultMessage(label, modifier, dieValue, total, rollMode = "normal", rollValues = []) {
+  const mode = normalizeD20RollMode(rollMode);
+  const baseExpression = mode === "advantage" ? "2d20kh1" : mode === "disadvantage" ? "2d20kl1" : "1d20";
+  const inputExpression = formatNotationWithModifier(baseExpression, modifier);
+  const modeSuffix = mode === "advantage" ? " (advantage)" : mode === "disadvantage" ? " (disadvantage)" : "";
+  const rollList = Array.isArray(rollValues) ? rollValues.filter((value) => Number.isFinite(value)) : [];
   if (dieValue != null && total != null) {
-    const evaluated = formatEvaluatedWithModifier(dieValue, modifier);
-    return `${label}: ${inputExpression} | ${evaluated} = ${total}`;
+    const selected = formatEvaluatedWithModifier(dieValue, modifier);
+    if (mode !== "normal" && rollList.length >= 2) {
+      return `${label}${modeSuffix}: ${inputExpression} | rolls ${rollList.join(", ")} -> ${selected} = ${total}`;
+    }
+    return `${label}${modeSuffix}: ${inputExpression} | ${selected} = ${total}`;
   }
   if (total != null) {
-    return `${label}: ${inputExpression} | total = ${total}`;
+    return `${label}${modeSuffix}: ${inputExpression} | total = ${total}`;
   }
-  return `${label}: ${inputExpression} | roll completed.`;
+  return `${label}${modeSuffix}: ${inputExpression} | roll completed.`;
 }
 
 function formatNotationResultMessage(label, notation, total, rollValues) {
@@ -438,9 +470,11 @@ async function getDiceBox() {
   return diceBoxPromise;
 }
 
-async function rollVisualD20(label, modifier = 0) {
-  const notation = modifier === 0 ? "1d20" : `1d20${signed(modifier)}`;
-  const physicalNotation = "1d20";
+async function rollVisualD20(label, modifier = 0, rollMode = "normal") {
+  const mode = normalizeD20RollMode(rollMode);
+  const notationBase = mode === "advantage" || mode === "disadvantage" ? "2d20" : "1d20";
+  const notation = modifier === 0 ? notationBase : `${notationBase}${signed(modifier)}`;
+  const physicalNotation = notationBase;
   setDiceResult(`${label}: rolling ${notation}...`, false, { record: false });
   const box = await getDiceBox();
   if (!box) return null;
@@ -451,17 +485,21 @@ async function rollVisualD20(label, modifier = 0) {
     const rollValues = groups.flatMap((group) =>
       Array.isArray(group?.rolls) ? group.rolls.map((it) => toNumber(it?.value, NaN)).filter((it) => Number.isFinite(it)) : []
     );
-    const dieValue = rollValues.find((value) => value >= 1 && value <= 20) ?? null;
-    const fallbackDie = Number(groups[0]?.value);
-    const resolvedDieValue =
-      dieValue != null ? dieValue : Number.isFinite(fallbackDie) && fallbackDie >= 1 && fallbackDie <= 20 ? fallbackDie : null;
+    const validRollValues = rollValues.filter((value) => value >= 1 && value <= 20);
+    const fallbackRollValues = groups
+      .map((group) => Number(group?.value))
+      .filter((value) => Number.isFinite(value) && value >= 1 && value <= 20);
+    const resolvedRollValues = validRollValues.length ? validRollValues : fallbackRollValues;
+    const resolvedDieValue = selectD20ResultFromRolls(resolvedRollValues, mode);
     const total = resolvedDieValue != null ? resolvedDieValue + modifier : null;
-    setDiceResult(formatD20ResultMessage(label, modifier, resolvedDieValue, total));
-    lastRollAction = { type: "d20", label, modifier };
+    setDiceResult(formatD20ResultMessage(label, modifier, resolvedDieValue, total, mode, resolvedRollValues));
+    lastRollAction = { type: "d20", label, modifier, rollMode: mode };
     return {
       label,
       notation,
       modifier,
+      rollMode: mode,
+      rollValues: resolvedRollValues,
       dieValue: resolvedDieValue,
       total,
     };
@@ -531,7 +569,11 @@ async function rerollLastRoll() {
   }
 
   if (lastRollAction.type === "d20") {
-    await rollVisualD20(lastRollAction.label, toNumber(lastRollAction.modifier, 0));
+    await rollVisualD20(
+      lastRollAction.label,
+      toNumber(lastRollAction.modifier, 0),
+      normalizeD20RollMode(lastRollAction.rollMode)
+    );
     return;
   }
 
@@ -1397,6 +1439,249 @@ function getClassSaveProficiencies(catalogs, className) {
   }, {});
 }
 
+function isRecordObject(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function findCatalogEntryByName(entries, selectedName) {
+  if (!Array.isArray(entries)) return null;
+  const normalized = String(selectedName ?? "").trim().toLowerCase();
+  if (!normalized) return null;
+  return entries.find((entry) => String(entry?.name ?? "").trim().toLowerCase() === normalized) ?? null;
+}
+
+function normalizeAbilityKey(value) {
+  const key = String(value ?? "").trim().toLowerCase();
+  return SAVE_ABILITIES.includes(key) ? key : "";
+}
+
+function normalizeSkillKey(value) {
+  const token = String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z]/g, "");
+  return SKILL_KEY_BY_CANONICAL[token] ?? "";
+}
+
+function getEmptyAbilityMap() {
+  return SAVE_ABILITIES.reduce((acc, ability) => {
+    acc[ability] = 0;
+    return acc;
+  }, {});
+}
+
+function getAutoChoiceSelectionMap(play, sourceKey) {
+  if (!isRecordObject(play?.autoChoiceSelections)) return {};
+  const selected = play.autoChoiceSelections[sourceKey];
+  return isRecordObject(selected) ? selected : {};
+}
+
+function getAutoChoiceSelectedValues(play, sourceKey, choiceId, from, count) {
+  const selectionMap = getAutoChoiceSelectionMap(play, sourceKey);
+  const storedRaw = selectionMap[choiceId];
+  const stored = (Array.isArray(storedRaw) ? storedRaw : [])
+    .map((entry) => String(entry ?? "").trim().toLowerCase())
+    .filter((entry) => from.includes(entry));
+  const uniqueStored = stored.filter((entry, index) => stored.indexOf(entry) === index);
+  if (!uniqueStored.length) return from.slice(0, Math.max(0, Math.min(from.length, count)));
+  const normalizedByOrder = from.filter((entry) => uniqueStored.includes(entry));
+  return normalizedByOrder.slice(0, Math.max(0, Math.min(from.length, count)));
+}
+
+function getStoredAutoChoiceSelectedValues(play, sourceKey, choiceId, from, count) {
+  const selectionMap = getAutoChoiceSelectionMap(play, sourceKey);
+  const storedRaw = selectionMap[choiceId];
+  const stored = (Array.isArray(storedRaw) ? storedRaw : [])
+    .map((entry) => String(entry ?? "").trim().toLowerCase())
+    .filter((entry) => from.includes(entry));
+  if (String(sourceKey ?? "").startsWith("asi:")) {
+    return stored.slice(0, Math.max(0, Math.min(from.length, count)));
+  }
+  const uniqueStored = stored.filter((entry, index) => stored.indexOf(entry) === index);
+  const normalizedByOrder = from.filter((entry) => uniqueStored.includes(entry));
+  return normalizedByOrder.slice(0, Math.max(0, Math.min(from.length, count)));
+}
+
+function applyAbilityChoiceBonuses(choice, bonuses, context) {
+  if (!choice) return;
+  const weighted = isRecordObject(choice.weighted) ? choice.weighted : null;
+  const fromRaw = Array.isArray(weighted?.from) ? weighted.from : Array.isArray(choice.from) ? choice.from : [];
+  const from = fromRaw
+    .map((entry) => normalizeAbilityKey(entry))
+    .filter(Boolean)
+    .filter((ability, index, list) => list.indexOf(ability) === index);
+  if (!from.length) return;
+  const weightValues = Array.isArray(weighted?.weights)
+    ? weighted.weights.map((entry) => Math.max(0, toNumber(entry, 0))).filter((entry) => entry > 0)
+    : [];
+  const fallbackAmount = Math.max(1, toNumber(choice.amount ?? weighted?.amount, 1));
+  const countFromWeights = weightValues.length;
+  const countFromChoice = Math.max(0, toNumber(choice.count ?? weighted?.count, 0));
+  const count = Math.max(1, Math.min(from.length, countFromChoice || countFromWeights || 1));
+  const choiceId = `a:${context.optionIndex}:choose:${context.choiceIndex}`;
+  const selected = getAutoChoiceSelectedValues(context.play, context.sourceKey, choiceId, from, count);
+  selected.forEach((ability, index) => {
+    const amount = Math.max(1, toNumber(weightValues[index], fallbackAmount));
+    bonuses[ability] = Math.max(0, toNumber(bonuses[ability], 0) + amount);
+  });
+}
+
+function getAbilityBonusesFromEntity(entry, sourceKey, play) {
+  const bonuses = getEmptyAbilityMap();
+  const options = Array.isArray(entry?.ability) ? entry.ability : [];
+  const optionIndex = options.findIndex((option) => isRecordObject(option));
+  const selected = optionIndex >= 0 ? options[optionIndex] : null;
+  if (!selected) return bonuses;
+  let abilityChoiceIndex = 0;
+  Object.entries(selected).forEach(([key, value]) => {
+    const ability = normalizeAbilityKey(key);
+    if (ability) {
+      const amount = Math.max(0, toNumber(value, 0));
+      bonuses[ability] = Math.max(0, toNumber(bonuses[ability], 0) + amount);
+      return;
+    }
+    if (key === "choose") {
+      if (Array.isArray(value)) {
+        value.forEach((choice) => {
+          applyAbilityChoiceBonuses(choice, bonuses, { play, sourceKey, optionIndex, choiceIndex: abilityChoiceIndex });
+          abilityChoiceIndex += 1;
+        });
+      } else if (isRecordObject(value)) {
+        applyAbilityChoiceBonuses(value, bonuses, { play, sourceKey, optionIndex, choiceIndex: abilityChoiceIndex });
+        abilityChoiceIndex += 1;
+      }
+    }
+  });
+  return bonuses;
+}
+
+function getAutomaticAbilityBonuses(catalogs, character, play) {
+  const raceEntry = findCatalogEntryByName(catalogs?.races, character?.race);
+  const backgroundEntry = findCatalogEntryByName(catalogs?.backgrounds, character?.background);
+  const raceBonuses = getAbilityBonusesFromEntity(raceEntry, "race", play);
+  const backgroundBonuses = getAbilityBonusesFromEntity(backgroundEntry, "background", play);
+  const featSlots = Array.isArray(character?.progression?.featSlots) ? character.progression.featSlots : [];
+  const selectedFeatSlotIds = new Set(
+    (Array.isArray(character?.feats) ? character.feats : [])
+      .map((feat) => String(feat?.slotId ?? "").trim())
+      .filter(Boolean)
+  );
+  const asiBonuses = getEmptyAbilityMap();
+  featSlots
+    .filter((slot) => ASI_FEATURE_NAME_REGEX.test(String(slot?.slotType ?? "")))
+    .filter((slot) => !selectedFeatSlotIds.has(String(slot?.id ?? "").trim()))
+    .forEach((slot) => {
+      const sourceKey = `asi:${String(slot?.id ?? "").trim()}`;
+      if (!sourceKey) return;
+      const selectedAbilities = getStoredAutoChoiceSelectedValues(play, sourceKey, "a:0:choose:0", SAVE_ABILITIES, 2);
+      selectedAbilities.forEach((ability) => {
+        asiBonuses[ability] = Math.max(0, toNumber(asiBonuses[ability], 0) + 1);
+      });
+    });
+  return SAVE_ABILITIES.reduce((acc, ability) => {
+    acc[ability] = Math.max(
+      0,
+      toNumber(raceBonuses[ability], 0) + toNumber(backgroundBonuses[ability], 0) + toNumber(asiBonuses[ability], 0)
+    );
+    return acc;
+  }, {});
+}
+
+function mergeProficienciesWithOverrides(auto, overrides, keys) {
+  return keys.reduce((acc, key) => {
+    const overrideValue = overrides?.[key];
+    if (typeof overrideValue === "boolean") {
+      acc[key] = overrideValue;
+      return acc;
+    }
+    acc[key] = Boolean(auto?.[key]);
+    return acc;
+  }, {});
+}
+
+function deriveLegacyProficiencyOverrides(current, auto, keys) {
+  const overrides = {};
+  keys.forEach((key) => {
+    const currentValue = Boolean(current?.[key]);
+    const autoValue = Boolean(auto?.[key]);
+    if (currentValue !== autoValue) overrides[key] = currentValue;
+  });
+  return overrides;
+}
+
+function applySkillProficiencyOption(activeSkills, option, context) {
+  if (!isRecordObject(option)) return;
+  const fixedSkillKeys = Object.entries(option)
+    .filter(([key, value]) => key !== "choose" && key !== "any" && value === true)
+    .map(([key]) => normalizeSkillKey(key))
+    .filter(Boolean);
+  fixedSkillKeys.forEach((skillKey) => activeSkills.add(skillKey));
+
+  const anyCount = Math.max(0, toNumber(option.any, 0));
+  if (anyCount > 0) {
+    const pool = SKILLS.map((skill) => skill.key).filter((skillKey) => !activeSkills.has(skillKey));
+    const anyChoiceId = `s:${context.optionIndex}:any`;
+    const selected = getAutoChoiceSelectedValues(context.play, context.sourceKey, anyChoiceId, pool, anyCount);
+    selected.forEach((skillKey) => activeSkills.add(skillKey));
+  }
+
+  const choose = isRecordObject(option.choose) ? option.choose : null;
+  if (!choose) return;
+  const from = (Array.isArray(choose.from) ? choose.from : [])
+    .map((entry) => normalizeSkillKey(entry))
+    .filter(Boolean)
+    .filter((skillKey, index, list) => list.indexOf(skillKey) === index);
+  if (!from.length) return;
+  const count = Math.max(1, toNumber(choose.count, 1));
+  const pool = from.filter((skillKey) => !activeSkills.has(skillKey));
+  const chooseChoiceId = `s:${context.optionIndex}:choose`;
+  const selected = getAutoChoiceSelectedValues(context.play, context.sourceKey, chooseChoiceId, pool, count);
+  selected.forEach((skillKey) => activeSkills.add(skillKey));
+}
+
+function collectSkillProficienciesFromEntity(entry, sourceKey, play) {
+  const activeSkills = new Set();
+  const options = Array.isArray(entry?.skillProficiencies) ? entry.skillProficiencies : [];
+  const optionIndex = options.findIndex((option) => isRecordObject(option));
+  const firstOption = optionIndex >= 0 ? options[optionIndex] : null;
+  if (firstOption) applySkillProficiencyOption(activeSkills, firstOption, { play, sourceKey, optionIndex });
+  return activeSkills;
+}
+
+function getAutomaticSaveProficiencies(catalogs, character) {
+  const auto = { ...getClassSaveProficiencies(catalogs, character?.class) };
+  const raceEntry = findCatalogEntryByName(catalogs?.races, character?.race);
+  const backgroundEntry = findCatalogEntryByName(catalogs?.backgrounds, character?.background);
+  [raceEntry, backgroundEntry].forEach((entry) => {
+    const saveOptions = Array.isArray(entry?.saveProficiencies) ? entry.saveProficiencies : [];
+    const selected = saveOptions.find((option) => isRecordObject(option)) ?? null;
+    if (!selected) return;
+    Object.entries(selected).forEach(([key, value]) => {
+      const ability = normalizeAbilityKey(key);
+      if (!ability || value !== true) return;
+      auto[ability] = true;
+    });
+  });
+  return SAVE_ABILITIES.reduce((acc, ability) => {
+    acc[ability] = Boolean(auto?.[ability]);
+    return acc;
+  }, {});
+}
+
+function getAutomaticSkillProficiencies(catalogs, character, play) {
+  const raceEntry = findCatalogEntryByName(catalogs?.races, character?.race);
+  const backgroundEntry = findCatalogEntryByName(catalogs?.backgrounds, character?.background);
+  const activeSkills = new Set();
+  [raceEntry, backgroundEntry].forEach((entry) => {
+    const sourceKey = entry === raceEntry ? "race" : "background";
+    collectSkillProficienciesFromEntity(entry, sourceKey, play).forEach((skillKey) => activeSkills.add(skillKey));
+  });
+  return SKILLS.reduce((acc, skill) => {
+    acc[skill.key] = activeSkills.has(skill.key);
+    return acc;
+  }, {});
+}
+
 function optionList(options, selected) {
   return options
     .map(
@@ -1594,12 +1879,12 @@ function getSpellSlotRow(play, defaults, level) {
     <div class="spell-slot-card">
       <div class="spell-slot-top">
         <span class="spell-slot-level">Level ${level}</span>
-        <span class="spell-slot-used">Slots <strong>${Math.max(0, max - used)}/${max}</strong></span>
-      </div>
-      <div class="spell-slot-controls">
+        <div class="spell-slot-inline">
+          <span class="spell-slot-used">Slots <strong>${Math.max(0, max - used)}/${max}</strong></span>
         <div class="spell-slot-actions">
-          <button type="button" class="spell-slot-btn" data-slot-delta="${level}" data-delta="-1" aria-label="Decrease used slots for level ${level}">-</button>
-          <button type="button" class="spell-slot-btn" data-slot-delta="${level}" data-delta="1" aria-label="Increase used slots for level ${level}">+</button>
+            <button type="button" class="spell-slot-btn" data-slot-delta="${level}" data-delta="1" aria-label="Spend one level ${level} slot">-</button>
+            <button type="button" class="spell-slot-btn" data-slot-delta="${level}" data-delta="-1" aria-label="Recover one level ${level} slot">+</button>
+          </div>
         </div>
       </div>
     </div>
@@ -1821,11 +2106,6 @@ function getClassKey(className) {
     .replace(/[^a-z]/g, "");
 }
 
-function normalizeAbilityKey(value) {
-  const key = String(value ?? "").trim().toLowerCase();
-  return ABILITY_LABELS[key] ? key : null;
-}
-
 function getClassSpellcastingAbility(catalogs, character) {
   const classEntry = getClassCatalogEntry(catalogs, character?.class);
   if (!classEntry) return null;
@@ -1938,6 +2218,215 @@ function formatClassMulticlassRequirements(classEntry) {
   }
 
   return formatClassRequirementSet(requirements);
+}
+
+function getInventoryObjectEntries(character) {
+  const inventory = Array.isArray(character?.inventory) ? character.inventory : [];
+  return inventory.filter((entry) => entry && typeof entry === "object" && !Array.isArray(entry));
+}
+
+function normalizeItemTypeCode(value) {
+  return String(value ?? "")
+    .split("|")[0]
+    .trim()
+    .toUpperCase();
+}
+
+function normalizeWeaponProficiencyToken(value) {
+  return String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/\./g, "")
+    .replace(/\s+/g, " ");
+}
+
+function collectWeaponProficiencyStrings(value, out = []) {
+  if (typeof value === "string") {
+    const token = normalizeWeaponProficiencyToken(value);
+    if (token) out.push(token);
+    return out;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((entry) => collectWeaponProficiencyStrings(entry, out));
+    return out;
+  }
+  if (value && typeof value === "object") {
+    Object.values(value).forEach((entry) => collectWeaponProficiencyStrings(entry, out));
+  }
+  return out;
+}
+
+function getCharacterWeaponProficiencyTokens(catalogs, character) {
+  const tracks = getClassLevelTracks(character);
+  const tokens = new Set();
+  tracks.forEach((track) => {
+    const classEntry = getClassCatalogEntry(catalogs, track.className);
+    if (!classEntry) return;
+    const primaryWeapons = Array.isArray(classEntry?.startingProficiencies?.weapons) ? classEntry.startingProficiencies.weapons : [];
+    const multiclassWeapons = Array.isArray(classEntry?.multiclassing?.proficienciesGained?.weapons)
+      ? classEntry.multiclassing.proficienciesGained.weapons
+      : [];
+    const sourceEntries = track.isPrimary ? primaryWeapons : multiclassWeapons;
+    collectWeaponProficiencyStrings(sourceEntries).forEach((token) => tokens.add(token));
+  });
+  return tokens;
+}
+
+function getInventoryItemName(entry) {
+  return String(entry?.name ?? "").trim();
+}
+
+function isInventoryWeapon(entry) {
+  return Boolean(entry?.weapon) || Boolean(entry?.damageDice) || Boolean(entry?.dmg1) || Boolean(entry?.weaponCategory);
+}
+
+function getInventoryWeaponCategory(entry) {
+  return String(entry?.weaponCategory ?? "").trim().toLowerCase();
+}
+
+function getInventoryWeaponProperties(entry) {
+  const props = Array.isArray(entry?.properties) ? entry.properties : Array.isArray(entry?.property) ? entry.property : [];
+  return props.map((prop) => String(prop ?? "").trim().toUpperCase()).filter(Boolean);
+}
+
+function getInventoryWeaponFamily(entry) {
+  const category = getInventoryWeaponCategory(entry);
+  if (category.includes("simple")) return "simple";
+  if (category.includes("martial")) return "martial";
+  return "";
+}
+
+function isRangedWeaponEntry(entry) {
+  const category = getInventoryWeaponCategory(entry);
+  const typeCode = normalizeItemTypeCode(entry?.itemType ?? entry?.type);
+  const properties = getInventoryWeaponProperties(entry);
+  return category.includes("ranged") || properties.includes("R") || typeCode === "R";
+}
+
+function normalizeItemNameForProficiency(name) {
+  return String(name ?? "")
+    .toLowerCase()
+    .replace(/\+\d+/g, "")
+    .replace(/[()]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isWeaponProficient(entry, proficiencyTokens) {
+  if (!(proficiencyTokens instanceof Set) || !proficiencyTokens.size) return false;
+  if (proficiencyTokens.has("all") || proficiencyTokens.has("all weapons")) return true;
+
+  const tokenList = [...proficiencyTokens];
+  const family = getInventoryWeaponFamily(entry);
+  const isRanged = isRangedWeaponEntry(entry);
+  const isMelee = !isRanged;
+
+  if (family === "simple" && tokenList.some((token) => token.includes("simple weapon"))) return true;
+  if (family === "martial" && tokenList.some((token) => token.includes("martial weapon"))) return true;
+  if (isRanged && tokenList.some((token) => token.includes("ranged weapon"))) return true;
+  if (isMelee && tokenList.some((token) => token.includes("melee weapon"))) return true;
+
+  const itemName = normalizeItemNameForProficiency(getInventoryItemName(entry));
+  if (itemName && tokenList.some((token) => normalizeItemNameForProficiency(token) === itemName)) return true;
+
+  return false;
+}
+
+function getWeaponAttackAbility(entry, derived) {
+  const mods = derived?.mods ?? {};
+  const strMod = toNumber(mods.str, 0);
+  const dexMod = toNumber(mods.dex, 0);
+  const category = getInventoryWeaponCategory(entry);
+  const properties = getInventoryWeaponProperties(entry);
+  const isRanged = category.includes("ranged") || properties.includes("R");
+  const hasFinesse = properties.includes("F");
+
+  if (isRanged) return { key: "dex", mod: dexMod };
+  if (hasFinesse) return dexMod > strMod ? { key: "dex", mod: dexMod } : { key: "str", mod: strMod };
+  return { key: "str", mod: strMod };
+}
+
+function formatDamageNotation(diceNotation, modifier) {
+  const notation = String(diceNotation ?? "").trim();
+  if (!notation) return "";
+  const mod = toNumber(modifier, 0);
+  if (!mod) return notation;
+  return `${notation} ${mod > 0 ? "+" : "-"} ${Math.abs(mod)}`;
+}
+
+function parseItemWeaponBonus(value, fallback = 0) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  const text = String(value ?? "").trim();
+  if (!text) return fallback;
+  const direct = Number(text);
+  if (Number.isFinite(direct)) return direct;
+  const match = text.match(/[+\-]?\d+/);
+  if (!match) return fallback;
+  const parsed = Number(match[0]);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function normalizeDamageTypeLabel(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw) return "";
+  const code = raw.toUpperCase();
+  const DAMAGE_TYPE_BY_CODE = {
+    A: "acid",
+    B: "bludgeoning",
+    C: "cold",
+    F: "fire",
+    I: "poison",
+    L: "lightning",
+    N: "necrotic",
+    O: "force",
+    P: "piercing",
+    R: "radiant",
+    S: "slashing",
+    T: "thunder",
+    Y: "psychic",
+  };
+  if (DAMAGE_TYPE_BY_CODE[code]) return DAMAGE_TYPE_BY_CODE[code];
+  return raw.toLowerCase();
+}
+
+function getWeaponNameBonus(entry) {
+  const match = getInventoryItemName(entry).match(/(?:^|\s)\+(\d+)(?:\s|$|\))/i);
+  if (!match) return 0;
+  const parsed = Number(match[1]);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function getAutoAttacks(state) {
+  const character = state?.character ?? {};
+  const equippedWeapons = getInventoryObjectEntries(character).filter((entry) => Boolean(entry?.equipped) && isInventoryWeapon(entry));
+  if (!equippedWeapons.length) return [];
+
+  const profTokens = getCharacterWeaponProficiencyTokens(state?.catalogs, character);
+  return equippedWeapons
+    .map((entry) => {
+      const name = getInventoryItemName(entry);
+      if (!name) return null;
+      const ability = getWeaponAttackAbility(entry, state?.derived);
+      const proficient = isWeaponProficient(entry, profTokens);
+      const proficiencyBonus = proficient ? toNumber(state?.derived?.proficiencyBonus, 0) : 0;
+      const nameBonus = getWeaponNameBonus(entry);
+      const attackBonus = parseItemWeaponBonus(entry?.weaponAttackBonus, nameBonus);
+      const damageBonus = parseItemWeaponBonus(entry?.weaponDamageBonus, nameBonus);
+      const toHit = signed(ability.mod + proficiencyBonus + attackBonus);
+      const rawDamageDice = String(entry?.damageDice ?? entry?.dmg1 ?? "").trim();
+      const baseDamage = rawDamageDice ? formatDamageNotation(rawDamageDice, ability.mod + damageBonus) : "";
+      const damageType = normalizeDamageTypeLabel(entry?.damageType ?? entry?.dmgType);
+      const damage = baseDamage && damageType ? `${baseDamage} ${damageType}` : baseDamage;
+      return {
+        source: "auto",
+        name,
+        toHit,
+        damage,
+        proficient,
+        ability: ability.key,
+      };
+    })
+    .filter(Boolean);
 }
 
 function getClassFeatureRows(classEntry) {
@@ -2330,6 +2819,7 @@ const renderers = createRenderers({
   getSpellByName,
   getSpellLevelLabel,
   spellSchoolLabels: SPELL_SCHOOL_LABELS,
+  getRuleDescriptionLines,
   doesClassUsePreparedSpells,
   getPreparedSpellLimit,
   countPreparedSpells,
@@ -2339,6 +2829,7 @@ const renderers = createRenderers({
   renderCharacterHistorySelector,
   renderPersistenceNotice,
   getModeToggle,
+  getAutoAttacks,
 });
 
 const {
@@ -2395,8 +2886,51 @@ function syncSpellSlotsWithDefaults(play, defaults, options = {}) {
 
 function updateCharacterWithRequiredSettings(state, patch, options = {}) {
   const nextCharacter = { ...state.character, ...patch };
-  const nextPlay = structuredClone(state.character.play ?? {});
-  nextPlay.saveProficiencies = getClassSaveProficiencies(state.catalogs, nextCharacter.class);
+  const nextPlaySeed = isRecordObject(patch.play) ? patch.play : state.character.play;
+  const nextPlay = structuredClone(nextPlaySeed ?? {});
+  const autoAbilityBonuses = getAutomaticAbilityBonuses(state.catalogs, nextCharacter, nextPlay);
+  const previousAutoBonuses = isRecordObject(state.character?.play?.autoAbilityBonuses) ? state.character.play.autoAbilityBonuses : {};
+  const baseAbilities = SAVE_ABILITIES.reduce((acc, ability) => {
+    const explicitBase = nextCharacter?.abilityBase?.[ability];
+    if (Number.isFinite(toNumber(explicitBase, NaN))) {
+      acc[ability] = Math.max(1, Math.min(30, toNumber(explicitBase, 10)));
+      return acc;
+    }
+    const currentFinal = toNumber(nextCharacter?.abilities?.[ability], 10);
+    const previousAuto = toNumber(previousAutoBonuses?.[ability], 0);
+    acc[ability] = Math.max(1, Math.min(30, currentFinal - previousAuto));
+    return acc;
+  }, {});
+  const nextAbilities = SAVE_ABILITIES.reduce((acc, ability) => {
+    acc[ability] = Math.max(1, Math.min(30, toNumber(baseAbilities?.[ability], 10) + toNumber(autoAbilityBonuses?.[ability], 0)));
+    return acc;
+  }, {});
+
+  const autoSaveProficiencies = getAutomaticSaveProficiencies(state.catalogs, nextCharacter);
+  const autoSkillProficiencies = getAutomaticSkillProficiencies(state.catalogs, nextCharacter, nextPlay);
+  let saveOverrides = isRecordObject(nextPlay.saveProficiencyOverrides) ? { ...nextPlay.saveProficiencyOverrides } : {};
+  let skillOverrides = isRecordObject(nextPlay.skillProficiencyOverrides) ? { ...nextPlay.skillProficiencyOverrides } : {};
+  if (!Object.keys(saveOverrides).length) {
+    saveOverrides = deriveLegacyProficiencyOverrides(nextPlay.saveProficiencies, autoSaveProficiencies, SAVE_ABILITIES);
+  }
+  if (!Object.keys(skillOverrides).length) {
+    skillOverrides = deriveLegacyProficiencyOverrides(
+      nextPlay.skillProficiencies,
+      autoSkillProficiencies,
+      SKILLS.map((skill) => skill.key)
+    );
+  }
+  nextPlay.autoAbilityBonuses = autoAbilityBonuses;
+  nextPlay.autoSaveProficiencies = autoSaveProficiencies;
+  nextPlay.autoSkillProficiencies = autoSkillProficiencies;
+  nextPlay.saveProficiencyOverrides = saveOverrides;
+  nextPlay.skillProficiencyOverrides = skillOverrides;
+  nextPlay.saveProficiencies = mergeProficienciesWithOverrides(autoSaveProficiencies, saveOverrides, SAVE_ABILITIES);
+  nextPlay.skillProficiencies = mergeProficienciesWithOverrides(
+    autoSkillProficiencies,
+    skillOverrides,
+    SKILLS.map((skill) => skill.key)
+  );
   const defaultSpellSlots = getCharacterSpellSlotDefaults(state.catalogs, nextCharacter);
   syncSpellSlotsWithDefaults(nextPlay, defaultSpellSlots, { preserveUserOverrides: options.preserveUserOverrides !== false });
   const nextProgression = recomputeCharacterProgression(state.catalogs, nextCharacter);
@@ -2418,6 +2952,8 @@ function updateCharacterWithRequiredSettings(state, patch, options = {}) {
   const subclassName = classSelection.subclass.name || "";
   store.updateCharacter({
     ...patch,
+    abilities: nextAbilities,
+    abilityBase: baseAbilities,
     subclass: subclassName,
     classSelection,
     progression: nextProgression,
@@ -2463,8 +2999,8 @@ function getLevelUpPreview(state, draft) {
   const currentSlots = getCharacterSpellSlotDefaults(state.catalogs, currentCharacter);
   const nextSlots = getCharacterSpellSlotDefaults(state.catalogs, nextCharacter);
   const changedSlotLevels = SPELL_SLOT_LEVELS.filter((level) => toNumber(currentSlots[String(level)], 0) !== toNumber(nextSlots[String(level)], 0));
-  const currentSaves = getClassSaveProficiencies(state.catalogs, currentCharacter.class);
-  const nextSaves = getClassSaveProficiencies(state.catalogs, nextCharacter.class);
+  const currentSaves = getAutomaticSaveProficiencies(state.catalogs, currentCharacter);
+  const nextSaves = getAutomaticSaveProficiencies(state.catalogs, nextCharacter);
   return {
     currentSlots,
     nextSlots,
