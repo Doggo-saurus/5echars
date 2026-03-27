@@ -28,6 +28,10 @@ let diceBoxPromise = null;
 let latestDiceResultMessage = DEFAULT_DICE_RESULT_MESSAGE;
 let latestDiceResultIsError = false;
 let rollHistory = [];
+let lastRollAction = null;
+let latestSpellCastStatusMessage = "";
+let latestSpellCastStatusIsError = false;
+let spellCastStatusTimer = null;
 
 const SKILLS = [
   { key: "acrobatics", label: "Acrobatics", ability: "dex" },
@@ -51,6 +55,14 @@ const SKILLS = [
 ];
 
 const SAVE_ABILITIES = ["str", "dex", "con", "int", "wis", "cha"];
+const ABILITY_LABELS = {
+  str: "STR",
+  dex: "DEX",
+  con: "CON",
+  int: "INT",
+  wis: "WIS",
+  cha: "CHA",
+};
 const SPELL_SLOT_LEVELS = [1, 2, 3, 4, 5, 6, 7, 8, 9];
 const SPELL_SCHOOL_LABELS = {
   A: "Abjuration",
@@ -63,6 +75,7 @@ const SPELL_SCHOOL_LABELS = {
   T: "Transmutation",
 };
 const DICE_NOTATION_REGEX = /\b\d+d\d+(?:\s*[+\-]\s*\d+)?\b/gi;
+const PREPARED_SPELL_CLASSES = new Set(["artificer", "cleric", "druid", "paladin", "wizard"]);
 
 function esc(value) {
   return String(value ?? "")
@@ -156,6 +169,16 @@ function syncDiceResultElements() {
   });
 }
 
+function syncSpellCastStatusElements() {
+  const statusEl = document.getElementById("spell-cast-status");
+  if (!statusEl) return;
+
+  const hasMessage = Boolean(latestSpellCastStatusMessage);
+  statusEl.hidden = !hasMessage;
+  statusEl.textContent = hasMessage ? latestSpellCastStatusMessage : "";
+  statusEl.classList.toggle("is-error", latestSpellCastStatusIsError);
+}
+
 function setDiceResult(message, isError = false, options = {}) {
   const shouldRecord = options.record !== false;
   latestDiceResultMessage = String(message ?? "");
@@ -173,6 +196,26 @@ function setDiceResult(message, isError = false, options = {}) {
     ...rollHistory,
   ].slice(0, ROLL_HISTORY_LIMIT);
   renderRollHistory();
+}
+
+function setSpellCastStatus(message, isError = false, options = {}) {
+  latestSpellCastStatusMessage = String(message ?? "");
+  latestSpellCastStatusIsError = Boolean(isError);
+  syncSpellCastStatusElements();
+  if (spellCastStatusTimer != null) {
+    clearTimeout(spellCastStatusTimer);
+    spellCastStatusTimer = null;
+  }
+
+  const durationMs = toNumber(options.durationMs, 0);
+  if (durationMs > 0 && latestSpellCastStatusMessage) {
+    spellCastStatusTimer = setTimeout(() => {
+      latestSpellCastStatusMessage = "";
+      latestSpellCastStatusIsError = false;
+      spellCastStatusTimer = null;
+      syncSpellCastStatusElements();
+    }, durationMs);
+  }
 }
 
 function scrollDiceTrayIntoView() {
@@ -275,6 +318,7 @@ async function rollVisualD20(label, modifier = 0) {
       normalizedDieFromResult ?? (Number.isFinite(derivedDieFromTotal) && derivedDieFromTotal >= 1 && derivedDieFromTotal <= 20 ? derivedDieFromTotal : null);
     const total = hasRawTotal ? rawTotal : dieValue != null ? dieValue + modifier : null;
     setDiceResult(formatD20ResultMessage(label, modifier, dieValue, total));
+    lastRollAction = { type: "d20", label, modifier };
     return {
       label,
       notation,
@@ -311,9 +355,26 @@ async function rollVisualNotation(label, notation) {
     const inferredTotal = rollValues.length ? rollValues.reduce((acc, value) => acc + value, 0) : null;
     const total = Number.isFinite(rawTotal) ? rawTotal : inferredTotal;
     setDiceResult(formatNotationResultMessage(label, cleanNotation, total, rollValues));
+    lastRollAction = { type: "notation", label, notation: cleanNotation };
   } catch (error) {
     console.error("Dice roll failed", error);
     setDiceResult(`${label}: roll failed.`, true);
+  }
+}
+
+async function rerollLastRoll() {
+  if (!lastRollAction) {
+    setDiceResult("No previous roll to reroll.", true);
+    return;
+  }
+
+  if (lastRollAction.type === "d20") {
+    await rollVisualD20(lastRollAction.label, toNumber(lastRollAction.modifier, 0));
+    return;
+  }
+
+  if (lastRollAction.type === "notation") {
+    await rollVisualNotation(lastRollAction.label, lastRollAction.notation);
   }
 }
 
@@ -349,9 +410,133 @@ function getModeToggle(mode) {
   return `
     <div class="stepper mode-toggle">
       <button data-mode="play" class="${mode === "play" ? "active" : ""}">Play Mode</button>
-      <button data-mode="build" class="${mode === "build" ? "active" : ""}">Build Mode</button>
+      <button data-mode="build" class="${mode === "build" ? "active" : ""}">Edit Mode</button>
     </div>
   `;
+}
+
+function renderSaveRows(state, options = {}) {
+  const { character, derived } = state;
+  const { canToggle = false, includeRollButtons = false } = options;
+  const play = character.play ?? {};
+
+  return SAVE_ABILITIES.map((ability) => {
+    const score = toNumber(character.abilities?.[ability], 10);
+    const mod = derived.mods[ability];
+    const isProf = Boolean(play.saveProficiencies?.[ability]);
+    const total = mod + (isProf ? derived.proficiencyBonus : 0);
+    const abilityLabel = ABILITY_LABELS[ability] ?? ability.toUpperCase();
+    const saveName = `${abilityLabel} Save`;
+    const profControl = canToggle
+      ? `
+            <button
+              type="button"
+              class="save-prof-btn ${isProf ? "is-active" : ""}"
+              data-save-prof-btn="${ability}"
+              aria-pressed="${isProf ? "true" : "false"}"
+            >
+              ${isProf ? "P" : "-"}
+            </button>
+          `
+      : `
+            <span class="save-prof-btn is-readonly ${isProf ? "is-active" : ""}" aria-hidden="true">
+              ${isProf ? "P" : "-"}
+            </span>
+          `;
+    const modControl = includeRollButtons
+      ? `
+            <button
+              type="button"
+              class="save-mod-btn"
+              data-save-roll-btn="${ability}"
+              title="Roll ${saveName}"
+            >
+              ${signed(total)}
+            </button>
+          `
+      : `<span class="save-mod-btn">${signed(total)}</span>`;
+
+    return `
+      <div class="ability-save-row">
+        <button type="button" class="pill pill-btn" data-ability-roll="${ability}" title="Roll ${abilityLabel} check">
+          ${abilityLabel} ${score} / ${signed(mod)}
+        </button>
+        <div class="save-label">
+          <span class="save-left">
+            <span class="save-name">Save</span>
+            ${profControl}
+            ${modControl}
+          </span>
+        </div>
+      </div>
+    `;
+  }).join("");
+}
+
+function renderSkillRows(state, options = {}) {
+  const { character, derived } = state;
+  const { canToggle = false, includeRollButtons = false } = options;
+  const play = character.play ?? {};
+
+  return SKILLS.map((skill) => {
+    const isProf = Boolean(play.skillProficiencies?.[skill.key]);
+    const total = derived.mods[skill.ability] + (isProf ? derived.proficiencyBonus : 0);
+    const profControl = canToggle
+      ? `
+            <button
+              type="button"
+              class="skill-prof-btn ${isProf ? "is-active" : ""}"
+              data-skill-prof-btn="${skill.key}"
+              aria-pressed="${isProf ? "true" : "false"}"
+              title="Toggle proficiency"
+            >
+              ${isProf ? "P" : "-"}
+            </button>
+          `
+      : `
+            <span class="skill-prof-btn is-readonly ${isProf ? "is-active" : ""}" aria-hidden="true">
+              ${isProf ? "P" : "-"}
+            </span>
+          `;
+    const rollControl = includeRollButtons
+      ? `
+        <button
+          type="button"
+          class="save-mod-btn skill-roll-btn"
+          data-skill-roll-btn="${skill.key}"
+          title="Roll ${esc(skill.label)} check"
+        >
+          ${signed(total)}
+        </button>
+      `
+      : `<span class="save-mod-btn skill-roll-btn">${signed(total)}</span>`;
+
+    return `
+      <div class="skill-row">
+        <div class="skill-btn ${isProf ? "is-active" : ""}">
+          <span class="skill-left">
+            ${profControl}
+            <span class="skill-name">${esc(skill.label)} <span class="muted">(${skill.ability.toUpperCase()})</span></span>
+          </span>
+        </div>
+        ${rollControl}
+      </div>
+    `;
+  }).join("");
+}
+
+function getClassSaveProficiencies(catalogs, className) {
+  const selectedName = String(className ?? "").trim();
+  if (!selectedName) return {};
+
+  const classEntry = (catalogs?.classes ?? []).find((entry) => entry.name === selectedName);
+  const profs = classEntry?.proficiency;
+  if (!Array.isArray(profs)) return {};
+
+  return SAVE_ABILITIES.reduce((acc, ability) => {
+    acc[ability] = profs.includes(ability);
+    return acc;
+  }, {});
 }
 
 function renderStepper(stepIndex) {
@@ -445,6 +630,8 @@ function renderBuildEditor(state) {
     `;
   }
   if (stepIndex === 4) {
+    const saveRows = renderSaveRows(state, { canToggle: true, includeRollButtons: false });
+    const skillRows = renderSkillRows(state, { canToggle: true, includeRollButtons: false });
     return `
       <h2 class="title">Abilities</h2>
       <div class="row">
@@ -457,6 +644,18 @@ function renderBuildEditor(state) {
         `
           )
           .join("")}
+      </div>
+      <h3 class="title">Proficiencies</h3>
+      <p class="subtitle">Toggle skill and save proficiencies for your character sheet.</p>
+      <div class="play-grid">
+        <article class="card">
+          <h4 class="title">Abilities & Saves</h4>
+          <div class="play-list ability-save-grid edit-save-grid">${saveRows}</div>
+        </article>
+        <article class="card">
+          <h4 class="title">Skills</h4>
+          <div class="play-list skill-grid">${skillRows}</div>
+        </article>
       </div>
     `;
   }
@@ -471,13 +670,22 @@ function renderBuildEditor(state) {
     `;
   }
   if (stepIndex === 6) {
+    const play = character.play ?? {};
+    const defaultSpellSlots = getClassSpellSlotDefaults(catalogs, character.class, character.level);
     return `
       <h2 class="title">Spells</h2>
       <p class="subtitle">Use modal for quick search and selection.</p>
       <div class="toolbar">
         <button class="btn secondary" id="open-spells">Pick Spells</button>
       </div>
-      <div>${character.spells.map((it) => `<span class="pill">${esc(it)}</span>`).join(" ") || "<span class='muted'>No spells selected.</span>"}</div>
+      <div class="build-spell-list">
+        ${renderBuildSpellList(character, catalogs)}
+      </div>
+      <h4>Spell Slots (Edit Max)</h4>
+      <p class="muted spell-prep-help">Defaults are loaded from 5etools class progression for your current class and level. Override them only if needed.</p>
+      <div class="play-list spell-slot-grid">
+        ${SPELL_SLOT_LEVELS.map((level) => renderBuildSpellSlotRow(play, defaultSpellSlots, level)).join("")}
+      </div>
     `;
   }
   return `
@@ -514,17 +722,75 @@ function renderSummary(state) {
   `;
 }
 
-function getSpellSlotRow(play, level) {
-  const slot = play.spellSlots?.[String(level)] ?? { max: 0, used: 0 };
+function getClassSpellSlotDefaults(catalogs, className, classLevel) {
+  const defaults = Object.fromEntries(SPELL_SLOT_LEVELS.map((level) => [String(level), 0]));
+  if (!catalogs || !Array.isArray(catalogs.classes)) return defaults;
+
+  const normalizedClassName = String(className ?? "").trim().toLowerCase();
+  if (!normalizedClassName) return defaults;
+
+  const classEntry = catalogs.classes.find((entry) => String(entry?.name ?? "").trim().toLowerCase() === normalizedClassName);
+  if (!classEntry || !Array.isArray(classEntry.classTableGroups)) return defaults;
+
+  const levelIndex = Math.max(0, Math.min(19, toNumber(classLevel, 1) - 1));
+  const progressionGroup = classEntry.classTableGroups.find((group) => Array.isArray(group?.rowsSpellProgression));
+  const progressionRows = progressionGroup?.rowsSpellProgression;
+  const row = Array.isArray(progressionRows?.[levelIndex]) ? progressionRows[levelIndex] : null;
+  if (!row) return defaults;
+
+  SPELL_SLOT_LEVELS.forEach((slotLevel, idx) => {
+    defaults[String(slotLevel)] = Math.max(0, toNumber(row[idx], 0));
+  });
+  return defaults;
+}
+
+function getSpellSlotValues(play, defaults, level) {
+  const key = String(level);
+  const slot = play.spellSlots?.[key] ?? { max: 0, used: 0 };
+  const overrideMax = play.spellSlotMaxOverrides?.[key];
+  const baseMax = overrideMax == null ? toNumber(defaults?.[key], toNumber(slot.max, 0)) : toNumber(overrideMax, 0);
+  const max = Math.max(0, baseMax);
+  const used = Math.max(0, Math.min(max, toNumber(slot.used, 0)));
+  const isOverridden = overrideMax != null;
+  return { max, used, isOverridden };
+}
+
+function getSpellSlotRow(play, defaults, level) {
+  const { max, used } = getSpellSlotValues(play, defaults, level);
   return `
-    <div class="play-inline-row">
-      <span>Level ${level}</span>
-      <label class="inline-field">Max
-        <input id="slot-max-${level}" type="number" min="0" max="9" data-slot-max="${level}" value="${esc(slot.max)}">
-      </label>
-      <span>Used ${slot.used}/${slot.max}</span>
-      <button class="btn secondary" data-slot-delta="${level}" data-delta="-1">-</button>
-      <button class="btn secondary" data-slot-delta="${level}" data-delta="1">+</button>
+    <div class="spell-slot-card">
+      <div class="spell-slot-top">
+        <span class="spell-slot-level">Level ${level}</span>
+        <span class="spell-slot-used">Slots <strong>${Math.max(0, max - used)}/${max}</strong></span>
+      </div>
+      <div class="spell-slot-controls">
+        <div class="spell-slot-actions">
+          <button type="button" class="spell-slot-btn" data-slot-delta="${level}" data-delta="-1" aria-label="Decrease used slots for level ${level}">-</button>
+          <button type="button" class="spell-slot-btn" data-slot-delta="${level}" data-delta="1" aria-label="Increase used slots for level ${level}">+</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderBuildSpellSlotRow(play, defaults, level) {
+  const { max, used, isOverridden } = getSpellSlotValues(play, defaults, level);
+  const defaultMax = Math.max(0, toNumber(defaults?.[String(level)], 0));
+  return `
+    <div class="spell-slot-card">
+      <div class="spell-slot-top">
+        <span class="spell-slot-level">Level ${level}</span>
+        <span class="spell-slot-used">Default ${defaultMax}</span>
+      </div>
+      <div class="spell-slot-controls">
+        <label class="spell-slot-max">Max
+          <input id="build-slot-max-${level}" type="number" min="0" max="9" data-build-slot-max="${level}" value="${esc(max)}">
+        </label>
+        <div class="spell-slot-actions">
+          <button type="button" class="spell-slot-btn" data-build-slot-default="${level}" ${isOverridden ? "" : "disabled"} aria-label="Reset level ${level} slots to class defaults">Default</button>
+          <span class="muted">Used ${used}/${max}</span>
+        </div>
+      </div>
     </div>
   `;
 }
@@ -535,6 +801,46 @@ function getSpellByName(state, spellName) {
 
 function getSpellLevelLabel(level) {
   return toNumber(level, 0) === 0 ? "Cantrip" : `Level ${toNumber(level, 0)}`;
+}
+
+function renderBuildSpellList(character, catalogs) {
+  const selectedSpells = Array.isArray(character?.spells) ? character.spells : [];
+  if (!selectedSpells.length) return "<span class='muted'>No spells selected.</span>";
+
+  const spellByName = new Map((catalogs?.spells ?? []).map((spell) => [spell.name, spell]));
+  const groupedByLevel = new Map();
+
+  selectedSpells.forEach((spellName) => {
+    const spell = spellByName.get(spellName);
+    const level = spell ? Math.max(0, toNumber(spell.level, 0)) : 99;
+    const list = groupedByLevel.get(level) ?? [];
+    list.push(spellName);
+    groupedByLevel.set(level, list);
+  });
+
+  return [...groupedByLevel.entries()]
+    .sort(([a], [b]) => a - b)
+    .map(([level, names]) => {
+      const levelLabel = level === 99 ? "Unknown Level" : getSpellLevelLabel(level);
+      const sortedNames = [...names].sort((a, b) => a.localeCompare(b));
+      return `
+        <section class="build-spell-level-card">
+          <div class="build-spell-level-head">
+            <h5 class="build-spell-level-title">${esc(levelLabel)}</h5>
+            <span class="pill build-spell-count">${sortedNames.length}</span>
+          </div>
+          <div class="build-spell-chip-row">
+            ${sortedNames
+              .map(
+                (name) =>
+                  `<button type="button" class="pill pill-btn build-spell-pill-btn" data-build-spell-open="${esc(name)}" title="View spell details">${esc(name)}</button>`
+              )
+              .join("")}
+          </div>
+        </section>
+      `;
+    })
+    .join("");
 }
 
 function cleanSpellInlineTags(value) {
@@ -616,6 +922,16 @@ function getSpellDescriptionLines(spell) {
     lines.push(...higherLevelLines);
   }
   return lines.filter(Boolean);
+}
+
+function getSpellPrimaryDiceNotation(spell) {
+  const lines = getSpellDescriptionLines(spell);
+  for (const line of lines) {
+    DICE_NOTATION_REGEX.lastIndex = 0;
+    const match = DICE_NOTATION_REGEX.exec(String(line));
+    if (match?.[0]) return String(match[0]).replace(/\s+/g, "");
+  }
+  return "";
 }
 
 function renderTextWithInlineDiceButtons(text) {
@@ -703,18 +1019,35 @@ function formatSpellComponents(spell) {
   return values.join(", ");
 }
 
+function getClassKey(className) {
+  return String(className ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z]/g, "");
+}
+
+function doesClassUsePreparedSpells(character) {
+  const classKey = getClassKey(character?.class);
+  return PREPARED_SPELL_CLASSES.has(classKey);
+}
+
 function renderSpellGroupsByLevel(state) {
   const play = state.character.play ?? {};
+  const defaultSpellSlots = getClassSpellSlotDefaults(state.catalogs, state.character.class, state.character.level);
+  const usesPreparedSpells = doesClassUsePreparedSpells(state.character);
   const grouped = new Map();
 
   (state.character.spells ?? []).forEach((name) => {
     const spell = getSpellByName(state, name);
     const level = spell ? toNumber(spell.level, 0) : 99;
     const existing = play.preparedSpells?.[name];
-    const isPrepared = existing == null ? true : Boolean(existing);
+    const isPrepared = usesPreparedSpells ? (existing == null ? true : Boolean(existing)) : true;
+    const slotInfo = level > 0 ? getSpellSlotValues(play, defaultSpellSlots, level) : { max: Infinity, used: 0 };
+    const hasSlotsAvailable = level === 0 || toNumber(slotInfo.max, 0) - toNumber(slotInfo.used, 0) > 0;
+    const stateClass = !isPrepared ? "is-unprepared" : hasSlotsAvailable ? "is-prepared-available" : "is-prepared-unavailable";
     const row = { name, spell, level, isPrepared };
     const list = grouped.get(level) ?? [];
-    list.push(row);
+    list.push({ ...row, stateClass, hasSlotsAvailable });
     grouped.set(level, list);
   });
 
@@ -726,24 +1059,34 @@ function renderSpellGroupsByLevel(state) {
       const title = level === 99 ? "Unknown Level" : getSpellLevelLabel(level);
       const body = rows
         .sort((a, b) => a.name.localeCompare(b.name))
-        .map(({ name, spell, isPrepared }) => {
+        .map(({ name, spell, isPrepared, stateClass, hasSlotsAvailable }) => {
           const school = spell?.school ? SPELL_SCHOOL_LABELS[spell.school] ?? spell.school : "";
           const source = spell?.sourceLabel ?? spell?.source ?? "";
           const meta = [school, source].filter(Boolean).join(" - ");
+          const knownTag = usesPreparedSpells ? (isPrepared ? "Prepared" : "Unprepared") : "Known";
+          const slotTag = toNumber(spell?.level, 0) > 0 && isPrepared ? (hasSlotsAvailable ? "Slots OK" : "No Slots") : "";
+          const knownAndSlotTag = slotTag ? `${knownTag} · ${slotTag}` : knownTag;
           return `
-            <div class="spell-row ${isPrepared ? "is-prepared" : ""}">
-              <button
-                type="button"
-                class="spell-prep-btn ${isPrepared ? "is-active" : ""}"
-                data-spell-prepared-btn="${esc(name)}"
-                aria-pressed="${isPrepared ? "true" : "false"}"
-                title="Toggle prepared"
-              >
-                ${isPrepared ? "P" : "-"}
-              </button>
+            <div class="spell-row ${stateClass}">
+              ${
+                usesPreparedSpells
+                  ? `
+                <button
+                  type="button"
+                  class="spell-prep-btn ${isPrepared ? "is-active" : ""}"
+                  data-spell-prepared-btn="${esc(name)}"
+                  aria-pressed="${isPrepared ? "true" : "false"}"
+                  title="Toggle prepared"
+                >
+                  ${isPrepared ? "P" : "-"}
+                </button>
+              `
+                  : '<span class="spell-prep-static">K</span>'
+              }
               <button type="button" class="spell-name-btn" data-spell-open="${esc(name)}">${esc(name)}</button>
-              <span class="spell-known-tag muted">${isPrepared ? "Prepared" : "Known"}</span>
+              <span class="spell-known-tag muted">${knownAndSlotTag}</span>
               <span class="spell-meta muted">${esc(meta || "No metadata")}</span>
+              <button type="button" class="btn secondary spell-cast-btn" data-spell-cast="${esc(name)}">Cast</button>
             </div>
           `;
         })
@@ -761,6 +1104,7 @@ function renderSpellGroupsByLevel(state) {
 function renderPlayView(state) {
   const { character, derived } = state;
   const play = character.play ?? {};
+  const defaultSpellSlots = getClassSpellSlotDefaults(state.catalogs, character.class, character.level);
   const hpTotal = derived.hp;
   const hpCurrent = play.hpCurrent == null ? hpTotal : play.hpCurrent;
   const hpTemp = toNumber(play.hpTemp, 0);
@@ -768,80 +1112,60 @@ function renderPlayView(state) {
   const initiativeBonus = toNumber(play.initiativeBonus, 0);
   const conditionText = (play.conditions ?? []).map((c) => `<span class="pill">${esc(c)}</span>`).join(" ");
 
-  const savesHtml = SAVE_ABILITIES.map((ability) => {
-    const score = toNumber(character.abilities?.[ability], 10);
-    const mod = derived.mods[ability];
-    const isProf = Boolean(play.saveProficiencies?.[ability]);
-    const total = mod + (isProf ? derived.proficiencyBonus : 0);
-    return `
-      <div class="ability-save-row">
-        <button type="button" class="pill pill-btn" data-ability-roll="${ability}" title="Roll ${ability.toUpperCase()} check">
-          ${ability.toUpperCase()} ${score} / ${mod >= 0 ? "+" : ""}${mod}
-        </button>
-        <div class="save-label">
-          <span class="save-left">
-            <span class="save-name">Save</span>
-            <button
-              type="button"
-              class="save-prof-btn ${isProf ? "is-active" : ""}"
-              data-save-prof-btn="${ability}"
-              aria-pressed="${isProf ? "true" : "false"}"
-            >
-              ${isProf ? "P" : "-"}
-            </button>
-            <button
-              type="button"
-              class="save-mod-btn"
-              data-save-roll-btn="${ability}"
-              title="Roll ${ability.toUpperCase()} save"
-            >
-              ${total >= 0 ? "+" : ""}${total}
-            </button>
-          </span>
-        </div>
-      </div>
-    `;
-  }).join("");
+  const savesHtml = renderSaveRows(state, { canToggle: false, includeRollButtons: true });
+  const skillsHtml = renderSkillRows(state, { canToggle: false, includeRollButtons: true });
 
-  const skillsHtml = SKILLS.map((skill) => {
-    const isProf = Boolean(play.skillProficiencies?.[skill.key]);
-    const total = derived.mods[skill.ability] + (isProf ? derived.proficiencyBonus : 0);
-    return `
-      <div class="skill-row">
-        <div class="skill-btn ${isProf ? "is-active" : ""}">
-          <span class="skill-left">
-            <button
-              type="button"
-              class="skill-prof-btn ${isProf ? "is-active" : ""}"
-              data-skill-prof-btn="${skill.key}"
-              aria-pressed="${isProf ? "true" : "false"}"
-              title="Toggle proficiency"
-            >
-              ${isProf ? "P" : "-"}
-            </button>
-            <span class="skill-name">${esc(skill.label)} <span class="muted">(${skill.ability.toUpperCase()})</span></span>
-          </span>
-        </div>
-        <button
-          type="button"
-          class="save-mod-btn skill-roll-btn"
-          data-skill-roll-btn="${skill.key}"
-          title="Roll ${esc(skill.label)} check"
-        >
-          ${total >= 0 ? "+" : ""}${total}
-        </button>
-      </div>
-    `;
-  }).join("");
+  const attackMode = play.attackMode === "edit" ? "edit" : "view";
+  const attacksHtml = (play.attacks ?? [])
+    .map((attack, idx) => {
+      const attackName = attack.name?.trim() || `Attack ${idx + 1}`;
+      if (attackMode === "edit") {
+        return `
+          <div class="attack-card">
+            <div class="attack-row-top">
+              <input
+                id="attack-name-${idx}"
+                placeholder="Attack name"
+                value="${esc(attack.name ?? "")}"
+                data-attack-field="${idx}:name"
+              >
+              <div class="attack-row-actions">
+                <button type="button" class="btn secondary" data-remove-attack="${idx}">Remove</button>
+              </div>
+            </div>
+            <div class="attack-row-stats">
+              <input
+                id="attack-hit-${idx}"
+                placeholder="+To hit"
+                value="${esc(attack.toHit ?? "")}"
+                data-attack-field="${idx}:toHit"
+              >
+              <input
+                id="attack-dmg-${idx}"
+                placeholder="Damage"
+                value="${esc(attack.damage ?? "")}"
+                data-attack-field="${idx}:damage"
+              >
+            </div>
+          </div>
+        `;
+      }
 
-  const attacksHtml = (play.attacks ?? []).map((attack, idx) => `
-    <div class="play-grid-4">
-      <input id="attack-name-${idx}" placeholder="Attack name" value="${esc(attack.name ?? "")}" data-attack-field="${idx}:name">
-      <input id="attack-hit-${idx}" placeholder="+To hit" value="${esc(attack.toHit ?? "")}" data-attack-field="${idx}:toHit" title="Double-click to roll to-hit">
-      <input id="attack-dmg-${idx}" placeholder="Damage" value="${esc(attack.damage ?? "")}" data-attack-field="${idx}:damage" title="Double-click to roll damage notation">
-      <button class="btn secondary" data-remove-attack="${idx}">Remove</button>
-    </div>
-  `).join("");
+      return `
+        <div class="attack-card attack-card-view">
+          <div class="attack-row-top">
+            <strong class="attack-title">${esc(attackName)}</strong>
+          </div>
+          <div class="attack-row-stats attack-row-stats-view">
+            <div class="pill attack-pill">To Hit: ${esc(attack.toHit || "n/a")}</div>
+            <div class="pill attack-pill">Damage: ${esc(attack.damage || "n/a")}</div>
+            <button type="button" class="save-mod-btn attack-roll-btn" data-attack-roll="${idx}:toHit">To Hit</button>
+            <button type="button" class="save-mod-btn attack-roll-btn" data-attack-roll="${idx}:damage">Damage</button>
+          </div>
+        </div>
+      `;
+    })
+    .join("");
 
   const resourcesHtml = (play.resources ?? []).map((resource, idx) => `
     <div class="play-grid-4">
@@ -868,6 +1192,7 @@ function renderPlayView(state) {
           </div>
           <div class="dice-style-row">
             <select id="dice-style-select" aria-label="Dice style">${renderDiceStyleOptions()}</select>
+            <button type="button" class="btn secondary" id="reroll-last-roll">Reroll</button>
           </div>
         </div>
       </div>
@@ -884,7 +1209,7 @@ function renderPlayView(state) {
               Initiative ${initiativeBonus >= 0 ? "+" : ""}${initiativeBonus}
             </button>
           </div>
-          <div class="play-inline-row">
+          <div class="play-inline-row hp-pair-row">
             <label class="inline-field hp-control">HP <span class="muted hp-meta">(Current / Total ${hpTotal})</span>
               <div class="num-input-wrap">
                 <input id="play-hp-current" type="number" min="0" value="${esc(hpCurrent)}">
@@ -900,7 +1225,7 @@ function renderPlayView(state) {
                 <button type="button" class="btn secondary hp-quick-btn" data-hp-delta="5" data-hp-delta-target="current">5</button>
               </div>
             </label>
-            <label class="inline-field hp-control">Temp HP
+            <label class="inline-field hp-control hp-control-right">Temp HP
               <div class="num-input-wrap">
                 <input id="play-hp-temp" type="number" min="0" value="${esc(hpTemp)}">
                 <div class="num-stepper">
@@ -916,8 +1241,8 @@ function renderPlayView(state) {
               </div>
             </label>
           </div>
-          <div class="play-inline-row">
-            <label class="inline-field">Speed
+          <div class="play-inline-row hp-pair-row">
+            <label class="inline-field hp-control">Speed
               <div class="num-input-wrap">
                 <input id="play-speed" type="number" min="0" value="${esc(speed)}">
                 <div class="num-stepper">
@@ -926,7 +1251,7 @@ function renderPlayView(state) {
                 </div>
               </div>
             </label>
-            <label class="inline-field">Initiative Bonus
+            <label class="inline-field hp-control hp-control-right">Initiative Bonus
               <div class="num-input-wrap">
                 <input id="play-initiative-bonus" type="number" value="${esc(initiativeBonus)}">
                 <div class="num-stepper">
@@ -936,9 +1261,11 @@ function renderPlayView(state) {
               </div>
             </label>
           </div>
-          <div class="play-inline-row">
-            <span>Death Saves</span>
-            <button type="button" class="btn secondary" data-roll-death-save>Roll</button>
+          <div class="play-inline-row death-save-row">
+            <div class="death-save-head">
+              <span class="death-save-label">Death Saves</span>
+              <button type="button" class="btn secondary death-save-roll-btn" data-roll-death-save>Roll</button>
+            </div>
             <label class="inline-field">Success
               <div class="num-input-wrap">
                 <input id="play-ds-success" type="number" min="0" max="3" value="${esc(toNumber(play.deathSavesSuccess, 0))}">
@@ -972,21 +1299,25 @@ function renderPlayView(state) {
 
         <article class="card">
           <h3 class="title">Attacks & Actions</h3>
+          <div class="toolbar attack-mode-toolbar">
+            <button type="button" class="btn secondary" data-attack-mode-toggle>
+              ${attackMode === "edit" ? "Switch to View Mode" : "Switch to Edit Mode"}
+            </button>
+            ${attackMode === "edit" ? '<button class="btn secondary" id="add-attack">Add Attack</button>' : ""}
+          </div>
           <div class="play-list">
             ${attacksHtml || "<p class='muted'>No attack entries yet.</p>"}
-          </div>
-          <div class="toolbar">
-            <button class="btn secondary" id="add-attack">Add Attack</button>
           </div>
         </article>
 
         <article class="card">
           <h3 class="title">Spells & Slots</h3>
-          <div class="play-list">
-            ${SPELL_SLOT_LEVELS.map((level) => getSpellSlotRow(play, level)).join("")}
+          <div class="play-list spell-slot-grid">
+            ${SPELL_SLOT_LEVELS.map((level) => getSpellSlotRow(play, defaultSpellSlots, level)).join("")}
           </div>
           <h4>Prepared/Known Spells</h4>
           <p class="muted spell-prep-help">Toggle P to mark prepared. Click a spell name to view details and roll from its description.</p>
+          <div id="spell-cast-status" class="spell-cast-status ${latestSpellCastStatusIsError ? "is-error" : ""}" ${latestSpellCastStatusMessage ? "" : "hidden"}>${esc(latestSpellCastStatusMessage)}</div>
           <div class="spell-level-groups">${renderSpellGroupsByLevel(state)}</div>
         </article>
 
@@ -1048,7 +1379,7 @@ function bindBuildEvents(state) {
     });
   }
 
-  [["#name", "name"], ["#level", "level"], ["#notes", "notes"], ["#race", "race"], ["#background", "background"], ["#class", "class"], ["#subclass", "subclass"]].forEach(([sel, field]) => {
+  [["#name", "name"], ["#level", "level"], ["#notes", "notes"], ["#race", "race"], ["#background", "background"], ["#subclass", "subclass"]].forEach(([sel, field]) => {
     const el = app.querySelector(sel);
     if (!el) return;
     const handler = () => store.updateCharacter({ [field]: sel === "#level" ? Number(el.value || 1) : el.value });
@@ -1056,13 +1387,90 @@ function bindBuildEvents(state) {
     el.addEventListener("change", handler);
   });
 
+  const classEl = app.querySelector("#class");
+  if (classEl) {
+    classEl.addEventListener("change", () => {
+      const nextClass = classEl.value || "";
+      const saveProficiencies = getClassSaveProficiencies(state.catalogs, nextClass);
+      const nextPlay = structuredClone(state.character.play ?? {});
+      nextPlay.saveProficiencies = saveProficiencies;
+      store.updateCharacter({ class: nextClass, play: nextPlay });
+    });
+  }
+
   app.querySelectorAll("[data-ability]").forEach((input) => {
     input.addEventListener("input", () => store.updateAbility(input.dataset.ability, input.value));
+  });
+
+  app.querySelectorAll("[data-save-prof-btn]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const ability = button.dataset.saveProfBtn;
+      withUpdatedPlay(state, (play) => {
+        const current = Boolean(play.saveProficiencies?.[ability]);
+        play.saveProficiencies = { ...(play.saveProficiencies ?? {}), [ability]: !current };
+      });
+    });
+  });
+
+  app.querySelectorAll("[data-skill-prof-btn]").forEach((button) => {
+    button.addEventListener("mousedown", (evt) => {
+      // Prevent focus-jump/reflow while preserving click toggle behavior.
+      evt.preventDefault();
+    });
+    button.addEventListener("click", () => {
+      const key = button.dataset.skillProfBtn;
+      withUpdatedPlay(state, (play) => {
+        const current = Boolean(play.skillProficiencies?.[key]);
+        play.skillProficiencies = { ...(play.skillProficiencies ?? {}), [key]: !current };
+      });
+    });
   });
 
   app.querySelector("#open-spells")?.addEventListener("click", () => openSpellModal(state));
   app.querySelector("#open-items")?.addEventListener("click", () => openItemModal(state));
   app.querySelector("#open-multiclass")?.addEventListener("click", () => openMulticlassModal(state));
+  app.querySelectorAll("[data-build-spell-open]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const spellName = button.dataset.buildSpellOpen;
+      if (!spellName) return;
+      openSpellDetailsModal(state, spellName);
+    });
+  });
+  const defaultSpellSlots = getClassSpellSlotDefaults(state.catalogs, state.character.class, state.character.level);
+  app.querySelectorAll("[data-build-slot-max]").forEach((input) => {
+    input.addEventListener("input", () => {
+      const level = String(input.dataset.buildSlotMax);
+      const nextMax = Math.max(0, toNumber(input.value, 0));
+      const defaultMax = Math.max(0, toNumber(defaultSpellSlots[level], 0));
+      withUpdatedPlay(state, (play) => {
+        const previous = play.spellSlots?.[level] ?? { max: defaultMax, used: 0 };
+        const overrides = { ...(play.spellSlotMaxOverrides ?? {}) };
+        if (nextMax === defaultMax) delete overrides[level];
+        else overrides[level] = nextMax;
+        play.spellSlotMaxOverrides = overrides;
+        play.spellSlots = {
+          ...(play.spellSlots ?? {}),
+          [level]: { ...previous, max: nextMax, used: Math.min(toNumber(previous.used, 0), nextMax) },
+        };
+      });
+    });
+  });
+  app.querySelectorAll("[data-build-slot-default]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const level = String(button.dataset.buildSlotDefault);
+      const defaultMax = Math.max(0, toNumber(defaultSpellSlots[level], 0));
+      withUpdatedPlay(state, (play) => {
+        const previous = play.spellSlots?.[level] ?? { max: defaultMax, used: 0 };
+        const overrides = { ...(play.spellSlotMaxOverrides ?? {}) };
+        delete overrides[level];
+        play.spellSlotMaxOverrides = overrides;
+        play.spellSlots = {
+          ...(play.spellSlots ?? {}),
+          [level]: { ...previous, max: defaultMax, used: Math.min(toNumber(previous.used, 0), defaultMax) },
+        };
+      });
+    });
+  });
   app.querySelector("#import-json")?.addEventListener("click", () => {
     const input = app.querySelector("#export-json");
     try {
@@ -1088,6 +1496,9 @@ function bindPlayEvents(state) {
       applyDiceStyle();
     });
   }
+  app.querySelector("#reroll-last-roll")?.addEventListener("click", () => {
+    rerollLastRoll();
+  });
 
   const hpCurrentEl = app.querySelector("#play-hp-current");
   const hpTempEl = app.querySelector("#play-hp-temp");
@@ -1180,16 +1591,6 @@ function bindPlayEvents(state) {
     });
   });
 
-  app.querySelectorAll("[data-save-prof-btn]").forEach((button) => {
-    button.addEventListener("click", () => {
-      const ability = button.dataset.saveProfBtn;
-      withUpdatedPlay(state, (play) => {
-        const current = Boolean(play.saveProficiencies?.[ability]);
-        play.saveProficiencies = { ...(play.saveProficiencies ?? {}), [ability]: !current };
-      });
-    });
-  });
-
   app.querySelectorAll("[data-save-roll-btn]").forEach((button) => {
     button.addEventListener("click", () => {
       const ability = button.dataset.saveRollBtn;
@@ -1197,20 +1598,6 @@ function bindPlayEvents(state) {
       const isProf = Boolean(state.character.play?.saveProficiencies?.[ability]);
       const bonus = mod + (isProf ? state.derived.proficiencyBonus : 0);
       rollVisualD20(`${ability.toUpperCase()} save`, bonus);
-    });
-  });
-
-  app.querySelectorAll("[data-skill-prof-btn]").forEach((button) => {
-    button.addEventListener("mousedown", (evt) => {
-      // Prevent focus-jump/reflow while preserving click toggle behavior.
-      evt.preventDefault();
-    });
-    button.addEventListener("click", () => {
-      const key = button.dataset.skillProfBtn;
-      withUpdatedPlay(state, (play) => {
-        const current = Boolean(play.skillProficiencies?.[key]);
-        play.skillProficiencies = { ...(play.skillProficiencies ?? {}), [key]: !current };
-      });
     });
   });
 
@@ -1243,6 +1630,70 @@ function bindPlayEvents(state) {
       const spellName = button.dataset.spellOpen;
       if (!spellName) return;
       openSpellDetailsModal(state, spellName);
+    });
+  });
+
+  app.querySelectorAll("[data-spell-cast]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const spellName = button.dataset.spellCast;
+      if (!spellName) return;
+      const spell = getSpellByName(state, spellName);
+      if (!spell) {
+        setDiceResult(`Cast ${spellName}: spell data unavailable.`, true);
+        return;
+      }
+
+      const spellLevel = Math.max(0, toNumber(spell.level, 0));
+      const slotLevel = String(spellLevel);
+      let slotSpent = false;
+      let slotError = "";
+
+      if (spellLevel > 0) {
+        withUpdatedPlay(state, (play) => {
+          const values = getSpellSlotValues(
+            play,
+            getClassSpellSlotDefaults(state.catalogs, state.character.class, state.character.level),
+            spellLevel
+          );
+          const previous = play.spellSlots?.[slotLevel] ?? { max: values.max, used: values.used };
+          if (values.max <= 0) {
+            slotError = `Cast ${spell.name}: no level ${spellLevel} slots configured.`;
+            return;
+          }
+          if (values.used >= values.max) {
+            slotError = `Cast ${spell.name}: no level ${spellLevel} slots remaining.`;
+            return;
+          }
+          slotSpent = true;
+          play.spellSlots = {
+            ...(play.spellSlots ?? {}),
+            [slotLevel]: { ...previous, used: values.used + 1 },
+          };
+        });
+      }
+
+      if (slotError) {
+        setSpellCastStatus(slotError, true, { durationMs: 10000 });
+        return;
+      }
+
+      setSpellCastStatus("", false);
+
+      const notation = getSpellPrimaryDiceNotation(spell);
+      if (notation) {
+        await rollVisualNotation(`Cast ${spell.name}`, notation);
+        return;
+      }
+
+      if (spellLevel === 0) {
+        scrollDiceTrayIntoView();
+        setDiceResult(`Cast ${spell.name}: no dice notation found.`, false);
+        return;
+      }
+
+      const spentText = slotSpent ? "slot spent." : "cast.";
+      scrollDiceTrayIntoView();
+      setDiceResult(`Cast ${spell.name}: ${spentText} No dice notation found.`, false);
     });
   });
 
@@ -1286,27 +1737,15 @@ function bindPlayEvents(state) {
     });
   });
 
-  app.querySelectorAll("[data-slot-max]").forEach((input) => {
-    input.addEventListener("input", () => {
-      const level = input.dataset.slotMax;
-      withUpdatedPlay(state, (play) => {
-        const previous = play.spellSlots?.[level] ?? { max: 0, used: 0 };
-        const max = Math.max(0, toNumber(input.value, 0));
-        play.spellSlots = {
-          ...(play.spellSlots ?? {}),
-          [level]: { max, used: Math.min(previous.used, max) },
-        };
-      });
-    });
-  });
-
   app.querySelectorAll("[data-slot-delta]").forEach((button) => {
     button.addEventListener("click", () => {
       const level = button.dataset.slotDelta;
       const delta = toNumber(button.dataset.delta, 0);
+      const defaults = getClassSpellSlotDefaults(state.catalogs, state.character.class, state.character.level);
       withUpdatedPlay(state, (play) => {
-        const previous = play.spellSlots?.[level] ?? { max: 0, used: 0 };
-        const used = Math.max(0, Math.min(previous.max, previous.used + delta));
+        const values = getSpellSlotValues(play, defaults, level);
+        const previous = play.spellSlots?.[level] ?? { max: values.max, used: values.used };
+        const used = Math.max(0, Math.min(values.max, values.used + delta));
         play.spellSlots = {
           ...(play.spellSlots ?? {}),
           [level]: { ...previous, used },
@@ -1333,13 +1772,24 @@ function bindPlayEvents(state) {
     });
   });
 
-  app.querySelectorAll("[data-attack-field]").forEach((input) => {
-    input.addEventListener("dblclick", () => {
-      const [idxStr, field] = input.dataset.attackField.split(":");
-      const idx = toNumber(idxStr, 0);
-      const attack = state.character.play?.attacks?.[idx] ?? {};
+  app.querySelectorAll("[data-attack-mode-toggle]").forEach((button) => {
+    button.addEventListener("click", () => {
+      withUpdatedPlay(state, (play) => {
+        const current = play.attackMode === "edit" ? "edit" : "view";
+        play.attackMode = current === "edit" ? "view" : "edit";
+      });
+    });
+  });
+
+  app.querySelectorAll("[data-attack-roll]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const [idxStr, field] = String(button.dataset.attackRoll || "").split(":");
+      const idx = toNumber(idxStr, -1);
+      const attack = state.character.play?.attacks?.[idx] ?? null;
+      if (!attack) return;
+
       const attackName = attack.name?.trim() || `Attack ${idx + 1}`;
-      const value = String(input.value || "").trim();
+      const value = String(attack[field] || "").trim();
       if (!value) {
         setDiceResult(`${attackName}: no roll value entered.`, true);
         return;
@@ -1558,19 +2008,33 @@ function openSpellModal(state) {
             (spell) => `
             <div class="option-row">
               <div>
-                <strong>${esc(spell.name)}</strong>
+                <button type="button" class="spell-picker-name-btn" data-spell-view="${esc(spell.name)}">${esc(spell.name)}</button>
                 <div class="muted">Level ${esc(spell.level ?? 0)} - ${esc(spell.sourceLabel ?? spell.source)}</div>
               </div>
-              <button class="btn secondary" data-pick="${esc(spell.name)}">${state.character.spells.includes(spell.name) ? "Added" : "Add"}</button>
+              <div class="option-row-actions">
+                <button type="button" class="btn secondary" data-spell-view="${esc(spell.name)}">View</button>
+                <button type="button" class="btn secondary" data-pick="${esc(spell.name)}">${state.character.spells.includes(spell.name) ? "Remove" : "Add"}</button>
+              </div>
             </div>
           `
           )
           .join("")
       : "<p class='muted'>No spells match these filters.</p>";
 
+    listEl.querySelectorAll("[data-spell-view]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const spellName = button.dataset.spellView;
+        if (!spellName) return;
+        openSpellDetailsModal(state, spellName);
+      });
+    });
+
     listEl.querySelectorAll("[data-pick]").forEach((button) => {
       button.addEventListener("click", () => {
-        store.addSpell(button.dataset.pick);
+        const spellName = button.dataset.pick;
+        if (!spellName) return;
+        if (state.character.spells.includes(spellName)) store.removeSpell(spellName);
+        else store.addSpell(spellName);
         close();
       });
     });
@@ -1691,7 +2155,7 @@ function renderBuildMode(state) {
     <main class="layout">
       <section class="card">
         <h1 class="title">Character Builder</h1>
-        <p class="subtitle">Build Mode: guide character setup and content selection.</p>
+        <p class="subtitle">Edit Mode: guide character setup and content selection.</p>
         ${getModeToggle(state.mode)}
         ${renderStepper(state.stepIndex)}
         <div id="editor">${renderBuildEditor(state)}</div>
@@ -1746,6 +2210,8 @@ function renderPlayMode(state) {
 }
 
 function render(state) {
+  const previousScrollX = window.scrollX;
+  const previousScrollY = window.scrollY;
   const activeInputSnapshot = getActiveInputSnapshot();
   const isPlayMode = state.mode === "play";
   document.body.classList.toggle("play-mode", isPlayMode);
@@ -1759,11 +2225,20 @@ function render(state) {
   dockDiceOverlay(isPlayMode);
   applyDiceStyle();
   syncDiceResultElements();
+  syncSpellCastStatusElements();
   renderRollHistory();
   bindModeEvents();
   if (isPlayMode) bindPlayEvents(state);
   else bindBuildEvents(state);
   restoreActiveInput(activeInputSnapshot);
+
+  // Keep viewport stable across state-driven re-renders.
+  const maxScrollY = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
+  window.scrollTo({
+    left: previousScrollX,
+    top: Math.min(previousScrollY, maxScrollY),
+    behavior: "auto",
+  });
 }
 
 store.subscribe((state) => {

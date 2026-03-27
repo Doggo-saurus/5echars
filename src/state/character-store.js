@@ -14,6 +14,11 @@ export const STEPS = [
 const ABILITIES = ["str", "dex", "con", "int", "wis", "cha"];
 const SPELL_SLOT_LEVELS = [1, 2, 3, 4, 5, 6, 7, 8, 9];
 
+function toNumber(value, fallback = 0) {
+  const out = Number(value);
+  return Number.isFinite(out) ? out : fallback;
+}
+
 function getDefaultSpellSlots() {
   return SPELL_SLOT_LEVELS.reduce((acc, lvl) => {
     acc[String(lvl)] = { max: 0, used: 0 };
@@ -31,6 +36,7 @@ function getDefaultPlayState() {
     skillProficiencies: {},
     preparedSpells: {},
     spellSlots: getDefaultSpellSlots(),
+    spellSlotMaxOverrides: {},
     attacks: [],
     resources: [],
     conditions: [],
@@ -41,6 +47,11 @@ function getDefaultPlayState() {
 }
 
 function normalizeCharacter(character) {
+  const legacySlotOverrides = Object.fromEntries(
+    Object.entries(character.play?.spellSlots ?? {})
+      .filter(([, slot]) => toNumber(slot?.max, 0) > 0)
+      .map(([level, slot]) => [level, Math.max(0, toNumber(slot?.max, 0))])
+  );
   const base = createInitialCharacter();
   const play = {
     ...getDefaultPlayState(),
@@ -53,6 +64,10 @@ function normalizeCharacter(character) {
       ...getDefaultSpellSlots(),
       ...(character.play?.spellSlots ?? {}),
     },
+    spellSlotMaxOverrides:
+      character.play?.spellSlotMaxOverrides && typeof character.play.spellSlotMaxOverrides === "object"
+        ? { ...character.play.spellSlotMaxOverrides }
+        : legacySlotOverrides,
   };
 
   return {

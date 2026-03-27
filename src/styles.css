@@ -160,6 +160,55 @@ input, select {
   border-color: rgba(255, 255, 255, 0.3);
 }
 
+.build-spell-pill-btn {
+  margin: 0;
+}
+
+.build-spell-list {
+  margin: 0.75rem 0 1rem;
+  padding: 0.6rem;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+  display: grid;
+  gap: 0.55rem;
+}
+
+.build-spell-level-card {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.025);
+  padding: 0.45rem 0.5rem 0.5rem;
+}
+
+.build-spell-level-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.45rem;
+}
+
+.build-spell-level-title {
+  margin: 0;
+  font-size: 0.8rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(229, 231, 235, 0.9);
+}
+
+.build-spell-count {
+  border-radius: 7px;
+  padding: 0.1rem 0.4rem;
+  font-size: 0.72rem;
+}
+
+.build-spell-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
 .sticky {
   position: sticky;
   top: 0.8rem;
@@ -275,6 +324,25 @@ body.play-mode #dice-overlay {
 
 .option-row:last-child {
   border-bottom: 0;
+}
+
+.option-row-actions {
+  display: inline-flex;
+  gap: 0.4rem;
+}
+
+.spell-picker-name-btn {
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  padding: 0;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.spell-picker-name-btn:hover {
+  text-decoration: underline;
 }
 
 .muted {
@@ -414,9 +482,94 @@ body.play-mode #dice-overlay {
   gap: 0.45rem;
 }
 
+.spell-slot-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.55rem;
+}
+
+.spell-slot-card {
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+  padding: 0.45rem 0.55rem;
+  display: grid;
+  gap: 0.4rem;
+}
+
+.spell-slot-top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.spell-slot-level {
+  font-weight: 600;
+}
+
+.spell-slot-used {
+  color: rgba(229, 231, 235, 0.9);
+  font-size: 0.88rem;
+}
+
+.spell-slot-controls {
+  display: grid;
+  grid-template-columns: minmax(84px, 120px) auto;
+  gap: 0.5rem;
+  align-items: end;
+}
+
+.spell-slot-max {
+  margin: 0;
+  display: grid;
+  gap: 0.22rem;
+  font-size: 0.83rem;
+}
+
+.spell-slot-max input {
+  margin-top: 0;
+  padding: 0.38rem 0.5rem;
+}
+
+.spell-slot-actions {
+  display: inline-flex;
+  gap: 0.3rem;
+}
+
+.spell-slot-btn {
+  min-width: 2rem;
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text);
+  border-radius: 9px;
+  padding: 0.3rem 0.45rem;
+  line-height: 1;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.spell-slot-btn:hover {
+  border-color: rgba(255, 255, 255, 0.4);
+}
+
 .spell-prep-help {
   margin: 0.45rem 0 0.65rem;
   font-size: 0.82rem;
+}
+
+.spell-cast-status {
+  margin: 0 0 0.65rem;
+  padding: 0.4rem 0.55rem;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.03);
+  font-size: 0.84rem;
+}
+
+.spell-cast-status.is-error {
+  border-color: rgba(248, 113, 113, 0.45);
+  color: var(--danger);
+  background: rgba(248, 113, 113, 0.08);
 }
 
 .spell-level-groups {
@@ -447,6 +600,7 @@ body.play-mode #dice-overlay {
 .spell-row {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto;
   align-items: center;
   gap: 0.45rem 0.6rem;
   border: 1px solid rgba(255, 255, 255, 0.14);
@@ -458,6 +612,21 @@ body.play-mode #dice-overlay {
 .spell-row.is-prepared {
   border-color: rgba(245, 158, 11, 0.55);
   background: rgba(245, 158, 11, 0.12);
+}
+
+.spell-row.is-prepared-available {
+  border-color: rgba(52, 211, 153, 0.38);
+  background: rgba(52, 211, 153, 0.11);
+}
+
+.spell-row.is-prepared-unavailable {
+  border-color: rgba(248, 113, 113, 0.38);
+  background: rgba(248, 113, 113, 0.11);
+}
+
+.spell-row.is-unprepared {
+  border-color: rgba(156, 163, 175, 0.22);
+  background: rgba(156, 163, 175, 0.09);
 }
 
 .spell-prep-btn {
@@ -486,6 +655,28 @@ body.play-mode #dice-overlay {
   background: var(--accent);
 }
 
+.spell-prep-btn {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.spell-prep-static {
+  min-width: 1.35rem;
+  height: 1.35rem;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(229, 231, 235, 0.9);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 0;
+  grid-column: 1;
+  grid-row: 1;
+}
+
 .spell-name-btn {
   border: 0;
   background: transparent;
@@ -494,6 +685,8 @@ body.play-mode #dice-overlay {
   padding: 0;
   cursor: pointer;
   font-weight: 600;
+  grid-column: 2;
+  grid-row: 1;
 }
 
 .spell-name-btn:hover {
@@ -503,11 +696,23 @@ body.play-mode #dice-overlay {
 .spell-known-tag {
   font-size: 0.78rem;
   text-align: right;
+  grid-column: 3;
+  grid-row: 1;
 }
 
 .spell-meta {
-  grid-column: 2 / -1;
+  grid-column: 2;
+  grid-row: 2;
   font-size: 0.77rem;
+}
+
+.spell-cast-btn {
+  grid-column: 3;
+  grid-row: 2;
+  justify-self: end;
+  align-self: end;
+  padding: 0.28rem 0.65rem;
+  font-size: 0.78rem;
 }
 
 .spell-meta-grid {
@@ -551,6 +756,10 @@ body.play-mode #dice-overlay {
 .ability-save-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   column-gap: 0.75rem;
+}
+
+.edit-save-grid {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .ability-save-row {
@@ -603,6 +812,11 @@ body.play-mode #dice-overlay {
   border-color: var(--accent);
   color: #111827;
   background: var(--accent);
+}
+
+.save-prof-btn.is-readonly {
+  cursor: default;
+  pointer-events: none;
 }
 
 .save-mod-btn {
@@ -699,6 +913,11 @@ body.play-mode #dice-overlay {
   background: var(--accent);
 }
 
+.skill-prof-btn.is-readonly {
+  cursor: default;
+  pointer-events: none;
+}
+
 .skill-name {
   min-width: 0;
   overflow: hidden;
@@ -730,7 +949,8 @@ body.play-mode #dice-overlay {
 }
 
 .hp-control {
-  min-width: min(360px, 100%);
+  min-width: 0;
+  width: min(180px, 100%);
 }
 
 .hp-meta {
@@ -791,9 +1011,53 @@ body.play-mode #dice-overlay {
   line-height: 1.1;
 }
 
+.hp-pair-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.9rem;
+  align-items: start;
+}
+
+.hp-pair-row .hp-control:first-child {
+  justify-self: center;
+}
+
+.hp-control-right {
+  justify-self: center;
+}
+
+.hp-control-right .num-input-wrap,
+.hp-control-right .hp-quick-row {
+  justify-content: flex-start;
+}
+
+.death-save-row {
+  display: grid;
+  grid-template-columns: auto auto auto;
+  gap: 0.7rem;
+  align-items: end;
+}
+
+.death-save-head {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding-bottom: 0.1rem;
+}
+
+.death-save-label {
+  white-space: nowrap;
+}
+
+.death-save-roll-btn {
+  margin: 0;
+}
+
 .dice-style-row {
   display: flex;
   justify-content: flex-end;
+  gap: 0.45rem;
+  align-items: center;
 }
 
 .dice-style-row select {
@@ -809,6 +1073,79 @@ body.play-mode #dice-overlay {
 
 .play-grid-4 input {
   margin-top: 0;
+}
+
+.attack-card {
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.02);
+  padding: 0.5rem;
+  display: grid;
+  gap: 0.45rem;
+}
+
+.attack-card-view {
+  border-color: rgba(245, 158, 11, 0.45);
+  background: rgba(245, 158, 11, 0.08);
+}
+
+.attack-row-top {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.45rem;
+  align-items: center;
+}
+
+.attack-row-top input {
+  margin-top: 0;
+}
+
+.attack-row-actions {
+  display: inline-flex;
+  gap: 0.35rem;
+}
+
+.attack-row-stats {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 0.45rem;
+  align-items: center;
+}
+
+.attack-row-stats input {
+  margin-top: 0;
+}
+
+.attack-row-stats-view {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto auto;
+}
+
+.attack-roll-btn {
+  min-width: 4.2rem;
+  text-align: center;
+}
+
+.attack-roll-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.attack-help {
+  margin: 0;
+  font-size: 0.8rem;
+}
+
+.attack-mode-toolbar {
+  margin: 0 0 0.55rem;
+}
+
+.attack-title {
+  font-size: 0.96rem;
+}
+
+.attack-pill {
+  border-radius: 10px;
+  padding: 0.35rem 0.55rem;
 }
 
 @media (max-width: 960px) {
@@ -864,11 +1201,50 @@ body.play-mode #dice-overlay {
     grid-template-columns: 1fr;
   }
 
+  .attack-row-top {
+    grid-template-columns: 1fr;
+  }
+
+  .attack-row-actions {
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .attack-row-stats {
+    grid-template-columns: 1fr;
+  }
+
+  .attack-row-stats-view {
+    grid-template-columns: 1fr;
+  }
+
+  .hp-pair-row {
+    grid-template-columns: 1fr;
+  }
+
+  .hp-control-right {
+    justify-self: start;
+  }
+
+  .hp-control-right .num-input-wrap,
+  .hp-control-right .hp-quick-row {
+    justify-content: flex-start;
+  }
+
+  .death-save-row {
+    grid-template-columns: 1fr;
+    align-items: start;
+  }
+
   .skill-grid {
     grid-template-columns: 1fr;
   }
 
   .ability-save-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .spell-slot-grid {
     grid-template-columns: 1fr;
   }
 
