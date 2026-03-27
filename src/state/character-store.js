@@ -83,6 +83,7 @@ function normalizeCharacter(character) {
   return {
     ...base,
     ...character,
+    id: typeof character.id === "string" && character.id.trim() ? character.id.trim() : null,
     abilities: { ...base.abilities, ...(character.abilities ?? {}) },
     inventory: Array.isArray(character.inventory) ? character.inventory : [],
     spells: Array.isArray(character.spells) ? character.spells : [],
@@ -93,6 +94,7 @@ function normalizeCharacter(character) {
 
 export function createInitialCharacter() {
   return {
+    id: null,
     name: "",
     level: 1,
     sourcePreset: "expanded",

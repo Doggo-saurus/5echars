@@ -1,0 +1,19 @@
+{
+	email {$ACME_EMAIL}
+}
+
+{$DOMAIN} {
+	@hidden path_regexp hidden ^/(\.|.*/\.).*
+	respond @hidden 404
+
+	reverse_proxy app:3000
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "geolocation=(), microphone=(), camera=()"
+		-Server
+	}
+}

@@ -1,0 +1,14 @@
+{
+  "name": "fivee-character-api",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "express": "^4.22.1",
+    "redis": "^4.7.1",
+    "uuid": "^11.1.0"
+  }
+}

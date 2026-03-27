@@ -4,7 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Character Builder</title>
-  <link rel="stylesheet" href="./src/styles.css">
+  <link rel="stylesheet" href="/src/styles.css">
+  <script>
+    window.__CHAR_API_BASE__ = window.__CHAR_API_BASE__ || "/api";
+  </script>
 </head>
 <body>
   <div id="app"></div>
@@ -13,6 +16,6 @@
     <div id="dice-tray"></div>
     <div id="dice-result" class="dice-result muted">Roll a save or skill to throw dice.</div>
   </div>
-  <script type="module" src="./src/main.js"></script>
+  <script type="module" src="/src/main.js"></script>
 </body>
 </html>

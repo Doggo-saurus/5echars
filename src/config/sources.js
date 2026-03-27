@@ -21,7 +21,7 @@ export const SOURCE_LABELS = {
   MPMM: "Mordenkainen Presents: Monsters of the Multiverse",
 };
 
-export const DEFAULT_SOURCE_PRESET = "expanded";
+export const DEFAULT_SOURCE_PRESET = "set2014";
 
 export function getAllowedSources(presetKey) {
   return SOURCE_PRESETS[presetKey] ?? SOURCE_PRESETS[DEFAULT_SOURCE_PRESET];

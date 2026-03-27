@@ -51,6 +51,7 @@ body {
   color: var(--muted);
 }
 
+
 .stepper {
   display: flex;
   gap: 0.35rem;
@@ -131,10 +132,42 @@ input, select {
   color: var(--text);
 }
 
+.btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
 .toolbar {
   display: flex;
   gap: 0.5rem;
   margin-top: 1rem;
+}
+
+.layout-onboarding {
+  grid-template-columns: 1fr;
+  max-width: 840px;
+}
+
+.onboarding-actions {
+  display: grid;
+  gap: 0.6rem;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  margin: 1rem 0;
+}
+
+.onboarding-warning {
+  border: 1px solid rgba(248, 113, 113, 0.4);
+  border-radius: 10px;
+  padding: 0.65rem 0.75rem;
+  background: rgba(248, 113, 113, 0.08);
+}
+
+.persistence-warning {
+  margin: 0.35rem 0 0.9rem;
+  border: 1px solid rgba(251, 191, 36, 0.35);
+  border-radius: 10px;
+  padding: 0.55rem 0.65rem;
+  background: rgba(251, 191, 36, 0.08);
 }
 
 .levelup-shell {

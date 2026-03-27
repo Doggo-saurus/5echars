@@ -7,6 +7,7 @@ import {
 import { loadCatalogs } from "./data-loader.js";
 import { STEPS, createInitialCharacter, createStore } from "./state/character-store.js";
 import { loadAppState, saveAppState } from "./state/persistence.js";
+import { createCharacter, getCharacter, saveCharacter } from "./character-api.js";
 import { openModal } from "./ui/modals/modal.js";
 
 const app = document.getElementById("app");
@@ -22,6 +23,9 @@ const DICE_STYLE_PRESETS = {
 };
 const DEFAULT_DICE_RESULT_MESSAGE = "Roll a save or skill to throw dice.";
 const ROLL_HISTORY_LIMIT = 10;
+const LAST_CHARACTER_ID_KEY = "fivee-last-character-id";
+const CHARACTER_SYNC_META_KEY = "__syncMeta";
+const UUID_V4_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 let selectedDiceStyle = "arcane";
 let diceBox = null;
 let diceBoxPromise = null;
@@ -32,6 +36,21 @@ let lastRollAction = null;
 let latestSpellCastStatusMessage = "";
 let latestSpellCastStatusIsError = false;
 let spellCastStatusTimer = null;
+let startupErrorMessage = "";
+let showOnboardingHome = true;
+let currentUrlCharacterId = null;
+let isRemoteSaveSuppressed = false;
+let remoteSaveTimer = null;
+let persistenceNoticeMessage = "";
+let lastPersistedCharacterFingerprint = "";
+let localCharacterVersion = 0;
+let localCharacterUpdatedAt = "";
+
+localCharacterVersion = getCharacterVersion(persistedState?.character);
+lastPersistedCharacterFingerprint = buildCharacterFingerprint(persistedState?.character ?? store.getState().character);
+localCharacterUpdatedAt =
+  (typeof getSyncMeta(persistedState?.character).updatedAt === "string" && getSyncMeta(persistedState?.character).updatedAt) ||
+  new Date().toISOString();
 
 const SKILLS = [
   { key: "acrobatics", label: "Acrobatics", ability: "dex" },
@@ -88,6 +107,39 @@ function esc(value) {
 function toNumber(value, fallback = 0) {
   const out = Number(value);
   return Number.isFinite(out) ? out : fallback;
+}
+
+function isUuid(value) {
+  return UUID_V4_REGEX.test(String(value ?? "").trim());
+}
+
+function getCharacterIdFromUrl() {
+  const params = new URLSearchParams(window.location.search);
+  const id = params.get("char");
+  return isUuid(id) ? id : null;
+}
+
+function setCharacterIdInUrl(id, replace = false) {
+  if (!isUuid(id)) return;
+  const url = new URL(window.location.href);
+  url.searchParams.set("char", id);
+  if (replace) window.history.replaceState({}, "", url.toString());
+  else window.history.pushState({}, "", url.toString());
+  currentUrlCharacterId = id;
+}
+
+function getLastCharacterId() {
+  const id = localStorage.getItem(LAST_CHARACTER_ID_KEY);
+  return isUuid(id) ? id : null;
+}
+
+function rememberLastCharacterId(id) {
+  if (!isUuid(id)) return;
+  localStorage.setItem(LAST_CHARACTER_ID_KEY, id);
+}
+
+function clearLastCharacterId() {
+  localStorage.removeItem(LAST_CHARACTER_ID_KEY);
 }
 
 function signed(value) {
@@ -415,6 +467,114 @@ function getModeToggle(mode) {
   `;
 }
 
+function getCharacterFromApiPayload(payload, fallbackId) {
+  const id = payload?.id ?? fallbackId ?? null;
+  if (!isUuid(id)) throw new Error("Invalid character id");
+  if (!payload || typeof payload.character !== "object" || payload.character == null || Array.isArray(payload.character)) {
+    throw new Error("Invalid character payload");
+  }
+  return {
+    id,
+    character: { ...payload.character, id },
+  };
+}
+
+function getSyncMeta(character) {
+  if (!character || typeof character !== "object" || Array.isArray(character)) return {};
+  const meta = character[CHARACTER_SYNC_META_KEY];
+  if (!meta || typeof meta !== "object" || Array.isArray(meta)) return {};
+  return meta;
+}
+
+function getCharacterVersion(character) {
+  const version = Number(getSyncMeta(character).version);
+  return Number.isFinite(version) && version > 0 ? Math.floor(version) : 0;
+}
+
+function getCharacterUpdatedAtMs(character) {
+  const updatedAt = getSyncMeta(character).updatedAt;
+  if (typeof updatedAt !== "string" || !updatedAt.trim()) return 0;
+  const parsed = Date.parse(updatedAt);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function withSyncMeta(character, version, updatedAt = null) {
+  return {
+    ...character,
+    [CHARACTER_SYNC_META_KEY]: {
+      version: Math.max(1, Math.floor(Number(version) || 1)),
+      updatedAt: typeof updatedAt === "string" && updatedAt ? updatedAt : new Date().toISOString(),
+    },
+  };
+}
+
+function stripSyncMeta(character) {
+  if (!character || typeof character !== "object" || Array.isArray(character)) return character;
+  const next = { ...character };
+  delete next[CHARACTER_SYNC_META_KEY];
+  return next;
+}
+
+function buildCharacterFingerprint(character) {
+  try {
+    return JSON.stringify(stripSyncMeta(character) ?? {});
+  } catch {
+    return "";
+  }
+}
+
+function compareCharacterRecency(a, b) {
+  const versionDiff = getCharacterVersion(a) - getCharacterVersion(b);
+  if (versionDiff !== 0) return versionDiff;
+  return getCharacterUpdatedAtMs(a) - getCharacterUpdatedAtMs(b);
+}
+
+function choosePreferredCharacterVersion(localCharacter, remoteCharacter) {
+  if (!localCharacter) return { character: remoteCharacter, source: "remote" };
+  if (!remoteCharacter) return { character: localCharacter, source: "local" };
+  if (compareCharacterRecency(localCharacter, remoteCharacter) > 0) {
+    return { character: localCharacter, source: "local" };
+  }
+  return { character: remoteCharacter, source: "remote" };
+}
+
+function setPersistenceNotice(message) {
+  const nextMessage = String(message ?? "").trim();
+  if (persistenceNoticeMessage === nextMessage) return;
+  persistenceNoticeMessage = nextMessage;
+  if (!showOnboardingHome) render(store.getState());
+}
+
+function updatePersistenceStatusFromPayload(payload) {
+  const storage = payload?.storage;
+  if (!storage || typeof storage !== "object" || Array.isArray(storage)) return;
+  if (storage.durable) {
+    setPersistenceNotice("");
+    return;
+  }
+  const detail = typeof storage.warning === "string" ? storage.warning.trim() : "";
+  setPersistenceNotice(
+    detail
+      ? `Server persistence is running in temporary memory mode (${detail}). Your recent edits are currently only guaranteed in this browser.`
+      : "Server persistence is running in temporary memory mode. Your recent edits are currently only guaranteed in this browser."
+  );
+}
+
+function markBrowserOnlyPersistence(error) {
+  const detail =
+    error instanceof Error && error.message
+      ? ` (${error.message})`
+      : "";
+  setPersistenceNotice(
+    `Server sync is currently unavailable${detail}. Your changes are saved in this browser for now, but not confirmed on the server.`
+  );
+}
+
+function renderPersistenceNotice() {
+  if (!persistenceNoticeMessage) return "";
+  return `<p class="muted persistence-warning">${esc(persistenceNoticeMessage)}</p>`;
+}
+
 function renderSaveRows(state, options = {}) {
   const { character, derived } = state;
   const { canToggle = false, includeRollButtons = false } = options;
@@ -695,9 +855,21 @@ function renderBuildEditor(state) {
       </div>
     `;
   }
+  const permalinkUrl = character.id ? `${window.location.origin}${window.location.pathname}?char=${encodeURIComponent(character.id)}` : "";
   return `
     <h2 class="title">Review & Export</h2>
-    <p class="subtitle">Copy JSON to move this sheet between machines.</p>
+    <p class="subtitle">Copy JSON to move this sheet between machines. Permanent links use UUID URLs.</p>
+    <div class="toolbar">
+      <button class="btn" id="create-permanent-character">${
+        character.id ? "Save Character Link" : "Create Permanent Character Link"
+      }</button>
+      <button class="btn secondary" id="copy-character-link" ${character.id ? "" : "disabled"}>Copy Character Link</button>
+    </div>
+    ${
+      character.id
+        ? `<p class="muted">Bookmark this URL to reopen: <code>${esc(permalinkUrl)}</code></p>`
+        : `<p class="muted">No UUID link yet. Create one, then bookmark that page URL.</p>`
+    }
     <textarea id="export-json" rows="12" style="width:100%; background:#0b1220; color:#e5e7eb; border:1px solid rgba(255,255,255,0.2); border-radius:10px; padding:0.6rem;">${esc(
       JSON.stringify(character, null, 2)
     )}</textarea>
@@ -1606,6 +1778,202 @@ function openClassDetailsModal(state) {
   });
 }
 
+async function loadCatalogsForCharacter(character) {
+  const sourcePreset = character?.sourcePreset ?? DEFAULT_SOURCE_PRESET;
+  const catalogs = await loadCatalogs(getAllowedSources(sourcePreset));
+  store.setCatalogs(catalogs);
+}
+
+async function applyRemoteCharacterPayload(payload, fallbackId = null) {
+  const parsed = getCharacterFromApiPayload(payload, fallbackId);
+  updatePersistenceStatusFromPayload(payload);
+  showOnboardingHome = false;
+  startupErrorMessage = "";
+  isRemoteSaveSuppressed = true;
+  try {
+    store.hydrate(parsed.character);
+    store.setMode("build");
+    store.setStep(0);
+    await loadCatalogsForCharacter(parsed.character);
+  } finally {
+    isRemoteSaveSuppressed = false;
+  }
+  localCharacterVersion = Math.max(localCharacterVersion, getCharacterVersion(parsed.character));
+  localCharacterUpdatedAt =
+    (typeof getSyncMeta(parsed.character).updatedAt === "string" && getSyncMeta(parsed.character).updatedAt) ||
+    localCharacterUpdatedAt;
+  lastPersistedCharacterFingerprint = buildCharacterFingerprint(parsed.character);
+  rememberLastCharacterId(parsed.id);
+  currentUrlCharacterId = parsed.id;
+}
+
+async function loadCharacterById(characterId) {
+  const payload = await getCharacter(characterId);
+  updatePersistenceStatusFromPayload(payload);
+  const latestLocalState = loadAppState();
+  const localCharacter =
+    latestLocalState?.character && latestLocalState.character.id === characterId ? latestLocalState.character : null;
+  const remoteCharacter = getCharacterFromApiPayload(payload, characterId).character;
+  const selected = choosePreferredCharacterVersion(localCharacter, remoteCharacter);
+  const selectedPayload =
+    selected.source === "local"
+      ? { ...payload, id: characterId, character: localCharacter }
+      : payload;
+  await applyRemoteCharacterPayload(selectedPayload, characterId);
+
+  if (selected.source === "local" && localCharacter) {
+    try {
+      const synced = await saveCharacter(characterId, withSyncMeta(localCharacter, getCharacterVersion(localCharacter)));
+      updatePersistenceStatusFromPayload(synced);
+    } catch (error) {
+      markBrowserOnlyPersistence(error);
+    }
+  }
+}
+
+async function createOrSavePermanentCharacter(state) {
+  const existingId = isUuid(state.character?.id) ? state.character.id : null;
+  const nextVersion = Math.max(localCharacterVersion, getCharacterVersion(state.character)) + 1;
+  const versionedCharacter = withSyncMeta(state.character, nextVersion);
+  if (existingId) {
+    const payload = await saveCharacter(existingId, versionedCharacter);
+    await applyRemoteCharacterPayload(payload, existingId);
+    setCharacterIdInUrl(existingId, true);
+    return existingId;
+  }
+
+  const payload = await createCharacter(versionedCharacter);
+  const parsed = getCharacterFromApiPayload(payload, null);
+  setCharacterIdInUrl(parsed.id, false);
+  await applyRemoteCharacterPayload(payload, parsed.id);
+  return parsed.id;
+}
+
+function queueRemoteSave(state) {
+  if (isRemoteSaveSuppressed || showOnboardingHome) return;
+  const characterId = state.character?.id;
+  if (!isUuid(characterId)) return;
+  if (remoteSaveTimer != null) {
+    clearTimeout(remoteSaveTimer);
+  }
+  remoteSaveTimer = setTimeout(async () => {
+    remoteSaveTimer = null;
+    try {
+      const latestState = store.getState();
+      const nextVersion = Math.max(localCharacterVersion, getCharacterVersion(latestState.character)) + 1;
+      const versionedCharacter = withSyncMeta(latestState.character, nextVersion);
+      const payload = await saveCharacter(characterId, versionedCharacter);
+      localCharacterVersion = Math.max(localCharacterVersion, nextVersion);
+      localCharacterUpdatedAt = getSyncMeta(versionedCharacter).updatedAt ?? localCharacterUpdatedAt;
+      updatePersistenceStatusFromPayload(payload);
+    } catch (error) {
+      console.error("Remote character save failed", error);
+      markBrowserOnlyPersistence(error);
+    }
+  }, 700);
+}
+
+function renderOnboardingHome() {
+  const lastCharacterId = getLastCharacterId();
+  const hasLastCharacter = Boolean(lastCharacterId);
+  return `
+    <main class="layout layout-onboarding">
+      <section class="card">
+        <h1 class="title">Character Builder</h1>
+        <p class="subtitle">
+          Permanent characters use UUID links. <strong>Create one, then bookmark that URL in your browser.</strong>
+        </p>
+        ${
+          startupErrorMessage
+            ? `<p class="muted onboarding-warning">Could not load requested character. ${esc(startupErrorMessage)}</p>`
+            : ""
+        }
+        ${renderPersistenceNotice()}
+        <div class="onboarding-actions">
+          <button class="btn" id="home-create-character" type="button">Create New Character</button>
+          <button class="btn secondary" id="home-open-last" type="button" ${hasLastCharacter ? "" : "disabled"}>
+            Open Last Character
+          </button>
+          <button class="btn secondary" id="home-import-json" type="button">Import Character JSON</button>
+        </div>
+        <p class="muted">
+          ${
+            hasLastCharacter
+              ? `Last local character UUID: ${esc(lastCharacterId)}`
+              : "No last character found in this browser yet."
+          }
+        </p>
+        <p class="muted">Export JSON is available in the Review step after opening or creating a character.</p>
+      </section>
+    </main>
+  `;
+}
+
+function bindOnboardingEvents() {
+  app.querySelector("#home-create-character")?.addEventListener("click", async () => {
+    const button = app.querySelector("#home-create-character");
+    if (button) button.disabled = true;
+    try {
+      const character = createInitialCharacter();
+      const nextVersion = Math.max(localCharacterVersion, getCharacterVersion(character)) + 1;
+      const payload = await createCharacter(withSyncMeta(character, nextVersion));
+      const parsed = getCharacterFromApiPayload(payload, null);
+      setCharacterIdInUrl(parsed.id, false);
+      await applyRemoteCharacterPayload(payload, parsed.id);
+    } catch (error) {
+      startupErrorMessage = error instanceof Error ? error.message : "Failed to create character";
+      render(store.getState());
+    } finally {
+      if (button) button.disabled = false;
+    }
+  });
+
+  app.querySelector("#home-open-last")?.addEventListener("click", async () => {
+    const id = getLastCharacterId();
+    if (!id) return;
+    try {
+      setCharacterIdInUrl(id, false);
+      await loadCharacterById(id);
+      render(store.getState());
+    } catch (error) {
+      startupErrorMessage = error instanceof Error ? error.message : "Failed to load last character";
+      clearLastCharacterId();
+      showOnboardingHome = true;
+      render(store.getState());
+    }
+  });
+
+  app.querySelector("#home-import-json")?.addEventListener("click", () => {
+    openModal({
+      title: "Import Character JSON",
+      bodyHtml: `
+        <p class="subtitle">Paste a JSON export to create a new UUID-backed character.</p>
+        <textarea id="home-import-json-input" rows="14" style="width:100%; background:#0b1220; color:#e5e7eb; border:1px solid rgba(255,255,255,0.2); border-radius:10px; padding:0.6rem;"></textarea>
+      `,
+      actions: [
+        {
+          label: "Create From JSON",
+          onClick: async (done) => {
+            const input = document.getElementById("home-import-json-input");
+            try {
+              const parsed = JSON.parse(input?.value ?? "{}");
+              const nextVersion = Math.max(localCharacterVersion, getCharacterVersion(parsed)) + 1;
+              const payload = await createCharacter(withSyncMeta(parsed, nextVersion));
+              const normalized = getCharacterFromApiPayload(payload, null);
+              setCharacterIdInUrl(normalized.id, false);
+              await applyRemoteCharacterPayload(payload, normalized.id);
+              done();
+            } catch (error) {
+              alert(error instanceof Error ? error.message : "Invalid JSON payload");
+            }
+          },
+        },
+        { label: "Cancel", secondary: true, onClick: (done) => done() },
+      ],
+    });
+  });
+}
+
 function bindModeEvents() {
   app.querySelectorAll("[data-mode]").forEach((button) => {
     button.addEventListener("click", () => store.setMode(button.dataset.mode));
@@ -1743,6 +2111,29 @@ function bindBuildEvents(state) {
         };
       });
     });
+  });
+  app.querySelector("#create-permanent-character")?.addEventListener("click", async () => {
+    const button = app.querySelector("#create-permanent-character");
+    if (button) button.disabled = true;
+    try {
+      const id = await createOrSavePermanentCharacter(store.getState());
+      alert(`Character saved. Bookmark this URL to reopen: ${window.location.origin}${window.location.pathname}?char=${id}`);
+    } catch (error) {
+      alert(error instanceof Error ? error.message : "Failed to create permanent character link");
+    } finally {
+      if (button) button.disabled = false;
+    }
+  });
+  app.querySelector("#copy-character-link")?.addEventListener("click", async () => {
+    const id = store.getState().character?.id;
+    if (!isUuid(id)) return;
+    const link = `${window.location.origin}${window.location.pathname}?char=${id}`;
+    try {
+      await navigator.clipboard.writeText(link);
+      alert("Character URL copied to clipboard.");
+    } catch {
+      alert(link);
+    }
   });
   app.querySelector("#import-json")?.addEventListener("click", () => {
     const input = app.querySelector("#export-json");
@@ -2738,7 +3129,7 @@ function renderBuildMode(state) {
     <main class="layout">
       <section class="card">
         <h1 class="title">Character Builder</h1>
-        <p class="subtitle">Edit Mode: guide character setup and content selection.</p>
+        ${renderPersistenceNotice()}
         ${getModeToggle(state.mode)}
         ${renderStepper(state.stepIndex)}
         <div id="editor">${renderBuildEditor(state)}</div>
@@ -2783,7 +3174,7 @@ function renderPlayMode(state) {
           <div class="play-header">
             <div class="play-header-main">
               <h1 class="title">Character Builder</h1>
-              <p class="subtitle">Play Mode: one-page session sheet.</p>
+              ${renderPersistenceNotice()}
               ${getModeToggle(state.mode)}
               <p class="muted">
                 ${esc(state.character.name || "Unnamed Hero")} - Level ${esc(state.character.level)}
@@ -2803,6 +3194,13 @@ function renderPlayMode(state) {
 }
 
 function render(state) {
+  if (showOnboardingHome) {
+    document.body.classList.remove("play-mode");
+    app.innerHTML = renderOnboardingHome();
+    bindOnboardingEvents();
+    return;
+  }
+
   const previousScrollX = window.scrollX;
   const previousScrollY = window.scrollY;
   const activeInputSnapshot = getActiveInputSnapshot();
@@ -2836,13 +3234,48 @@ function render(state) {
 
 store.subscribe((state) => {
   render(state);
-  saveAppState(state);
+  const nextFingerprint = buildCharacterFingerprint(state.character);
+  if (nextFingerprint && nextFingerprint !== lastPersistedCharacterFingerprint) {
+    localCharacterVersion += 1;
+    lastPersistedCharacterFingerprint = nextFingerprint;
+    localCharacterUpdatedAt = new Date().toISOString();
+  }
+  const persistedCharacter = withSyncMeta(state.character, Math.max(1, localCharacterVersion), localCharacterUpdatedAt);
+  saveAppState({ ...state, character: persistedCharacter });
+  queueRemoteSave(state);
+  if (isUuid(state.character?.id)) rememberLastCharacterId(state.character.id);
 });
 
-if (persistedState?.mode === "play") store.setMode("play");
-if (Number.isFinite(persistedState?.stepIndex)) store.setStep(persistedState.stepIndex);
+async function bootstrap() {
+  const requestedCharacterId = getCharacterIdFromUrl();
+  currentUrlCharacterId = requestedCharacterId;
 
-const sourcePreset = persistedState?.character?.sourcePreset ?? DEFAULT_SOURCE_PRESET;
-loadCatalogs(getAllowedSources(sourcePreset)).then((catalogs) => {
-  store.setCatalogs(catalogs);
+  if (requestedCharacterId) {
+    try {
+      await loadCharacterById(requestedCharacterId);
+      return;
+    } catch (error) {
+      startupErrorMessage = error instanceof Error ? error.message : "Failed to load character";
+      showOnboardingHome = true;
+    }
+  } else {
+    showOnboardingHome = true;
+  }
+
+  if (!showOnboardingHome) {
+    if (persistedState?.mode === "play") store.setMode("play");
+    if (Number.isFinite(persistedState?.stepIndex)) store.setStep(persistedState.stepIndex);
+    const sourcePreset = persistedState?.character?.sourcePreset ?? DEFAULT_SOURCE_PRESET;
+    await loadCatalogsForCharacter({ sourcePreset });
+    return;
+  }
+
+  render(store.getState());
+}
+
+bootstrap().catch((error) => {
+  console.error("Bootstrap failed", error);
+  startupErrorMessage = "Startup failed. Reload the page to try again.";
+  showOnboardingHome = true;
+  render(store.getState());
 });
