@@ -463,6 +463,43 @@ body.play-mode #dice-overlay {
   color: var(--danger);
 }
 
+.dice-offscreen-panel {
+  position: fixed;
+  top: 0.85rem;
+  right: 0.85rem;
+  width: min(440px, calc(100vw - 1.7rem));
+  padding: 0.65rem 0.75rem;
+  border-radius: 11px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(11, 18, 32, 0.96);
+  box-shadow: 0 14px 30px rgba(0, 0, 0, 0.42);
+  z-index: 45;
+}
+
+.dice-offscreen-panel-title {
+  margin: 0 0 0.2rem;
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.dice-offscreen-panel-message {
+  font-size: 0.84rem;
+  line-height: 1.28;
+  color: var(--text);
+}
+
+.dice-offscreen-panel.is-error {
+  border-color: rgba(248, 113, 113, 0.5);
+  background: rgba(127, 29, 29, 0.9);
+}
+
+.dice-offscreen-panel.is-error .dice-offscreen-panel-message {
+  color: #fecaca;
+}
+
 .option-list {
   max-height: 50vh;
   overflow: auto;
@@ -1453,17 +1490,7 @@ body.play-mode #dice-overlay {
 }
 
 .attack-row-stats-view {
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto auto;
-}
-
-.attack-roll-btn {
-  min-width: 4.2rem;
-  text-align: center;
-}
-
-.attack-roll-btn:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
 }
 
 .attack-help {
@@ -1475,6 +1502,23 @@ body.play-mode #dice-overlay {
   margin: 0 0 0.55rem;
 }
 
+.attack-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.55rem;
+}
+
+.attack-title-row .title {
+  margin: 0;
+}
+
+.attack-mode-btn {
+  width: auto;
+  padding-inline: 0.75rem;
+}
+
 .attack-title {
   font-size: 0.96rem;
 }
@@ -1482,6 +1526,17 @@ body.play-mode #dice-overlay {
 .attack-pill {
   border-radius: 10px;
   padding: 0.35rem 0.55rem;
+  width: 100%;
+  text-align: left;
+}
+
+.attack-pill.pill-btn {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.attack-pill.pill-btn:hover {
+  border-color: rgba(255, 255, 255, 0.3);
 }
 
 @media (max-width: 960px) {

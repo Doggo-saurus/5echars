@@ -1,0 +1,191 @@
+export function createDiceUi(deps) {
+  const {
+    esc,
+    toNumber,
+    rollHistoryLimit,
+    diceStylePresets,
+    uiState,
+  } = deps;
+
+  function ensureOffscreenRollPanel() {
+    let panel = document.getElementById("dice-offscreen-panel");
+    if (panel) return panel;
+
+    panel = document.createElement("div");
+    panel.id = "dice-offscreen-panel";
+    panel.className = "dice-offscreen-panel";
+    panel.hidden = true;
+    panel.setAttribute("role", "status");
+    panel.setAttribute("aria-live", "polite");
+    panel.innerHTML = `
+      <div class="dice-offscreen-panel-title">Roll Result</div>
+      <div class="dice-offscreen-panel-message"></div>
+    `;
+    document.body.appendChild(panel);
+    return panel;
+  }
+
+  function clearOffscreenRollPanelTimer() {
+    const timer = uiState.offscreenRollPanelTimer;
+    if (timer != null) {
+      clearTimeout(timer);
+      uiState.offscreenRollPanelTimer = null;
+    }
+  }
+
+  function hideOffscreenRollPanel() {
+    const panel = document.getElementById("dice-offscreen-panel");
+    if (panel) panel.hidden = true;
+    clearOffscreenRollPanelTimer();
+  }
+
+  function isDiceTrayOffscreen() {
+    const tray = document.getElementById("dice-tray");
+    if (!tray || tray.offsetParent === null) return false;
+
+    const rect = tray.getBoundingClientRect();
+    const viewportWidth = window.innerWidth;
+    const viewportHeight = window.innerHeight;
+    return rect.bottom <= 0 || rect.top >= viewportHeight || rect.right <= 0 || rect.left >= viewportWidth;
+  }
+
+  function showOffscreenRollPanelIfNeeded(message, isError) {
+    if (!message || !isDiceTrayOffscreen()) {
+      hideOffscreenRollPanel();
+      return;
+    }
+
+    const panel = ensureOffscreenRollPanel();
+    const messageEl = panel.querySelector(".dice-offscreen-panel-message");
+    if (!messageEl) return;
+
+    messageEl.textContent = message;
+    panel.classList.toggle("is-error", Boolean(isError));
+    panel.hidden = false;
+
+    clearOffscreenRollPanelTimer();
+    uiState.offscreenRollPanelTimer = setTimeout(() => {
+      const currentPanel = document.getElementById("dice-offscreen-panel");
+      if (currentPanel) currentPanel.hidden = true;
+      uiState.offscreenRollPanelTimer = null;
+    }, 10000);
+  }
+
+  function renderRollHistory() {
+    const listEl = document.getElementById("dice-history-list");
+    if (!listEl) return;
+
+    const history = uiState.rollHistory;
+    if (!history.length) {
+      listEl.innerHTML = `<div class="dice-history-empty muted">No rolls yet.</div>`;
+      return;
+    }
+
+    listEl.innerHTML = history
+      .map(
+        (entry) => `
+        <div class="dice-history-entry ${entry.isError ? "is-error" : ""}">
+          <span class="dice-history-time">${esc(entry.timeLabel)}</span>
+          <span class="dice-history-message">${esc(entry.message)}</span>
+        </div>
+      `
+      )
+      .join("");
+  }
+
+  function syncDiceResultElements() {
+    const resultEls = [document.getElementById("dice-result"), document.getElementById("dice-result-inline")].filter(Boolean);
+    resultEls.forEach((resultEl) => {
+      resultEl.textContent = uiState.latestDiceResultMessage;
+      resultEl.classList.toggle("is-error", uiState.latestDiceResultIsError);
+    });
+  }
+
+  function syncSpellCastStatusElements() {
+    const statusEl = document.getElementById("spell-cast-status");
+    if (!statusEl) return;
+
+    const message = uiState.latestSpellCastStatusMessage;
+    const hasMessage = Boolean(message);
+    statusEl.hidden = !hasMessage;
+    statusEl.textContent = hasMessage ? message : "";
+    statusEl.classList.toggle("is-error", uiState.latestSpellCastStatusIsError);
+  }
+
+  function setDiceResult(message, isError = false, options = {}) {
+    const shouldRecord = options.record !== false;
+    uiState.latestDiceResultMessage = String(message ?? "");
+    uiState.latestDiceResultIsError = Boolean(isError);
+    syncDiceResultElements();
+    showOffscreenRollPanelIfNeeded(uiState.latestDiceResultMessage, uiState.latestDiceResultIsError);
+
+    if (!shouldRecord) return;
+
+    uiState.rollHistory = [
+      {
+        message: uiState.latestDiceResultMessage,
+        isError: uiState.latestDiceResultIsError,
+        timeLabel: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
+      },
+      ...uiState.rollHistory,
+    ].slice(0, rollHistoryLimit);
+    renderRollHistory();
+  }
+
+  function setSpellCastStatus(message, isError = false, options = {}) {
+    uiState.latestSpellCastStatusMessage = String(message ?? "");
+    uiState.latestSpellCastStatusIsError = Boolean(isError);
+    syncSpellCastStatusElements();
+
+    const timer = uiState.spellCastStatusTimer;
+    if (timer != null) {
+      clearTimeout(timer);
+      uiState.spellCastStatusTimer = null;
+    }
+
+    const durationMs = toNumber(options.durationMs, 0);
+    if (durationMs > 0 && uiState.latestSpellCastStatusMessage) {
+      uiState.spellCastStatusTimer = setTimeout(() => {
+        uiState.latestSpellCastStatusMessage = "";
+        uiState.latestSpellCastStatusIsError = false;
+        uiState.spellCastStatusTimer = null;
+        syncSpellCastStatusElements();
+      }, durationMs);
+    }
+  }
+
+  function applyDiceStyle(box = uiState.diceBox) {
+    const overlay = document.getElementById("dice-overlay");
+    if (overlay) {
+      overlay.dataset.diceStyle = uiState.selectedDiceStyle;
+    }
+
+    if (!box || typeof box.updateConfig !== "function") return;
+    const preset = diceStylePresets[uiState.selectedDiceStyle] ?? diceStylePresets.ember;
+    box.updateConfig({
+      theme: "default",
+      themeColor: preset.themeColor,
+      lightIntensity: preset.lightIntensity,
+      shadowTransparency: preset.shadowTransparency,
+    });
+  }
+
+  function renderDiceStyleOptions() {
+    return Object.entries(diceStylePresets)
+      .map(
+        ([key, preset]) =>
+          `<option value="${esc(key)}" ${uiState.selectedDiceStyle === key ? "selected" : ""}>${esc(preset.label)}</option>`
+      )
+      .join("");
+  }
+
+  return {
+    renderRollHistory,
+    syncDiceResultElements,
+    syncSpellCastStatusElements,
+    setDiceResult,
+    setSpellCastStatus,
+    applyDiceStyle,
+    renderDiceStyleOptions,
+  };
+}

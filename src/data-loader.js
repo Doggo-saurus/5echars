@@ -60,6 +60,22 @@ function dedupeByNameAndSource(items) {
   });
 }
 
+function mapMagicVariantsToItems(variants) {
+  if (!Array.isArray(variants)) return [];
+  return variants
+    .map((variant) => {
+      const source = variant?.source ?? variant?.inherits?.source ?? "";
+      const name = variant?.name ?? "";
+      if (!name || !source) return null;
+      return {
+        ...variant,
+        source,
+        name,
+      };
+    })
+    .filter(Boolean);
+}
+
 function getFallbackCatalogs(allowedSources) {
   const source = allowedSources[0] ?? "PHB";
   return {
@@ -78,7 +94,7 @@ function getFallbackCatalogs(allowedSources) {
 
 export async function loadCatalogs(allowedSources) {
   try {
-    const [classData, races, backgrounds, feats, optionalFeatures, spells, items, baseItems] = await Promise.all([
+    const [classData, races, backgrounds, feats, optionalFeatures, spells, items, baseItems, magicVariants, spellSourceLookup] = await Promise.all([
       loadClassDataFromIndex(),
       loadSingleFile("races.json", "race"),
       loadSingleFile("backgrounds.json", "background"),
@@ -87,8 +103,20 @@ export async function loadCatalogs(allowedSources) {
       loadFromIndex("spells", "spell"),
       loadSingleFile("items.json", "item"),
       loadSingleFile("items-base.json", "baseitem"),
+      loadSingleFile("magicvariants.json", "magicvariant"),
+      fetchJson(`${DATA_ROOT}/generated/gendata-spell-source-lookup.json`).catch(() => ({})),
     ]);
-    const allItems = dedupeByNameAndSource([...items, ...baseItems]);
+    const variantItems = mapMagicVariantsToItems(magicVariants);
+    const allItems = dedupeByNameAndSource([...items, ...baseItems, ...variantItems]);
+    const mappedSpells = mapNamed(filterBySources(spells, allowedSources)).map((spell) => {
+      const sourceKey = String(spell?.source ?? "").trim().toLowerCase();
+      const spellKey = String(spell?.name ?? "").trim().toLowerCase();
+      const spellSourceEntry = spellSourceLookup?.[sourceKey]?.[spellKey] ?? null;
+      return {
+        ...spell,
+        spellSourceEntry,
+      };
+    });
 
     return {
       classes: mapNamed(filterBySources(classData.classes, allowedSources)),
@@ -99,7 +127,7 @@ export async function loadCatalogs(allowedSources) {
       backgrounds: mapNamed(filterBySources(backgrounds, allowedSources)),
       feats: mapNamed(filterBySources(feats, allowedSources)),
       optionalFeatures: mapNamed(filterBySources(optionalFeatures, allowedSources)),
-      spells: mapNamed(filterBySources(spells, allowedSources)),
+      spells: mappedSpells,
       items: mapNamed(filterBySources(allItems, allowedSources)),
     };
   } catch {
