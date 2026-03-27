@@ -24,6 +24,10 @@ The app expects these files/keys:
   - Must contain a `race` array
 - `data/5etools-src/data/backgrounds.json`
   - Must contain a `background` array
+- `data/5etools-src/data/feats.json`
+  - Must contain a `feat` array
+- `data/5etools-src/data/optionalfeatures.json`
+  - Must contain an `optionalfeature` array
 - `data/5etools-src/data/spells/index.json`
   - Treated as a filename map via `Object.values(index)`
   - Every referenced chunk file must contain a `spell` array
@@ -33,6 +37,11 @@ The app expects these files/keys:
   - Must contain a `baseitem` array
 
 If these files cannot be loaded, the app falls back to a minimal in-memory catalog from `getFallbackCatalogs()` in `src/data-loader.js`.
+
+For class chunks loaded from `data/5etools-src/data/class/index.json`, the app reads both:
+
+- `class` arrays (class catalogs)
+- `subclass` arrays (subclass catalogs used by subclass selector + feature progression)
 
 ### 1.2 Shared entity requirements
 
@@ -100,6 +109,10 @@ Field impact map:
   - Used in class details modal (`formatClassMulticlassRequirements()`)
 - `classFeatures`
   - Parsed for class feature list in class details modal (`getClassFeatureRows()`)
+- `featProgression`
+  - Drives automatic feat slot generation for feat picker UI
+- subclass catalogs (`subclass` objects in class chunk files)
+  - Drive subclass selector and unlocked subclass feature progression (`subclassFeatures`)
 
 ### 1.4 Race / Background / Item object contract and impact
 
@@ -197,11 +210,20 @@ Character state source of truth:
   },
   "inventory": [],
   "spells": [],
+  "feats": [],
   "notes": "",
   "multiclass": [],
+  "classSelection": {},
+  "progression": {},
   "play": {}
 }
 ```
+
+New root fields:
+
+- `feats`: selected feats, typically assigned to generated feat slots
+- `classSelection.subclass`: structured subclass selection (`name`, `source`, `className`, `classSource`)
+- `progression`: auto-generated progression state (`unlockedFeatures`, `featSlots`, `pendingFeatSlotIds`, `selectedFeatIds`)
 
 ### 2.2 `play` object shape
 
@@ -236,6 +258,8 @@ Character state source of truth:
   "deathSavesFail": 0
 }
 ```
+
+`resources` may include auto-generated entries keyed with `autoId` (e.g. `auto:...`) for deterministic class feature trackers.
 
 ### 2.3 Character field impact map
 

@@ -2,11 +2,22 @@
 	email {$ACME_EMAIL}
 }
 
-{$DOMAIN} {
+http://localhost:3080, http://127.0.0.1:3080 {
 	@hidden path_regexp hidden ^/(\.|.*/\.).*
 	respond @hidden 404
 
-	reverse_proxy app:3000
+	reverse_proxy 127.0.0.1:3000
+}
+
+http://{$DOMAIN}:3080 {
+	redir https://{$DOMAIN}{uri} 308
+}
+
+{$DOMAIN}:3443 {
+	@hidden path_regexp hidden ^/(\.|.*/\.).*
+	respond @hidden 404
+
+	reverse_proxy 127.0.0.1:3000
 
 	header {
 		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"

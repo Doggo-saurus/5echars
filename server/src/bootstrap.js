@@ -1,6 +1,8 @@
 import { createClient } from "redis";
-import { InMemoryCharacterRepository } from "./repositories/in-memory-character-repository.js";
 import { RedisCharacterRepository } from "./repositories/redis-character-repository.js";
+import { FileCharacterRepository } from "./repositories/file-character-repository.js";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 function shouldEnableRedis() {
   const flag = String(process.env.REDIS_ENABLED ?? "").trim().toLowerCase();
@@ -15,37 +17,60 @@ function buildRedisUrl() {
 }
 
 function buildStorageDetails(mode, warning = "") {
-  const isRedis = mode === "redis";
+  const isDurable = mode === "redis" || mode === "file-fallback";
   return {
     mode,
-    durable: isRedis,
+    durable: isDurable,
     warning: warning ? String(warning) : "",
   };
 }
 
+function getFileFallbackDir() {
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = path.dirname(__filename);
+  const repoRoot = path.resolve(__dirname, "../..");
+  const configuredSubdir = String(process.env.FILE_FALLBACK_SUBDIR ?? "character-fallback").trim();
+  const safeSubdir = path.basename(configuredSubdir || "character-fallback");
+  return path.join(repoRoot, "data", safeSubdir);
+}
+
 export async function createCharacterRepository() {
+  const fileRepository = new FileCharacterRepository(getFileFallbackDir());
+
   if (!shouldEnableRedis()) {
     return {
-      repository: new InMemoryCharacterRepository(),
-      mode: "memory",
-      storage: buildStorageDetails("memory"),
+      repository: fileRepository,
+      mode: "file",
+      storage: buildStorageDetails("file"),
       close: async () => {},
     };
   }
 
-  const client = createClient({ url: buildRedisUrl() });
+  const connectTimeoutMs = Number(process.env.REDIS_CONNECT_TIMEOUT_MS ?? 2000);
+  const client = createClient({
+    url: buildRedisUrl(),
+    socket: {
+      connectTimeout: Number.isFinite(connectTimeoutMs) && connectTimeoutMs > 0 ? connectTimeoutMs : 2000,
+      // Fail fast so startup can fall back to file mode instead of hanging.
+      reconnectStrategy: () => false,
+    },
+  });
+  client.on("error", (error) => {
+    const message = error instanceof Error ? error.message : String(error ?? "Unknown Redis error");
+    console.error(`Redis client error: ${message}`);
+  });
   try {
     await client.connect();
   } catch (error) {
     const warning =
       error instanceof Error
-        ? `Redis unavailable, running in in-memory mode: ${error.message}`
-        : "Redis unavailable, running in in-memory mode.";
+        ? `Redis unavailable, running in file-fallback mode: ${error.message}`
+        : "Redis unavailable, running in file-fallback mode.";
     console.warn(warning);
     return {
-      repository: new InMemoryCharacterRepository(),
-      mode: "memory-fallback",
-      storage: buildStorageDetails("memory-fallback", warning),
+      repository: fileRepository,
+      mode: "file-fallback",
+      storage: buildStorageDetails("file-fallback", warning),
       close: async () => {},
     };
   }

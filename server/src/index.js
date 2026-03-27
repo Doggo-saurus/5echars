@@ -101,8 +101,9 @@ app.get("*", (req, res, next) => {
 });
 
 const port = Number(process.env.PORT || 3000);
-app.listen(port, () => {
-  console.log(`Server listening on :${port} (storage=${mode})`);
+const host = String(process.env.HOST || "127.0.0.1").trim() || "127.0.0.1";
+app.listen(port, host, () => {
+  console.log(`Server listening on ${host}:${port} (storage=${mode})`);
 });
 
 process.on("SIGINT", async () => {

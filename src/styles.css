@@ -15,9 +15,15 @@
   box-sizing: border-box;
 }
 
+html,
+body {
+  min-height: 100%;
+}
+
 body {
   margin: 0;
   font-family: "Segoe UI", "Noto Sans", sans-serif;
+  min-height: 100dvh;
   color: var(--text);
   background:
     radial-gradient(circle at top right, #1e3a8a 0%, transparent 30%),
@@ -160,6 +166,33 @@ input, select {
   border-radius: 10px;
   padding: 0.65rem 0.75rem;
   background: rgba(248, 113, 113, 0.08);
+}
+
+.title-with-history {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.8rem;
+  margin-bottom: 0.75rem;
+}
+
+.title-with-history .title {
+  margin: 0;
+}
+
+.character-history-control {
+  display: grid;
+  margin: 0;
+  max-width: 420px;
+}
+
+.character-history-control-inline {
+  width: min(360px, 48%);
+  align-self: flex-start;
+}
+
+.character-history-control-inline select {
+  width: 100%;
 }
 
 .persistence-warning {
@@ -502,6 +535,47 @@ body.play-mode #dice-overlay {
   grid-template-columns: auto 1fr;
   gap: 0.5rem;
   align-items: baseline;
+}
+
+.feature-row {
+  align-items: center;
+}
+
+.feature-row-feat {
+  display: grid;
+  grid-template-columns: 1fr;
+  margin: 0.35rem 0 0;
+}
+
+.feature-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.55rem;
+  min-width: 0;
+}
+
+.feature-name-btn {
+  justify-self: start;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.feature-name-pill {
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.feature-use-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  justify-self: end;
+  flex-wrap: nowrap;
+  flex-shrink: 0;
 }
 
 .class-feature-level {
@@ -1227,6 +1301,106 @@ body.play-mode #dice-overlay {
   min-width: 180px;
 }
 
+.custom-roll-open-btn {
+  min-width: 5.25rem;
+}
+
+.custom-roll-shell {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.custom-roll-subtitle {
+  margin: 0;
+}
+
+.custom-roll-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(84px, 1fr));
+  gap: 0.55rem;
+}
+
+.custom-roll-die-btn {
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 12px;
+  background: linear-gradient(165deg, rgba(34, 211, 238, 0.15), rgba(31, 41, 55, 0.82));
+  color: var(--text);
+  padding: 0.55rem 0.6rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.45rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: border-color 120ms ease, transform 120ms ease, background 120ms ease;
+}
+
+.custom-roll-die-btn:hover {
+  border-color: rgba(34, 211, 238, 0.65);
+  background: linear-gradient(165deg, rgba(34, 211, 238, 0.3), rgba(31, 41, 55, 0.88));
+  transform: translateY(-1px);
+}
+
+.custom-roll-die-label {
+  letter-spacing: 0.01em;
+}
+
+.custom-roll-die-count {
+  min-width: 1.5rem;
+  text-align: center;
+  border-radius: 999px;
+  padding: 0.05rem 0.35rem;
+  background: rgba(11, 18, 32, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  font-size: 0.78rem;
+}
+
+.custom-roll-selected {
+  min-height: 2.05rem;
+  border: 1px dashed rgba(255, 255, 255, 0.22);
+  border-radius: 10px;
+  padding: 0.42rem 0.5rem;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.custom-roll-selected.is-populated {
+  border-style: solid;
+  border-color: rgba(34, 211, 238, 0.35);
+  background: rgba(34, 211, 238, 0.07);
+}
+
+.custom-roll-selected-label {
+  font-size: 0.82rem;
+  margin-right: 0.1rem;
+}
+
+.custom-roll-chip {
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.75);
+  color: var(--text);
+  padding: 0.16rem 0.55rem;
+  cursor: pointer;
+}
+
+.custom-roll-chip:hover {
+  border-color: rgba(248, 113, 113, 0.7);
+  color: #fecaca;
+}
+
+.custom-roll-actions {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.55rem;
+}
+
+.custom-roll-actions .btn {
+  margin-top: 0;
+}
+
 .play-grid-4 {
   display: grid;
   grid-template-columns: 2fr 1fr 1fr auto;
@@ -1335,6 +1509,16 @@ body.play-mode #dice-overlay {
     flex-direction: column;
   }
 
+  .title-with-history {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .character-history-control-inline {
+    width: 100%;
+    max-width: 100%;
+  }
+
   .play-header-dice-slot {
     width: 100%;
   }
@@ -1365,6 +1549,7 @@ body.play-mode #dice-overlay {
 
   .dice-style-row {
     justify-content: flex-start;
+    flex-wrap: wrap;
   }
 
   .play-grid-4 {

@@ -17,13 +17,16 @@ const DICE_MODULE_URL = "https://unpkg.com/@3d-dice/dice-box@1.1.4/dist/dice-box
 const DICE_ASSET_ORIGIN = "https://unpkg.com/@3d-dice/dice-box@1.1.4/dist/";
 const DICE_STYLE_PRESETS = {
   ember: { label: "Ember Gold", themeColor: "#f59e0b", lightIntensity: 1.05, shadowTransparency: 0.75 },
-  arcane: { label: "Arcane Cyan", themeColor: "#22d3ee", lightIntensity: 1.15, shadowTransparency: 0.82 },
-  forest: { label: "Forest Jade", themeColor: "#34d399", lightIntensity: 0.95, shadowTransparency: 0.72 },
+  arcane: { label: "Arcane Cyan", themeColor: "#0891b2", lightIntensity: 1.05, shadowTransparency: 0.78 },
+  forest: { label: "Forest Jade", themeColor: "#15803d", lightIntensity: 0.9, shadowTransparency: 0.68 },
   ruby: { label: "Ruby Red", themeColor: "#ef4444", lightIntensity: 1.2, shadowTransparency: 0.8 },
 };
 const DEFAULT_DICE_RESULT_MESSAGE = "Roll a save or skill to throw dice.";
 const ROLL_HISTORY_LIMIT = 10;
 const LAST_CHARACTER_ID_KEY = "fivee-last-character-id";
+const CHARACTER_HISTORY_KEY = "fivee-character-history";
+const CHARACTER_HISTORY_LIMIT = 20;
+const NEW_CHARACTER_OPTION_VALUE = "__new_character__";
 const CHARACTER_SYNC_META_KEY = "__syncMeta";
 const UUID_V4_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 let selectedDiceStyle = "arcane";
@@ -94,7 +97,26 @@ const SPELL_SCHOOL_LABELS = {
   T: "Transmutation",
 };
 const DICE_NOTATION_REGEX = /\b\d+d\d+(?:\s*[+\-]\s*\d+)?\b/gi;
+const CUSTOM_ROLL_DIE_FACES = [4, 6, 8, 10, 12, 20, 100];
 const PREPARED_SPELL_CLASSES = new Set(["artificer", "cleric", "druid", "paladin", "wizard"]);
+const ASI_FEATURE_NAME_REGEX = /ability score improvement/i;
+const AUTO_RESOURCE_ID_PREFIX = "auto:";
+const NUMBER_WORDS = {
+  a: 1,
+  an: 1,
+  one: 1,
+  two: 2,
+  three: 3,
+  four: 4,
+  five: 5,
+  six: 6,
+  seven: 7,
+  eight: 8,
+  nine: 9,
+  ten: 10,
+  eleven: 11,
+  twelve: 12,
+};
 
 function esc(value) {
   return String(value ?? "")
@@ -140,6 +162,117 @@ function rememberLastCharacterId(id) {
 
 function clearLastCharacterId() {
   localStorage.removeItem(LAST_CHARACTER_ID_KEY);
+}
+
+function getCharacterDisplayName(name) {
+  const parsed = String(name ?? "").trim();
+  return parsed || "Unnamed Hero";
+}
+
+function loadCharacterHistory() {
+  let parsed = [];
+  try {
+    const raw = localStorage.getItem(CHARACTER_HISTORY_KEY);
+    const json = raw ? JSON.parse(raw) : [];
+    if (Array.isArray(json)) parsed = json;
+  } catch {
+    parsed = [];
+  }
+
+  return parsed
+    .map((entry) => {
+      const id = typeof entry?.id === "string" ? entry.id.trim() : "";
+      if (!isUuid(id)) return null;
+      const name = getCharacterDisplayName(entry?.name);
+      const level = Math.max(1, Math.min(20, toNumber(entry?.level, 1)));
+      const className = String(entry?.className ?? "").trim();
+      const lastAccessedAt = typeof entry?.lastAccessedAt === "string" ? entry.lastAccessedAt : "";
+      return { id, name, level, className, lastAccessedAt };
+    })
+    .filter(Boolean)
+    .slice(0, CHARACTER_HISTORY_LIMIT);
+}
+
+function saveCharacterHistory(entries) {
+  if (!Array.isArray(entries)) return;
+  localStorage.setItem(CHARACTER_HISTORY_KEY, JSON.stringify(entries.slice(0, CHARACTER_HISTORY_LIMIT)));
+}
+
+function upsertCharacterHistory(character, options = {}) {
+  const id = typeof character?.id === "string" ? character.id.trim() : "";
+  if (!isUuid(id)) return;
+  const shouldTouchAccess = options.touchAccess !== false;
+  const entries = loadCharacterHistory();
+  const current = entries.find((entry) => entry.id === id) ?? null;
+  const nextName = getCharacterDisplayName(character?.name || current?.name);
+  const nextLevel = Math.max(1, Math.min(20, toNumber(character?.level, current?.level ?? 1)));
+  const nextClassName = String(character?.class ?? current?.className ?? "").trim();
+
+  if (!current) {
+    saveCharacterHistory([
+      { id, name: nextName, level: nextLevel, className: nextClassName, lastAccessedAt: new Date().toISOString() },
+      ...entries,
+    ]);
+    return;
+  }
+
+  if (!shouldTouchAccess) {
+    saveCharacterHistory(
+      entries.map((entry) => (entry.id === id ? { ...entry, name: nextName, level: nextLevel, className: nextClassName } : entry))
+    );
+    return;
+  }
+
+  const withoutCurrent = entries.filter((entry) => entry.id !== id);
+  saveCharacterHistory([
+    { id, name: nextName, level: nextLevel, className: nextClassName, lastAccessedAt: new Date().toISOString() },
+    ...withoutCurrent,
+  ]);
+}
+
+function renderCharacterHistorySelector(selectId, selectedCharacterId = null, options = {}) {
+  const className = String(options.className ?? "character-history-control");
+  const entries = loadCharacterHistory();
+
+  return `
+    <label class="${esc(className)}">
+      <select id="${esc(selectId)}" data-character-history-select>
+        ${entries
+          .map((entry) => {
+            const selected = selectedCharacterId === entry.id ? "selected" : "";
+            const classLabel = entry.className || "Adventurer";
+            const label = `${entry.name} (Lv ${entry.level} ${classLabel})`;
+            return `<option value="${esc(entry.id)}" ${selected}>${esc(label)}</option>`;
+          })
+          .join("")}
+        <option value="${NEW_CHARACTER_OPTION_VALUE}">New character</option>
+      </select>
+    </label>
+  `;
+}
+
+async function createAndOpenNewCharacter() {
+  const character = createInitialCharacter();
+  const nextVersion = Math.max(localCharacterVersion, getCharacterVersion(character)) + 1;
+  const payload = await createCharacter(withSyncMeta(character, nextVersion));
+  const parsed = getCharacterFromApiPayload(payload, null);
+  setCharacterIdInUrl(parsed.id, false);
+  await applyRemoteCharacterPayload(payload, parsed.id);
+}
+
+async function switchCharacterFromHistory(characterId) {
+  if (!isUuid(characterId)) return;
+  if (!showOnboardingHome && store.getState().character?.id === characterId) return;
+  try {
+    await loadCharacterById(characterId);
+    setCharacterIdInUrl(characterId, false);
+    render(store.getState());
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Failed to load selected character";
+    if (showOnboardingHome) startupErrorMessage = message;
+    else alert(message);
+    render(store.getState());
+  }
 }
 
 function signed(value) {
@@ -329,13 +462,14 @@ async function getDiceBox() {
         origin: DICE_ASSET_ORIGIN,
         theme: "default",
         scale: 12,
-        gravity: 1.8,
-        throwForce: 2.1,
-        spinForce: 2.4,
-        startingHeight: 5,
-        linearDamping: 0.68,
-        angularDamping: 0.68,
-        settleTimeout: 900,
+        // Keep rolls readable: less spin/throw, stronger damping, and a longer settle window.
+        gravity: 2.1,
+        throwForce: 1.3,
+        spinForce: 0.85,
+        startingHeight: 4,
+        linearDamping: 0.9,
+        angularDamping: 0.93,
+        settleTimeout: 2600,
       });
       await box.init();
       diceBox = box;
@@ -353,29 +487,30 @@ async function getDiceBox() {
 
 async function rollVisualD20(label, modifier = 0) {
   const notation = modifier === 0 ? "1d20" : `1d20${signed(modifier)}`;
+  const physicalNotation = "1d20";
   scrollDiceTrayIntoView();
   setDiceResult(`${label}: rolling ${notation}...`, false, { record: false });
   const box = await getDiceBox();
   if (!box) return null;
 
   try {
-    const rollGroups = await box.roll(notation);
-    const group = rollGroups?.[0] ?? {};
-    const rawDieValue = Number(group?.rolls?.[0]?.value);
-    const rawTotal = Number(group?.value);
-    const hasRawTotal = Number.isFinite(rawTotal);
-    const normalizedDieFromResult = Number.isFinite(rawDieValue) && rawDieValue >= 1 && rawDieValue <= 20 ? rawDieValue : null;
-    const derivedDieFromTotal = hasRawTotal ? rawTotal - modifier : null;
-    const dieValue =
-      normalizedDieFromResult ?? (Number.isFinite(derivedDieFromTotal) && derivedDieFromTotal >= 1 && derivedDieFromTotal <= 20 ? derivedDieFromTotal : null);
-    const total = hasRawTotal ? rawTotal : dieValue != null ? dieValue + modifier : null;
-    setDiceResult(formatD20ResultMessage(label, modifier, dieValue, total));
+    const rollGroups = await box.roll(physicalNotation);
+    const groups = Array.isArray(rollGroups) ? rollGroups : [];
+    const rollValues = groups.flatMap((group) =>
+      Array.isArray(group?.rolls) ? group.rolls.map((it) => toNumber(it?.value, NaN)).filter((it) => Number.isFinite(it)) : []
+    );
+    const dieValue = rollValues.find((value) => value >= 1 && value <= 20) ?? null;
+    const fallbackDie = Number(groups[0]?.value);
+    const resolvedDieValue =
+      dieValue != null ? dieValue : Number.isFinite(fallbackDie) && fallbackDie >= 1 && fallbackDie <= 20 ? fallbackDie : null;
+    const total = resolvedDieValue != null ? resolvedDieValue + modifier : null;
+    setDiceResult(formatD20ResultMessage(label, modifier, resolvedDieValue, total));
     lastRollAction = { type: "d20", label, modifier };
     return {
       label,
       notation,
       modifier,
-      dieValue,
+      dieValue: resolvedDieValue,
       total,
     };
   } catch (error) {
@@ -391,23 +526,35 @@ async function rollVisualNotation(label, notation) {
     setDiceResult(`${label}: no dice notation.`, true);
     return;
   }
+  const normalizedNotation = cleanNotation.replace(/\s+/g, "");
 
   scrollDiceTrayIntoView();
-  setDiceResult(`${label}: rolling ${cleanNotation}...`, false, { record: false });
+  setDiceResult(`${label}: rolling ${normalizedNotation}...`, false, { record: false });
   const box = await getDiceBox();
   if (!box) return;
 
   try {
-    const rollGroups = await box.roll(cleanNotation);
-    const group = rollGroups?.[0] ?? {};
-    const rawTotal = Number(group?.value);
-    const rollValues = Array.isArray(group?.rolls)
-      ? group.rolls.map((it) => toNumber(it?.value, NaN)).filter((it) => Number.isFinite(it))
-      : [];
+    const rollGroups = await box.roll(normalizedNotation);
+    const groups = Array.isArray(rollGroups) ? rollGroups : [];
+    const rollValues = groups.flatMap((group) =>
+      Array.isArray(group?.rolls) ? group.rolls.map((it) => toNumber(it?.value, NaN)).filter((it) => Number.isFinite(it)) : []
+    );
+    const groupTotals = groups.map((group) => toNumber(group?.value, NaN)).filter((it) => Number.isFinite(it));
+    const notationMatchedGroup = groups.find(
+      (group) => String(group?.notation || "").replace(/\s+/g, "") === normalizedNotation && Number.isFinite(toNumber(group?.value, NaN))
+    );
+    const notationMatchedTotal = notationMatchedGroup ? toNumber(notationMatchedGroup.value, NaN) : NaN;
+    const firstGroupTotal = groups.length ? toNumber(groups[0]?.value, NaN) : NaN;
+    const summedGroupTotal = groupTotals.length ? groupTotals.reduce((acc, value) => acc + value, 0) : NaN;
+    const rawTotal = Number.isFinite(notationMatchedTotal)
+      ? notationMatchedTotal
+      : Number.isFinite(summedGroupTotal)
+        ? summedGroupTotal
+        : firstGroupTotal;
     const inferredTotal = rollValues.length ? rollValues.reduce((acc, value) => acc + value, 0) : null;
     const total = Number.isFinite(rawTotal) ? rawTotal : inferredTotal;
-    setDiceResult(formatNotationResultMessage(label, cleanNotation, total, rollValues));
-    lastRollAction = { type: "notation", label, notation: cleanNotation };
+    setDiceResult(formatNotationResultMessage(label, normalizedNotation, total, rollValues));
+    lastRollAction = { type: "notation", label, notation: normalizedNotation };
   } catch (error) {
     console.error("Dice roll failed", error);
     setDiceResult(`${label}: roll failed.`, true);
@@ -428,6 +575,117 @@ async function rerollLastRoll() {
   if (lastRollAction.type === "notation") {
     await rollVisualNotation(lastRollAction.label, lastRollAction.notation);
   }
+}
+
+function openCustomRollModal() {
+  const diceCounts = CUSTOM_ROLL_DIE_FACES.reduce((acc, face) => {
+    acc[face] = 0;
+    return acc;
+  }, {});
+  const close = openModal({
+    title: "Custom Dice Roll",
+    bodyHtml: `
+      <div class="custom-roll-shell">
+        <p class="subtitle custom-roll-subtitle">Click dice to add them, then roll.</p>
+        <div class="custom-roll-grid">
+          ${CUSTOM_ROLL_DIE_FACES.map(
+            (face) => `
+              <button type="button" class="custom-roll-die-btn" data-custom-roll-add="${face}">
+                <span class="custom-roll-die-label">d${face}</span>
+                <span class="custom-roll-die-count" data-custom-roll-count="${face}">0</span>
+              </button>
+            `
+          ).join("")}
+        </div>
+        <div class="custom-roll-selected" id="custom-roll-selected" aria-live="polite"></div>
+        <div class="custom-roll-actions">
+          <button type="button" class="btn secondary" id="custom-roll-clear">Clear</button>
+          <button type="button" class="btn" id="custom-roll-submit" disabled>Roll</button>
+        </div>
+      </div>
+    `,
+    actions: [{ label: "Close", secondary: true, onClick: (done) => done() }],
+  });
+  const selectedEl = document.getElementById("custom-roll-selected");
+  const submitEl = document.getElementById("custom-roll-submit");
+  const clearEl = document.getElementById("custom-roll-clear");
+  const modalEl = selectedEl?.closest(".modal");
+
+  const getNotation = () =>
+    CUSTOM_ROLL_DIE_FACES.map((face) => {
+      const count = toNumber(diceCounts[face], 0);
+      if (count <= 0) return "";
+      return `${count}d${face}`;
+    })
+      .filter(Boolean)
+      .join("+");
+
+  const renderSelected = () => {
+    if (!selectedEl || !submitEl) return;
+    const chips = CUSTOM_ROLL_DIE_FACES.map((face) => {
+      const count = toNumber(diceCounts[face], 0);
+      if (count <= 0) return "";
+      return `
+        <button type="button" class="custom-roll-chip" data-custom-roll-remove="${face}" title="Remove one d${face}">
+          ${count}d${face}
+        </button>
+      `;
+    })
+      .filter(Boolean)
+      .join("");
+    if (chips) {
+      selectedEl.innerHTML = `<span class="muted custom-roll-selected-label">Selected</span>${chips}`;
+      selectedEl.classList.add("is-populated");
+      submitEl.disabled = false;
+      return;
+    }
+    selectedEl.innerHTML = `<span class="muted">No dice selected yet.</span>`;
+    selectedEl.classList.remove("is-populated");
+    submitEl.disabled = true;
+  };
+
+  modalEl?.querySelectorAll("[data-custom-roll-add]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const face = toNumber(button.dataset.customRollAdd, 0);
+      if (!face || !(face in diceCounts)) return;
+      diceCounts[face] = Math.min(20, toNumber(diceCounts[face], 0) + 1);
+      const countEl = modalEl.querySelector(`[data-custom-roll-count="${face}"]`);
+      if (countEl) countEl.textContent = String(diceCounts[face]);
+      renderSelected();
+    });
+  });
+
+  selectedEl?.addEventListener("click", (event) => {
+    const target = event.target instanceof Element ? event.target.closest("[data-custom-roll-remove]") : null;
+    if (!target) return;
+    const face = toNumber(target.dataset.customRollRemove, 0);
+    if (!face || !(face in diceCounts)) return;
+    diceCounts[face] = Math.max(0, toNumber(diceCounts[face], 0) - 1);
+    const countEl = modalEl?.querySelector(`[data-custom-roll-count="${face}"]`);
+    if (countEl) countEl.textContent = String(diceCounts[face]);
+    renderSelected();
+  });
+
+  clearEl?.addEventListener("click", () => {
+    CUSTOM_ROLL_DIE_FACES.forEach((face) => {
+      diceCounts[face] = 0;
+      const countEl = modalEl?.querySelector(`[data-custom-roll-count="${face}"]`);
+      if (countEl) countEl.textContent = "0";
+    });
+    renderSelected();
+  });
+
+  submitEl?.addEventListener("click", async () => {
+    const notation = getNotation();
+    if (!notation) {
+      renderSelected();
+      return;
+    }
+    close();
+    await rollVisualNotation("Custom Roll", notation);
+  });
+
+  renderSelected();
 }
 
 function getActiveInputSnapshot() {
@@ -461,8 +719,8 @@ function restoreActiveInput(snapshot) {
 function getModeToggle(mode) {
   return `
     <div class="stepper mode-toggle">
-      <button data-mode="play" class="${mode === "play" ? "active" : ""}">Play Mode</button>
-      <button data-mode="build" class="${mode === "build" ? "active" : ""}">Edit Mode</button>
+      <button data-mode="play" class="${mode === "play" ? "active" : ""}">Play</button>
+      <button data-mode="build" class="${mode === "build" ? "active" : ""}">Edit</button>
     </div>
   `;
 }
@@ -529,13 +787,10 @@ function compareCharacterRecency(a, b) {
   return getCharacterUpdatedAtMs(a) - getCharacterUpdatedAtMs(b);
 }
 
-function choosePreferredCharacterVersion(localCharacter, remoteCharacter) {
-  if (!localCharacter) return { character: remoteCharacter, source: "remote" };
-  if (!remoteCharacter) return { character: localCharacter, source: "local" };
-  if (compareCharacterRecency(localCharacter, remoteCharacter) > 0) {
-    return { character: localCharacter, source: "local" };
-  }
-  return { character: remoteCharacter, source: "remote" };
+function isRemoteSameOrNewer(localCharacter, remoteCharacter) {
+  if (!remoteCharacter) return false;
+  if (!localCharacter) return true;
+  return compareCharacterRecency(remoteCharacter, localCharacter) >= 0;
 }
 
 function setPersistenceNotice(message) {
@@ -555,8 +810,8 @@ function updatePersistenceStatusFromPayload(payload) {
   const detail = typeof storage.warning === "string" ? storage.warning.trim() : "";
   setPersistenceNotice(
     detail
-      ? `Server persistence is running in temporary memory mode (${detail}). Your recent edits are currently only guaranteed in this browser.`
-      : "Server persistence is running in temporary memory mode. Your recent edits are currently only guaranteed in this browser."
+      ? `Server persistence is running in temporary non-durable mode (${detail}). Your recent edits are currently only guaranteed in this browser.`
+      : "Server persistence is running in temporary non-durable mode. Your recent edits are currently only guaranteed in this browser."
   );
 }
 
@@ -691,6 +946,593 @@ function getClassCatalogEntry(catalogs, className) {
   return catalogs.classes.find((entry) => String(entry?.name ?? "").trim().toLowerCase() === selectedName) ?? null;
 }
 
+function normalizeSourceTag(value) {
+  return String(value ?? "").trim().toUpperCase();
+}
+
+function buildEntityId(parts) {
+  return parts
+    .map((part) =>
+      String(part ?? "")
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+    )
+    .filter(Boolean)
+    .join("__");
+}
+
+function parseClassFeatureToken(rawToken, fallbackSource = "", classNameHint = "") {
+  const token = String(rawToken ?? "").trim();
+  if (!token) return null;
+  const [nameRaw = "", classNameRaw = "", classSourceRaw = "", levelRaw = "", sourceRaw = ""] = token.split("|");
+  const level = toNumber(levelRaw, NaN);
+  const name = cleanSpellInlineTags(nameRaw);
+  if (!name) return null;
+  const className = String(classNameRaw || classNameHint || "").trim();
+  const source = normalizeSourceTag(sourceRaw || fallbackSource);
+  return {
+    id: buildEntityId(["class-feature", className, classSourceRaw, levelRaw, name, source]),
+    name,
+    level: Number.isFinite(level) ? level : null,
+    className,
+    source,
+    type: "class",
+  };
+}
+
+function parseSubclassFeatureToken(rawToken, fallbackSource = "", fallbackClassName = "", fallbackSubclassName = "") {
+  const token = String(rawToken ?? "").trim();
+  if (!token) return null;
+  const [nameRaw = "", classNameRaw = "", classSourceRaw = "", subclassNameRaw = "", subclassSourceRaw = "", levelRaw = "", sourceRaw = ""] =
+    token.split("|");
+  const level = toNumber(levelRaw, NaN);
+  const name = cleanSpellInlineTags(nameRaw);
+  if (!name) return null;
+  const className = String(classNameRaw || fallbackClassName || "").trim();
+  const subclassName = String(subclassNameRaw || fallbackSubclassName || "").trim();
+  const source = normalizeSourceTag(sourceRaw || fallbackSource || subclassSourceRaw);
+  return {
+    id: buildEntityId(["subclass-feature", className, classSourceRaw, subclassName, subclassSourceRaw, levelRaw, name, source]),
+    name,
+    level: Number.isFinite(level) ? level : null,
+    className,
+    subclassName,
+    source,
+    type: "subclass",
+  };
+}
+
+function getPrimarySubclassSelection(character) {
+  const subclass = character?.classSelection?.subclass;
+  if (subclass && typeof subclass === "object" && String(subclass.name ?? "").trim()) {
+    return {
+      name: String(subclass.name ?? "").trim(),
+      source: normalizeSourceTag(subclass.source),
+      className: String(subclass.className ?? "").trim(),
+      classSource: normalizeSourceTag(subclass.classSource),
+    };
+  }
+
+  const legacyName = String(character?.subclass ?? "").trim();
+  if (!legacyName) return null;
+  return {
+    name: legacyName,
+    source: "",
+    className: String(character?.class ?? "").trim(),
+    classSource: "",
+  };
+}
+
+function getSubclassCatalogEntries(catalogs, className, classSource = "") {
+  if (!Array.isArray(catalogs?.subclasses)) return [];
+  const normalizedClass = String(className ?? "").trim().toLowerCase();
+  if (!normalizedClass) return [];
+  const normalizedClassSource = normalizeSourceTag(classSource);
+  return catalogs.subclasses
+    .filter((entry) => String(entry?.className ?? "").trim().toLowerCase() === normalizedClass)
+    .filter((entry) => {
+      if (!normalizedClassSource) return true;
+      const entryClassSource = normalizeSourceTag(entry?.classSource);
+      return !entryClassSource || entryClassSource === normalizedClassSource;
+    })
+    .sort((a, b) => String(a?.name ?? "").localeCompare(String(b?.name ?? "")));
+}
+
+function getSelectedSubclassEntry(catalogs, character) {
+  const selected = getPrimarySubclassSelection(character);
+  if (!selected?.name) return null;
+  const classEntry = getClassCatalogEntry(catalogs, character?.class);
+  const classSource = normalizeSourceTag(classEntry?.source);
+  const candidates = getSubclassCatalogEntries(catalogs, character?.class, classSource);
+  const selectedName = selected.name.toLowerCase();
+  const selectedSource = normalizeSourceTag(selected.source);
+  return (
+    candidates.find((entry) => {
+      const nameMatch = String(entry?.name ?? "").trim().toLowerCase() === selectedName;
+      if (!nameMatch) return false;
+      if (!selectedSource) return true;
+      return normalizeSourceTag(entry?.source) === selectedSource;
+    }) ?? null
+  );
+}
+
+function getClassLevelTracks(character) {
+  const classLevels = getCharacterClassLevels(character);
+  const tracks = [];
+  const primaryClass = String(character?.class ?? "").trim();
+  if (primaryClass) {
+    tracks.push({ className: primaryClass, level: classLevels.primaryLevel, isPrimary: true });
+  }
+  classLevels.multiclass.forEach((entry) => {
+    tracks.push({ className: String(entry.class ?? "").trim(), level: entry.level, isPrimary: false });
+  });
+  return tracks.filter((entry) => entry.className && entry.level > 0);
+}
+
+function getUnlockedFeatures(catalogs, character) {
+  const unlocked = [];
+  const tracks = getClassLevelTracks(character);
+
+  tracks.forEach((track) => {
+    const classEntry = getClassCatalogEntry(catalogs, track.className);
+    if (!classEntry) return;
+    const classSource = normalizeSourceTag(classEntry.source);
+    const classFeatures = Array.isArray(classEntry.classFeatures) ? classEntry.classFeatures : [];
+    classFeatures.forEach((featureEntry) => {
+      const token = typeof featureEntry === "string" ? featureEntry : featureEntry?.classFeature;
+      const parsed = parseClassFeatureToken(token, classSource, classEntry.name);
+      if (!parsed || parsed.level == null || parsed.level > track.level) return;
+      unlocked.push({
+        ...parsed,
+        className: classEntry.name,
+      });
+    });
+
+    if (track.isPrimary) {
+      const subclassEntry = getSelectedSubclassEntry(catalogs, character);
+      if (!subclassEntry) return;
+      const subclassFeatures = Array.isArray(subclassEntry.subclassFeatures) ? subclassEntry.subclassFeatures : [];
+      subclassFeatures.forEach((token) => {
+        const parsed = parseSubclassFeatureToken(token, subclassEntry.source, classEntry.name, subclassEntry.name);
+        if (!parsed || parsed.level == null || parsed.level > track.level) return;
+        unlocked.push({
+          ...parsed,
+          className: classEntry.name,
+          subclassName: subclassEntry.name,
+        });
+      });
+    }
+  });
+
+  const deduped = new Map();
+  unlocked.forEach((feature) => {
+    deduped.set(feature.id, feature);
+  });
+  return [...deduped.values()].sort((a, b) => {
+    const levelDelta = toNumber(a.level, 0) - toNumber(b.level, 0);
+    if (levelDelta !== 0) return levelDelta;
+    return String(a.name).localeCompare(String(b.name));
+  });
+}
+
+function getFeatSlotsForClass(classEntry, classLevel) {
+  if (!classEntry || classLevel <= 0) return [];
+  const slots = [];
+
+  const featProgression = Array.isArray(classEntry.featProgression) ? classEntry.featProgression : [];
+  featProgression.forEach((progressionEntry, progressionIndex) => {
+    const progression = progressionEntry?.progression;
+    if (!progression || typeof progression !== "object") return;
+    const slotType = progressionEntry?.name ? cleanSpellInlineTags(progressionEntry.name) : "Feat";
+    Object.entries(progression).forEach(([levelRaw, countRaw]) => {
+      const level = toNumber(levelRaw, NaN);
+      const count = Math.max(0, toNumber(countRaw, 0));
+      if (!Number.isFinite(level) || level > classLevel || count <= 0) return;
+      for (let idx = 0; idx < count; idx += 1) {
+        const id = buildEntityId(["feat-slot", classEntry.name, classEntry.source, slotType, level, progressionIndex, idx]);
+        slots.push({ id, className: classEntry.name, classSource: normalizeSourceTag(classEntry.source), level, count: 1, slotType });
+      }
+    });
+  });
+
+  if (slots.length) return slots;
+
+  const classFeatures = Array.isArray(classEntry.classFeatures) ? classEntry.classFeatures : [];
+  classFeatures.forEach((featureEntry, featureIndex) => {
+    const token = typeof featureEntry === "string" ? featureEntry : featureEntry?.classFeature;
+    const parsed = parseClassFeatureToken(token, classEntry.source, classEntry.name);
+    if (!parsed || parsed.level == null || parsed.level > classLevel) return;
+    if (!ASI_FEATURE_NAME_REGEX.test(parsed.name)) return;
+    const id = buildEntityId(["feat-slot", classEntry.name, classEntry.source, "asi", parsed.level, featureIndex]);
+    slots.push({
+      id,
+      className: classEntry.name,
+      classSource: normalizeSourceTag(classEntry.source),
+      level: parsed.level,
+      count: 1,
+      slotType: "Ability Score Improvement",
+    });
+  });
+  return slots;
+}
+
+function getFeatSlots(catalogs, character) {
+  const tracks = getClassLevelTracks(character);
+  const slots = tracks.flatMap((track) => {
+    const classEntry = getClassCatalogEntry(catalogs, track.className);
+    return getFeatSlotsForClass(classEntry, track.level);
+  });
+  return slots.sort((a, b) => {
+    const levelDelta = a.level - b.level;
+    if (levelDelta !== 0) return levelDelta;
+    const classDelta = String(a.className).localeCompare(String(b.className));
+    if (classDelta !== 0) return classDelta;
+    return String(a.slotType).localeCompare(String(b.slotType));
+  });
+}
+
+function parseCountToken(value, fallback = 0) {
+  const normalized = String(value ?? "")
+    .trim()
+    .toLowerCase();
+  if (!normalized) return fallback;
+  if (NUMBER_WORDS[normalized] != null) return NUMBER_WORDS[normalized];
+  const parsed = Number.parseInt(normalized, 10);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function getClassLevelMap(character) {
+  const map = new Map();
+  getClassLevelTracks(character).forEach((track) => {
+    const key = String(track.className ?? "").trim().toLowerCase();
+    if (!key) return;
+    map.set(key, Math.max(toNumber(map.get(key), 0), toNumber(track.level, 0)));
+  });
+  return map;
+}
+
+function getResourceRechargeHint(lines) {
+  const text = lines.join(" ").toLowerCase();
+  if (/once per day|once a day/.test(text)) return "day";
+  if (/short or long rest/.test(text)) return "shortOrLong";
+  if (/long rest/.test(text) && /short rest/.test(text)) return "shortOrLong";
+  if (/long rest/.test(text)) return "long";
+  if (/short rest/.test(text)) return "short";
+  return "";
+}
+
+function getAdditionalThresholdsForCombatSuperiority(lines) {
+  const thresholds = new Set();
+  lines.forEach((line) => {
+    if (!/superiority die/i.test(line)) return;
+    if (!/(gain|additional|another|one more)/i.test(line)) return;
+
+    const atLevelMatches = [...line.matchAll(/at\s+(\d{1,2})(?:st|nd|rd|th)?\s+level/gi)];
+    atLevelMatches.forEach((match) => {
+      const level = toNumber(match[1], 0);
+      if (level > 0) thresholds.add(level);
+    });
+
+    const levelListMatch = line.match(/levels?\s+(\d{1,2})(?:\s*\([^)]+\))?(?:\s+and\s+(\d{1,2}))?/i);
+    if (levelListMatch) {
+      const first = toNumber(levelListMatch[1], 0);
+      const second = toNumber(levelListMatch[2], 0);
+      if (first > 0) thresholds.add(first);
+      if (second > 0) thresholds.add(second);
+    }
+  });
+  return [...thresholds.values()];
+}
+
+function getResourceDescriptorFromEntry(detail, fallbackName, classLevel = 0) {
+  const lines = getRuleDescriptionLines(detail);
+  const recharge = getResourceRechargeHint(lines);
+  let max = 0;
+  let resourceName = cleanSpellInlineTags(detail?.consumes?.name ?? "");
+
+  const usesRaw = detail?.uses;
+  if (usesRaw != null) {
+    if (typeof usesRaw === "number") max = Math.max(0, usesRaw);
+    else if (typeof usesRaw === "string") max = Math.max(0, parseCountToken(usesRaw, 0));
+  }
+
+  if (max <= 0) {
+    for (const line of lines) {
+      const generic = line.match(
+        /you have\s+(\d+|a|an|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+([a-z][a-z\s'-]{1,48}?)(?:,|\s+which|\s+that|\.)/i
+      );
+      if (!generic) continue;
+      const noun = String(generic[2] ?? "").toLowerCase();
+      if (!/\b(dice?|die|charge|charges|point|points|pool|use|uses|token|tokens)\b/.test(noun)) continue;
+      max = parseCountToken(generic[1], 0);
+      if (!resourceName) resourceName = toTitleCase(generic[2]);
+      break;
+    }
+  }
+
+  if (max <= 0) {
+    const text = lines.join(" ").toLowerCase();
+    const hasOnceUsePattern =
+      /\bonce per day\b/.test(text)
+      || /\bonce a day\b/.test(text)
+      || /\byou can use (?:this|it) once\b/.test(text)
+      || /\bonce before you finish a (?:short|long) rest\b/.test(text)
+      || /\bonce you use this (?:feature|ability)\b/.test(text);
+    if (hasOnceUsePattern) max = 1;
+  }
+
+  const normalizedName = String(resourceName || fallbackName || "").toLowerCase();
+  if (max > 0 && /superiority die|superiority dice/.test(normalizedName)) {
+    const thresholds = getAdditionalThresholdsForCombatSuperiority(lines);
+    thresholds.forEach((level) => {
+      if (classLevel >= level) max += 1;
+    });
+  }
+
+  if (max <= 0) return null;
+  if (/^spellcasting$/i.test(String(fallbackName ?? "").trim())) return null;
+  return {
+    name: resourceName || cleanSpellInlineTags(fallbackName || "Feature Uses"),
+    max,
+    recharge,
+  };
+}
+
+function getAutoResourceMaxFromFeatureName(featureName) {
+  const name = String(featureName ?? "").trim();
+  if (!name) return 0;
+  if (/action surge/i.test(name)) {
+    if (/three uses/i.test(name)) return 3;
+    if (/two uses/i.test(name)) return 2;
+    return 1;
+  }
+  if (/indomitable/i.test(name)) {
+    if (/three uses/i.test(name)) return 3;
+    if (/two uses/i.test(name)) return 2;
+    return 1;
+  }
+  if (/second wind/i.test(name)) return 1;
+  return 0;
+}
+
+function getAutoResourcesFromFeatures(features) {
+  return features
+    .map((feature) => {
+      const max = getAutoResourceMaxFromFeatureName(feature?.name);
+      if (max <= 0) return null;
+      return {
+        autoId: `${AUTO_RESOURCE_ID_PREFIX}${feature.id}`,
+        name: cleanSpellInlineTags(feature.name),
+        current: max,
+        max,
+        recharge: "",
+      };
+    })
+    .filter(Boolean);
+}
+
+function getAutoResourcesFromRules(catalogs, character, features, feats) {
+  const classLevelMap = getClassLevelMap(character);
+  const byId = new Map();
+
+  features.forEach((feature) => {
+    const detail = resolveFeatureEntryFromCatalogs(catalogs, feature);
+    const classLevel = toNumber(classLevelMap.get(String(feature.className ?? "").trim().toLowerCase()), 0);
+    const descriptor = getResourceDescriptorFromEntry(detail, feature.name, classLevel);
+    if (descriptor) {
+      byId.set(`${AUTO_RESOURCE_ID_PREFIX}${feature.id}`, {
+        autoId: `${AUTO_RESOURCE_ID_PREFIX}${feature.id}`,
+        name: descriptor.name,
+        current: descriptor.max,
+        max: descriptor.max,
+        recharge: descriptor.recharge,
+      });
+      return;
+    }
+
+    const fallbackMax = getAutoResourceMaxFromFeatureName(feature?.name);
+    if (fallbackMax <= 0) return;
+    byId.set(`${AUTO_RESOURCE_ID_PREFIX}${feature.id}`, {
+      autoId: `${AUTO_RESOURCE_ID_PREFIX}${feature.id}`,
+      name: cleanSpellInlineTags(feature.name),
+      current: fallbackMax,
+      max: fallbackMax,
+      recharge: "",
+    });
+  });
+
+  (Array.isArray(feats) ? feats : []).forEach((feat) => {
+    const featDetail = (catalogs?.feats ?? []).find((entry) => buildEntityId(["feat", entry?.name, entry?.source]) === feat.id);
+    const descriptor = getResourceDescriptorFromEntry(featDetail, feat.name, getCharacterHighestClassLevel(character));
+    if (!descriptor) return;
+    byId.set(`${AUTO_RESOURCE_ID_PREFIX}${feat.id}`, {
+      autoId: `${AUTO_RESOURCE_ID_PREFIX}${feat.id}`,
+      name: descriptor.name,
+      current: descriptor.max,
+      max: descriptor.max,
+      recharge: descriptor.recharge,
+    });
+  });
+
+  return [...byId.values()];
+}
+
+function syncAutoFeatureUses(play, trackers) {
+  const previous =
+    play?.featureUses && typeof play.featureUses === "object" && !Array.isArray(play.featureUses)
+      ? play.featureUses
+      : {};
+  const next = {};
+  trackers.forEach((tracker) => {
+    const key = String(tracker?.autoId ?? "").trim();
+    if (!key) return;
+    const prev = previous[key];
+    const prevCurrent = prev && typeof prev === "object" ? toNumber(prev.current, tracker.max) : tracker.max;
+    const max = Math.max(0, toNumber(tracker.max, 0));
+    next[key] = {
+      name: String(tracker.name ?? ""),
+      max,
+      current: Math.max(0, Math.min(max, prevCurrent)),
+      recharge: String(tracker.recharge ?? ""),
+    };
+  });
+  return next;
+}
+
+function syncAutoResources(play, autoResources) {
+  const previousResources = Array.isArray(play?.resources) ? play.resources : [];
+  const manualResources = previousResources.filter((resource) => !String(resource?.autoId ?? "").startsWith(AUTO_RESOURCE_ID_PREFIX));
+  const previousAutoById = new Map(
+    previousResources
+      .filter((resource) => String(resource?.autoId ?? "").startsWith(AUTO_RESOURCE_ID_PREFIX))
+      .map((resource) => [resource.autoId, resource])
+  );
+  const mergedAuto = autoResources.map((resource) => {
+    const previous = previousAutoById.get(resource.autoId);
+    const previousCurrent = previous ? toNumber(previous.current, resource.max) : resource.max;
+    return {
+      autoId: resource.autoId,
+      name: resource.name,
+      max: resource.max,
+      recharge: resource.recharge || "",
+      current: Math.max(0, Math.min(resource.max, previousCurrent)),
+    };
+  });
+  return [...manualResources, ...mergedAuto];
+}
+
+function recomputeCharacterProgression(catalogs, character) {
+  const unlockedFeatures = getUnlockedFeatures(catalogs, character);
+  const featSlots = getFeatSlots(catalogs, character);
+  const existingFeats = Array.isArray(character?.feats) ? character.feats : [];
+  const slotIds = new Set(featSlots.map((slot) => slot.id));
+  const nextFeats = existingFeats.filter((feat) => feat && feat.name && (!feat.slotId || slotIds.has(feat.slotId)));
+  const selectedFeatIds = nextFeats.map((feat) => feat.id).filter(Boolean);
+  const pendingFeatSlotIds = featSlots.filter((slot) => !nextFeats.some((feat) => feat.slotId === slot.id)).map((slot) => slot.id);
+  return {
+    unlockedFeatures,
+    featSlots,
+    pendingFeatSlotIds,
+    selectedFeatIds,
+  };
+}
+
+function resolveFeatureEntryFromCatalogs(catalogs, feature) {
+  if (!feature) return null;
+  const normalizedName = String(feature.name ?? "").trim().toLowerCase();
+  const normalizedClassName = String(feature.className ?? "").trim().toLowerCase();
+  const level = toNumber(feature.level, 0);
+  const featureSource = normalizeSourceTag(feature.source);
+
+  if (feature.type === "subclass") {
+    const normalizedSubclassName = String(feature.subclassName ?? "").trim().toLowerCase();
+    const matches = (catalogs?.subclassFeatures ?? []).filter((entry) => {
+      const entryName = String(entry?.name ?? "").trim().toLowerCase();
+      const entryClassName = String(entry?.className ?? "").trim().toLowerCase();
+      const entrySubclassName = String(entry?.subclassShortName ?? "").trim().toLowerCase();
+      const entryLevel = toNumber(entry?.level, 0);
+      if (entryName !== normalizedName || entryClassName !== normalizedClassName || entryLevel !== level) return false;
+      if (normalizedSubclassName && entrySubclassName !== normalizedSubclassName) return false;
+      if (!featureSource) return true;
+      return normalizeSourceTag(entry?.source) === featureSource;
+    });
+    return matches[0] ?? null;
+  }
+
+  const matches = (catalogs?.classFeatures ?? []).filter((entry) => {
+    const entryName = String(entry?.name ?? "").trim().toLowerCase();
+    const entryClassName = String(entry?.className ?? "").trim().toLowerCase();
+    const entryLevel = toNumber(entry?.level, 0);
+    if (entryName !== normalizedName || entryClassName !== normalizedClassName || entryLevel !== level) return false;
+    if (!featureSource) return true;
+    return normalizeSourceTag(entry?.source) === featureSource;
+  });
+  return matches[0] ?? null;
+}
+
+function getRuleDescriptionLines(entry) {
+  return collectSpellEntryLines(entry?.entries ?? []).filter(Boolean);
+}
+
+function openFeatureDetailsModal(state, featureId) {
+  const feature = (state.character?.progression?.unlockedFeatures ?? []).find((it) => it.id === featureId);
+  if (!feature) return;
+  const detail = resolveFeatureEntryFromCatalogs(state.catalogs, feature);
+  const lines = getRuleDescriptionLines(detail);
+  const bodyHtml = lines.length
+    ? lines
+        .map((line) => {
+          const body = renderTextWithInlineDiceButtons(line);
+          return `<p>${body}</p>`;
+        })
+        .join("")
+    : "<p class='muted'>No description text available.</p>";
+  const metaRows = [
+    { label: "Type", value: feature.type === "subclass" ? "Subclass Feature" : "Class Feature" },
+    { label: "Class", value: feature.className || "" },
+    { label: "Subclass", value: feature.subclassName || "" },
+    { label: "Level", value: feature.level ? String(feature.level) : "" },
+    { label: "Source", value: detail?.sourceLabel ?? detail?.source ?? feature.source ?? "" },
+  ].filter((row) => row.value);
+  const close = openModal({
+    title: feature.name,
+    bodyHtml: `
+      <div class="spell-meta-grid">
+        ${metaRows.map((row) => `<div><strong>${esc(row.label)}:</strong> ${esc(row.value)}</div>`).join("")}
+      </div>
+      <div class="spell-description">${bodyHtml}</div>
+    `,
+    actions: [{ label: "Close", secondary: true, onClick: (done) => done() }],
+  });
+  document.querySelectorAll("[data-spell-roll]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const notation = button.dataset.spellRoll;
+      if (!notation) return;
+      close();
+      rollVisualNotation(feature.name, notation);
+    });
+  });
+}
+
+function openFeatDetailsModal(state, featId) {
+  const feat = (state.character?.feats ?? []).find((it) => it.id === featId);
+  if (!feat) return;
+  const detail = (state.catalogs?.feats ?? []).find((entry) => buildEntityId(["feat", entry?.name, entry?.source]) === featId) ?? null;
+  const lines = getRuleDescriptionLines(detail);
+  const bodyHtml = lines.length
+    ? lines
+        .map((line) => {
+          const body = renderTextWithInlineDiceButtons(line);
+          return `<p>${body}</p>`;
+        })
+        .join("")
+    : "<p class='muted'>No description text available.</p>";
+  const metaRows = [
+    { label: "Source", value: detail?.sourceLabel ?? detail?.source ?? feat.source ?? "" },
+    { label: "Granted At Level", value: feat.levelGranted ? String(feat.levelGranted) : "" },
+    { label: "Via", value: feat.via || "" },
+  ].filter((row) => row.value);
+  const close = openModal({
+    title: feat.name,
+    bodyHtml: `
+      <div class="spell-meta-grid">
+        ${metaRows.map((row) => `<div><strong>${esc(row.label)}:</strong> ${esc(row.value)}</div>`).join("")}
+      </div>
+      <div class="spell-description">${bodyHtml}</div>
+    `,
+    actions: [{ label: "Close", secondary: true, onClick: (done) => done() }],
+  });
+  document.querySelectorAll("[data-spell-roll]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const notation = button.dataset.spellRoll;
+      if (!notation) return;
+      close();
+      rollVisualNotation(feat.name, notation);
+    });
+  });
+}
+
 function getClassSaveProficiencies(catalogs, className) {
   const classEntry = getClassCatalogEntry(catalogs, className);
   const profs = classEntry?.proficiency;
@@ -723,6 +1565,80 @@ function optionList(options, selected) {
         )})</option>`
     )
     .join("");
+}
+
+function getSubclassSelectOptions(state) {
+  const classEntry = getClassCatalogEntry(state.catalogs, state.character.class);
+  const selected = getPrimarySubclassSelection(state.character);
+  const classSource = normalizeSourceTag(classEntry?.source);
+  const options = getSubclassCatalogEntries(state.catalogs, state.character.class, classSource);
+  return options.map((entry) => {
+    const isSelected =
+      selected &&
+      String(selected.name ?? "").trim().toLowerCase() === String(entry?.name ?? "").trim().toLowerCase() &&
+      (!selected.source || normalizeSourceTag(selected.source) === normalizeSourceTag(entry?.source));
+    return {
+      name: String(entry?.name ?? ""),
+      source: String(entry?.source ?? ""),
+      sourceLabel: entry?.sourceLabel ?? entry?.source ?? "",
+      isSelected,
+    };
+  });
+}
+
+function getFeatSlotsWithSelection(character) {
+  const progression = character?.progression ?? {};
+  const slots = Array.isArray(progression.featSlots) ? progression.featSlots : [];
+  const feats = Array.isArray(character?.feats) ? character.feats : [];
+  return slots.map((slot) => ({
+    ...slot,
+    feat: feats.find((feat) => feat.slotId === slot.id) ?? null,
+  }));
+}
+
+function renderBuildFeatSlots(character) {
+  const slots = getFeatSlotsWithSelection(character);
+  if (!slots.length) return "<p class='muted'>No feat slots available from current class progression.</p>";
+  return slots
+    .map((slot) => {
+      const slotLabel = `${slot.className} Lv ${slot.level} - ${slot.slotType || "Feat"}`;
+      return `
+        <div class="option-row">
+          <div>
+            <strong>${esc(slotLabel)}</strong>
+            <div class="muted">${slot.feat ? `${esc(slot.feat.name)} (${esc(slot.feat.source || "UNK")})` : "No feat selected."}</div>
+          </div>
+          <div class="option-row-actions">
+            <button type="button" class="btn secondary" data-open-feat-picker="${esc(slot.id)}">${slot.feat ? "Replace" : "Pick Feat"}</button>
+            ${slot.feat ? `<button type="button" class="btn secondary" data-remove-feat-slot="${esc(slot.id)}">Clear</button>` : ""}
+          </div>
+        </div>
+      `;
+    })
+    .join("");
+}
+
+function getCharacterHighestClassLevel(character) {
+  const tracks = getClassLevelTracks(character);
+  return tracks.reduce((highest, track) => Math.max(highest, toNumber(track.level, 0)), 0);
+}
+
+function doesCharacterMeetFeatPrerequisites(character, feat) {
+  const prerequisites = Array.isArray(feat?.prerequisite) ? feat.prerequisite : [];
+  if (!prerequisites.length) return true;
+  const highestClassLevel = getCharacterHighestClassLevel(character);
+
+  return prerequisites.some((entry) => {
+    if (!entry || typeof entry !== "object") return true;
+    const abilityRequirements = Object.entries(entry).filter(([key, value]) => ABILITY_LABELS[key] && Number.isFinite(toNumber(value, NaN)));
+    const hasAbilityFailure = abilityRequirements.some(([ability, value]) => toNumber(character?.abilities?.[ability], 0) < toNumber(value, 0));
+    if (hasAbilityFailure) return false;
+    if (entry.level && typeof entry.level === "object") {
+      const minLevel = toNumber(entry.level.level, 0);
+      if (minLevel > 0 && highestClassLevel < minLevel) return false;
+    }
+    return true;
+  });
 }
 
 function renderBuildEditor(state) {
@@ -779,6 +1695,7 @@ function renderBuildEditor(state) {
     `;
   }
   if (stepIndex === 3) {
+    const subclassOptions = getSubclassSelectOptions(state);
     return `
       <h2 class="title">Class & Multiclass</h2>
       <div class="row">
@@ -788,11 +1705,28 @@ function renderBuildEditor(state) {
             ${optionList(catalogs.classes, character.class)}
           </select>
         </label>
-        <label>Subclass <input id="subclass" value="${esc(character.subclass)}" placeholder="e.g. Battle Master"></label>
+        <label>Subclass
+          <select id="subclass-select">
+            <option value="">Select subclass</option>
+            ${subclassOptions
+              .map(
+                (entry) =>
+                  `<option value="${esc(entry.name)}|${esc(entry.source)}" ${entry.isSelected ? "selected" : ""}>${esc(entry.name)} (${esc(
+                    entry.sourceLabel || entry.source || "UNK"
+                  )})</option>`
+              )
+              .join("")}
+          </select>
+        </label>
       </div>
       <div class="toolbar">
         <button class="btn secondary" id="open-multiclass">Edit Multiclass</button>
         <button class="btn secondary" type="button" data-open-levelup>Level Up</button>
+      </div>
+      <h3 class="title">Feat Slots</h3>
+      <p class="subtitle">Feat slots are generated from class progression. Fill each slot from the 5etools feat catalog.</p>
+      <div class="option-list">
+        ${renderBuildFeatSlots(character)}
       </div>
     `;
   }
@@ -1177,6 +2111,30 @@ function collectSpellEntryLines(entry, depth = 0) {
     return lines;
   }
 
+  if (typeof entry.optionalfeature === "string") {
+    const line = cleanSpellInlineTags(entry.optionalfeature.split("|")[0]);
+    if (line) lines.push(name ? `${name}: ${line}` : line);
+    return lines;
+  }
+
+  if (typeof entry.classFeature === "string") {
+    const line = cleanSpellInlineTags(entry.classFeature.split("|")[0]);
+    if (line) lines.push(name ? `${name}: ${line}` : line);
+    return lines;
+  }
+
+  if (typeof entry.subclassFeature === "string") {
+    const line = cleanSpellInlineTags(entry.subclassFeature.split("|")[0]);
+    if (line) lines.push(name ? `${name}: ${line}` : line);
+    return lines;
+  }
+
+  if (typeof entry.spell === "string") {
+    const line = cleanSpellInlineTags(entry.spell.split("|")[0]);
+    if (line) lines.push(name ? `${name}: ${line}` : line);
+    return lines;
+  }
+
   if (typeof entry.text === "string") {
     const line = cleanSpellInlineTags(entry.text);
     if (!line) return lines;
@@ -1449,6 +2407,74 @@ function renderPlayView(state) {
       <button class="btn secondary" data-remove-resource="${idx}">Remove</button>
     </div>
   `).join("");
+  const unlockedFeatures = Array.isArray(character?.progression?.unlockedFeatures) ? character.progression.unlockedFeatures : [];
+  const selectedFeats = Array.isArray(character?.feats) ? character.feats : [];
+  const featureUses =
+    play.featureUses && typeof play.featureUses === "object" && !Array.isArray(play.featureUses) ? play.featureUses : {};
+  const formatRecharge = (recharge) => {
+    const key = String(recharge ?? "").trim();
+    if (key === "shortOrLong") return "SR/LR";
+    if (key === "short") return "SR";
+    if (key === "long") return "LR";
+    if (key === "day") return "Day";
+    return "";
+  };
+  const featureListHtml = unlockedFeatures.length
+    ? unlockedFeatures
+        .map((feature) => {
+          const subtitle = feature.type === "subclass" && feature.subclassName ? ` (${feature.subclassName})` : "";
+          const useKey = `${AUTO_RESOURCE_ID_PREFIX}${feature.id}`;
+          const tracker = featureUses[useKey];
+          const trackerHtml = tracker
+            ? `
+              <span class="feature-use-controls">
+                <span class="pill">${esc(tracker.current)}/${esc(tracker.max)}${formatRecharge(tracker.recharge) ? ` ${esc(formatRecharge(tracker.recharge))}` : ""}</span>
+                <button type="button" class="save-mod-btn" data-feature-use-delta="${esc(useKey)}|inc:-1" ${tracker.current <= 0 ? "disabled" : ""}>Use</button>
+                <button type="button" class="save-mod-btn" data-feature-use-delta="${esc(useKey)}|inc:1" ${tracker.current >= tracker.max ? "disabled" : ""}>+</button>
+              </span>
+            `
+            : "";
+          return `
+            <li class="feature-row">
+              <span class="class-feature-level">Lv ${esc(feature.level ?? "?")}</span>
+              <div class="feature-main">
+                <button type="button" class="spell-name-btn feature-name-btn" data-open-feature="${esc(feature.id)}">${esc(
+                  `${feature.name}${subtitle}`
+                )}</button>
+                ${trackerHtml}
+              </div>
+            </li>
+          `;
+        })
+        .join("")
+    : "";
+  const featListHtml = selectedFeats.length
+    ? selectedFeats
+        .map((feat) => {
+          const useKey = `${AUTO_RESOURCE_ID_PREFIX}${feat.id}`;
+          const tracker = featureUses[useKey];
+          const trackerHtml = tracker
+            ? `
+              <span class="feature-use-controls">
+                <span class="pill">${esc(tracker.current)}/${esc(tracker.max)}${formatRecharge(tracker.recharge) ? ` ${esc(formatRecharge(tracker.recharge))}` : ""}</span>
+                <button type="button" class="save-mod-btn" data-feature-use-delta="${esc(useKey)}|inc:-1" ${tracker.current <= 0 ? "disabled" : ""}>Use</button>
+                <button type="button" class="save-mod-btn" data-feature-use-delta="${esc(useKey)}|inc:1" ${tracker.current >= tracker.max ? "disabled" : ""}>+</button>
+              </span>
+            `
+            : "";
+          return `
+            <div class="feature-row feature-row-feat">
+              <div class="feature-main">
+                <button type="button" class="pill pill-btn feature-name-pill" data-open-feat="${esc(feat.id)}">${esc(feat.name)} (${esc(
+                  feat.source || "UNK"
+                )})</button>
+                ${trackerHtml}
+              </div>
+            </div>
+          `;
+        })
+        .join("")
+    : "<span class='muted'>No feats selected.</span>";
 
   return `
     <section class="card">
@@ -1467,6 +2493,7 @@ function renderPlayView(state) {
           <div class="dice-style-row">
             <select id="dice-style-select" aria-label="Dice style">${renderDiceStyleOptions()}</select>
             <button type="button" class="btn secondary" id="reroll-last-roll">Reroll</button>
+            <button type="button" class="btn secondary custom-roll-open-btn" id="open-custom-roll">Custom</button>
           </div>
         </div>
       </div>
@@ -1596,6 +2623,18 @@ function renderPlayView(state) {
         </article>
 
         <article class="card">
+          <h3 class="title">Features & Feats</h3>
+          <h4>Class/Subclass Features</h4>
+          ${
+            featureListHtml
+              ? `<ul class="class-feature-list">${featureListHtml}</ul>`
+              : "<p class='muted'>No unlocked class features.</p>"
+          }
+          <h4>Feats</h4>
+          <div>${featListHtml}</div>
+        </article>
+
+        <article class="card">
           <h3 class="title">Inventory & Conditions</h3>
           <h4>Inventory</h4>
           <div>${character.inventory.map((it) => `<span class="pill">${esc(it)}</span>`).join(" ") || "<span class='muted'>No items selected.</span>"}</div>
@@ -1705,14 +2744,9 @@ function getClassFeatureRows(classEntry) {
   return features
     .map((feature) => {
       const token = typeof feature === "string" ? feature : feature?.classFeature;
-      if (!token) return null;
-      const [name = "", , , levelRaw = ""] = String(token).split("|");
-      const level = toNumber(levelRaw, NaN);
-      if (!name.trim()) return null;
-      return {
-        name: cleanSpellInlineTags(name),
-        level: Number.isFinite(level) ? level : null,
-      };
+      const parsed = parseClassFeatureToken(token, classEntry?.source, classEntry?.name);
+      if (!parsed) return null;
+      return { name: parsed.name, level: parsed.level };
     })
     .filter(Boolean);
 }
@@ -1756,10 +2790,15 @@ function openClassDetailsModal(state) {
     { label: "Multiclass Requirement", value: multiclassRequirements },
   ].filter((row) => row.value);
 
-  const featureRows = getClassFeatureRows(classEntry)
+  const progression = recomputeCharacterProgression(state.catalogs, state.character);
+  const featureRows = progression.unlockedFeatures
     .filter((row) => row.level == null || row.level <= currentLevel)
-    .map((row) => `<li><span class="class-feature-level">Lv ${row.level ?? "?"}</span><span>${esc(row.name)}</span></li>`)
+    .map((row) => {
+      const subtype = row.type === "subclass" ? ` (${row.subclassName || "Subclass"})` : "";
+      return `<li><span class="class-feature-level">Lv ${row.level ?? "?"}</span><span>${esc(`${row.name}${subtype}`)}</span></li>`;
+    })
     .join("");
+  const subclassEntry = getSelectedSubclassEntry(state.catalogs, state.character);
 
   openModal({
     title: `${classEntry.name} Details`,
@@ -1767,6 +2806,11 @@ function openClassDetailsModal(state) {
       <div class="spell-meta-grid">
         ${metaRows.map((row) => `<div><strong>${esc(row.label)}:</strong> ${esc(row.value)}</div>`).join("")}
       </div>
+      ${
+        subclassEntry
+          ? `<p class="muted">Subclass: <strong>${esc(subclassEntry.name)}</strong> (${esc(subclassEntry.sourceLabel ?? subclassEntry.source ?? "Unknown source")})</p>`
+          : ""
+      }
       <h4>Class Features Through Level ${currentLevel}</h4>
       ${
         featureRows
@@ -1782,6 +2826,8 @@ async function loadCatalogsForCharacter(character) {
   const sourcePreset = character?.sourcePreset ?? DEFAULT_SOURCE_PRESET;
   const catalogs = await loadCatalogs(getAllowedSources(sourcePreset));
   store.setCatalogs(catalogs);
+  const nextState = store.getState();
+  updateCharacterWithRequiredSettings(nextState, {}, { preserveUserOverrides: true });
 }
 
 async function applyRemoteCharacterPayload(payload, fallbackId = null, defaultMode = "build") {
@@ -1804,24 +2850,44 @@ async function applyRemoteCharacterPayload(payload, fallbackId = null, defaultMo
     localCharacterUpdatedAt;
   lastPersistedCharacterFingerprint = buildCharacterFingerprint(parsed.character);
   rememberLastCharacterId(parsed.id);
+  upsertCharacterHistory(parsed.character, { touchAccess: true });
   currentUrlCharacterId = parsed.id;
 }
 
 async function loadCharacterById(characterId) {
-  const payload = await getCharacter(characterId);
-  updatePersistenceStatusFromPayload(payload);
   const latestLocalState = loadAppState();
   const localCharacter =
     latestLocalState?.character && latestLocalState.character.id === characterId ? latestLocalState.character : null;
+  let payload = null;
+  try {
+    payload = await getCharacter(characterId);
+    updatePersistenceStatusFromPayload(payload);
+  } catch (error) {
+    const status = Number(error?.status);
+    const isNotFound =
+      status === 404 || (error instanceof Error && error.message.toLowerCase().includes("character not found"));
+    if (!isNotFound || !localCharacter) {
+      throw error;
+    }
+    await applyRemoteCharacterPayload({ id: characterId, character: localCharacter }, characterId, "play");
+    try {
+      const synced = await saveCharacter(characterId, withSyncMeta(localCharacter, getCharacterVersion(localCharacter)));
+      updatePersistenceStatusFromPayload(synced);
+    } catch (syncError) {
+      markBrowserOnlyPersistence(syncError);
+    }
+    return;
+  }
+
   const remoteCharacter = getCharacterFromApiPayload(payload, characterId).character;
-  const selected = choosePreferredCharacterVersion(localCharacter, remoteCharacter);
+  const shouldUseRemote = isRemoteSameOrNewer(localCharacter, remoteCharacter);
   const selectedPayload =
-    selected.source === "local"
-      ? { ...payload, id: characterId, character: localCharacter }
-      : payload;
+    shouldUseRemote
+      ? payload
+      : { ...payload, id: characterId, character: localCharacter };
   await applyRemoteCharacterPayload(selectedPayload, characterId, "play");
 
-  if (selected.source === "local" && localCharacter) {
+  if (!shouldUseRemote && localCharacter) {
     try {
       const synced = await saveCharacter(characterId, withSyncMeta(localCharacter, getCharacterVersion(localCharacter)));
       updatePersistenceStatusFromPayload(synced);
@@ -1879,7 +2945,12 @@ function renderOnboardingHome() {
   return `
     <main class="layout layout-onboarding">
       <section class="card">
-        <h1 class="title">Character Builder</h1>
+        <div class="title-with-history">
+          <h1 class="title">Character Builder</h1>
+          ${renderCharacterHistorySelector("home-character-history-select", null, {
+            className: "character-history-control character-history-control-inline",
+          })}
+        </div>
         <p class="subtitle">
           Permanent characters use UUID links. <strong>Create one, then bookmark that URL in your browser.</strong>
         </p>
@@ -1910,16 +2981,27 @@ function renderOnboardingHome() {
 }
 
 function bindOnboardingEvents() {
+  app.querySelector("#home-character-history-select")?.addEventListener("change", async (evt) => {
+    const selectedId = String(evt.target.value || "").trim();
+    if (!selectedId) return;
+    evt.target.disabled = true;
+    try {
+      if (selectedId === NEW_CHARACTER_OPTION_VALUE) {
+        await createAndOpenNewCharacter();
+        return;
+      }
+      if (!isUuid(selectedId)) return;
+      await switchCharacterFromHistory(selectedId);
+    } finally {
+      evt.target.disabled = false;
+    }
+  });
+
   app.querySelector("#home-create-character")?.addEventListener("click", async () => {
     const button = app.querySelector("#home-create-character");
     if (button) button.disabled = true;
     try {
-      const character = createInitialCharacter();
-      const nextVersion = Math.max(localCharacterVersion, getCharacterVersion(character)) + 1;
-      const payload = await createCharacter(withSyncMeta(character, nextVersion));
-      const parsed = getCharacterFromApiPayload(payload, null);
-      setCharacterIdInUrl(parsed.id, false);
-      await applyRemoteCharacterPayload(payload, parsed.id);
+      await createAndOpenNewCharacter();
     } catch (error) {
       startupErrorMessage = error instanceof Error ? error.message : "Failed to create character";
       render(store.getState());
@@ -1980,6 +3062,27 @@ function bindModeEvents() {
   });
 }
 
+function bindCharacterHistoryEvents() {
+  app.querySelectorAll("[data-character-history-select]").forEach((select) => {
+    if (select.id === "home-character-history-select") return;
+    select.addEventListener("change", async () => {
+      const selectedId = String(select.value || "").trim();
+      if (!selectedId) return;
+      select.disabled = true;
+      try {
+        if (selectedId === NEW_CHARACTER_OPTION_VALUE) {
+          await createAndOpenNewCharacter();
+          return;
+        }
+        if (!isUuid(selectedId)) return;
+        await switchCharacterFromHistory(selectedId);
+      } finally {
+        select.disabled = false;
+      }
+    });
+  });
+}
+
 function bindBuildEvents(state) {
   app.querySelectorAll("[data-step]").forEach((btn) => {
     btn.addEventListener("click", () => store.setStep(Number(btn.dataset.step)));
@@ -1994,16 +3097,42 @@ function bindBuildEvents(state) {
       store.updateCharacter({ sourcePreset: preset });
       const catalogs = await loadCatalogs(getAllowedSources(preset));
       store.setCatalogs(catalogs);
+      updateCharacterWithRequiredSettings(store.getState(), {}, { preserveUserOverrides: true });
     });
   }
 
-  [["#name", "name"], ["#notes", "notes"], ["#race", "race"], ["#background", "background"], ["#subclass", "subclass"]].forEach(([sel, field]) => {
+  [["#name", "name"], ["#notes", "notes"], ["#race", "race"], ["#background", "background"]].forEach(([sel, field]) => {
     const el = app.querySelector(sel);
     if (!el) return;
     const handler = () => store.updateCharacter({ [field]: el.value });
     el.addEventListener("input", handler);
     el.addEventListener("change", handler);
   });
+
+  const subclassSelectEl = app.querySelector("#subclass-select");
+  if (subclassSelectEl) {
+    subclassSelectEl.addEventListener("change", () => {
+      const [nameRaw = "", sourceRaw = ""] = String(subclassSelectEl.value || "").split("|");
+      const classEntry = getClassCatalogEntry(state.catalogs, state.character.class);
+      const name = nameRaw.trim();
+      const source = normalizeSourceTag(sourceRaw);
+      updateCharacterWithRequiredSettings(
+        state,
+        {
+          subclass: name,
+          classSelection: {
+            subclass: {
+              name,
+              source,
+              className: state.character.class,
+              classSource: normalizeSourceTag(classEntry?.source),
+            },
+          },
+        },
+        { preserveUserOverrides: true }
+      );
+    });
+  }
 
   const levelEl = app.querySelector("#level");
   if (levelEl) {
@@ -2023,7 +3152,17 @@ function bindBuildEvents(state) {
   const classEl = app.querySelector("#class");
   if (classEl) {
     classEl.addEventListener("change", () => {
-      updateCharacterWithRequiredSettings(state, { class: classEl.value || "" }, { preserveUserOverrides: true });
+      updateCharacterWithRequiredSettings(
+        state,
+        {
+          class: classEl.value || "",
+          subclass: "",
+          classSelection: {
+            subclass: { name: "", source: "", className: "", classSource: "" },
+          },
+        },
+        { preserveUserOverrides: true }
+      );
     });
   }
 
@@ -2057,6 +3196,21 @@ function bindBuildEvents(state) {
 
   app.querySelector("#open-spells")?.addEventListener("click", () => openSpellModal(state));
   app.querySelector("#open-items")?.addEventListener("click", () => openItemModal(state));
+  app.querySelectorAll("[data-open-feat-picker]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const slotId = button.dataset.openFeatPicker;
+      if (!slotId) return;
+      openFeatModal(state, slotId);
+    });
+  });
+  app.querySelectorAll("[data-remove-feat-slot]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const slotId = button.dataset.removeFeatSlot;
+      if (!slotId) return;
+      const feats = (state.character.feats ?? []).filter((feat) => feat.slotId !== slotId);
+      updateCharacterWithRequiredSettings(state, { feats }, { preserveUserOverrides: true });
+    });
+  });
   app.querySelector("#open-multiclass")?.addEventListener("click", () => openMulticlassModal(state));
   app.querySelectorAll("[data-open-levelup]").forEach((button) => {
     button.addEventListener("click", () => openLevelUpModal(state));
@@ -2140,6 +3294,7 @@ function bindBuildEvents(state) {
     try {
       const parsed = JSON.parse(input.value);
       store.hydrate(parsed);
+      updateCharacterWithRequiredSettings(store.getState(), {}, { preserveUserOverrides: true });
     } catch {
       alert("Invalid JSON payload");
     }
@@ -2166,8 +3321,49 @@ function bindPlayEvents(state) {
   app.querySelector("#reroll-last-roll")?.addEventListener("click", () => {
     rerollLastRoll();
   });
+  app.querySelector("#open-custom-roll")?.addEventListener("click", () => {
+    openCustomRollModal();
+  });
   app.querySelector("[data-open-class-info]")?.addEventListener("click", () => {
     openClassDetailsModal(state);
+  });
+  app.querySelectorAll("[data-open-feature]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const featureId = button.dataset.openFeature;
+      if (!featureId) return;
+      openFeatureDetailsModal(state, featureId);
+    });
+  });
+  app.querySelectorAll("[data-open-feat]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const featId = button.dataset.openFeat;
+      if (!featId) return;
+      openFeatDetailsModal(state, featId);
+    });
+  });
+  app.querySelectorAll("[data-feature-use-delta]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const raw = String(button.dataset.featureUseDelta ?? "");
+      const marker = "|inc:";
+      const markerIndex = raw.lastIndexOf(marker);
+      if (markerIndex <= 0) return;
+      const key = raw.slice(0, markerIndex);
+      const deltaRaw = raw.slice(markerIndex + marker.length);
+      const delta = toNumber(deltaRaw, 0);
+      if (!key || !delta) return;
+      withUpdatedPlay(state, (playState) => {
+        const nextFeatureUses =
+          playState.featureUses && typeof playState.featureUses === "object" && !Array.isArray(playState.featureUses)
+            ? { ...playState.featureUses }
+            : {};
+        const tracker = nextFeatureUses[key];
+        if (!tracker || typeof tracker !== "object") return;
+        const max = Math.max(0, toNumber(tracker.max, 0));
+        const current = Math.max(0, Math.min(max, toNumber(tracker.current, max) + delta));
+        nextFeatureUses[key] = { ...tracker, current };
+        playState.featureUses = nextFeatureUses;
+      });
+    });
   });
 
   const hpCurrentEl = app.querySelector("#play-hp-current");
@@ -2558,6 +3754,19 @@ function bindPlayEvents(state) {
     withUpdatedPlay(state, (play) => {
       play.deathSavesSuccess = 0;
       play.deathSavesFail = 0;
+      const featureUses =
+        play.featureUses && typeof play.featureUses === "object" && !Array.isArray(play.featureUses)
+          ? { ...play.featureUses }
+          : {};
+      Object.entries(featureUses).forEach(([key, tracker]) => {
+        if (!tracker || typeof tracker !== "object") return;
+        const recharge = String(tracker.recharge ?? "");
+        if (recharge === "short" || recharge === "shortOrLong") {
+          const max = Math.max(0, toNumber(tracker.max, 0));
+          featureUses[key] = { ...tracker, current: max };
+        }
+      });
+      play.featureUses = featureUses;
     });
   });
 
@@ -2574,6 +3783,16 @@ function bindPlayEvents(state) {
         ...resource,
         current: Math.max(0, toNumber(resource.max, 0)),
       }));
+      const featureUses =
+        play.featureUses && typeof play.featureUses === "object" && !Array.isArray(play.featureUses)
+          ? { ...play.featureUses }
+          : {};
+      Object.entries(featureUses).forEach(([key, tracker]) => {
+        if (!tracker || typeof tracker !== "object") return;
+        const max = Math.max(0, toNumber(tracker.max, 0));
+        featureUses[key] = { ...tracker, current: max };
+      });
+      play.featureUses = featureUses;
     });
   });
 }
@@ -2782,6 +4001,105 @@ function openItemModal(state) {
   renderItemRows();
 }
 
+function getFeatSlotById(character, slotId) {
+  const slots = Array.isArray(character?.progression?.featSlots) ? character.progression.featSlots : [];
+  return slots.find((slot) => slot.id === slotId) ?? null;
+}
+
+function upsertFeatForSlot(state, slotId, featEntry) {
+  const slot = getFeatSlotById(state.character, slotId);
+  if (!slot || !featEntry) return;
+  const featId = buildEntityId(["feat", featEntry.name, featEntry.source]);
+  const nextFeats = (state.character.feats ?? []).filter((feat) => feat.slotId !== slotId && feat.id !== featId);
+  nextFeats.push({
+    id: featId,
+    name: featEntry.name,
+    source: featEntry.source,
+    via: slot.slotType || "feat",
+    levelGranted: toNumber(slot.level, 0),
+    slotId,
+  });
+  updateCharacterWithRequiredSettings(state, { feats: nextFeats }, { preserveUserOverrides: true });
+}
+
+function openFeatModal(state, slotId) {
+  const slot = getFeatSlotById(state.character, slotId);
+  if (!slot) return;
+  const allFeats = Array.isArray(state.catalogs.feats) ? state.catalogs.feats : [];
+  const sourceOptions = [...new Set(allFeats.map((it) => it.source).filter(Boolean))].sort();
+  const close = openModal({
+    title: `Pick Feat (${slot.className} Lv ${slot.level})`,
+    bodyHtml: `
+      <div class="row">
+        <label>Search
+          <input id="feat-search" placeholder="Type feat name...">
+        </label>
+        <label>Source
+          <select id="feat-source">
+            <option value="">All sources</option>
+            ${sourceOptions.map((src) => `<option value="${esc(src)}">${esc(src)}</option>`).join("")}
+          </select>
+        </label>
+      </div>
+      <div class="option-list" id="feat-list"></div>
+    `,
+    actions: [{ label: "Close", secondary: true, onClick: (done) => done() }],
+  });
+
+  const searchEl = document.getElementById("feat-search");
+  const sourceEl = document.getElementById("feat-source");
+  const listEl = document.getElementById("feat-list");
+  const selectedFeatId = (state.character.feats ?? []).find((feat) => feat.slotId === slot.id)?.id ?? "";
+
+  function renderFeatRows() {
+    const searchValue = String(searchEl?.value ?? "").trim().toLowerCase();
+    const sourceValue = String(sourceEl?.value ?? "").trim();
+    const filtered = allFeats
+      .filter((feat) => !searchValue || String(feat.name ?? "").toLowerCase().includes(searchValue))
+      .filter((feat) => !sourceValue || feat.source === sourceValue)
+      .slice(0, 250);
+
+    listEl.innerHTML = filtered.length
+      ? filtered
+          .map((feat) => {
+            const featId = buildEntityId(["feat", feat.name, feat.source]);
+            const isSelected = selectedFeatId === featId;
+            const meetsPrereq = doesCharacterMeetFeatPrerequisites(state.character, feat);
+            return `
+              <div class="option-row">
+                <div>
+                  <strong>${esc(feat.name)}</strong>
+                  <div class="muted">${esc(feat.sourceLabel ?? feat.source ?? "UNK")}${meetsPrereq ? "" : " - prerequisites not met"}</div>
+                </div>
+                <div class="option-row-actions">
+                  <button type="button" class="btn secondary" data-pick-feat="${esc(featId)}" ${meetsPrereq ? "" : "disabled"}>
+                    ${isSelected ? "Selected" : "Pick"}
+                  </button>
+                </div>
+              </div>
+            `;
+          })
+          .join("")
+      : "<p class='muted'>No feats match these filters.</p>";
+
+    listEl.querySelectorAll("[data-pick-feat]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const featId = button.dataset.pickFeat;
+        const feat = filtered.find((entry) => buildEntityId(["feat", entry.name, entry.source]) === featId);
+        if (!feat) return;
+        upsertFeatForSlot(state, slot.id, feat);
+        close();
+      });
+    });
+  }
+
+  [searchEl, sourceEl].forEach((el) => {
+    el?.addEventListener("input", renderFeatRows);
+    el?.addEventListener("change", renderFeatRows);
+  });
+  renderFeatRows();
+}
+
 function syncSpellSlotsWithDefaults(play, defaults, options = {}) {
   const preserveUserOverrides = options.preserveUserOverrides !== false;
   const nextSlots = { ...(play.spellSlots ?? {}) };
@@ -2826,7 +4144,31 @@ function updateCharacterWithRequiredSettings(state, patch, options = {}) {
   nextPlay.saveProficiencies = getClassSaveProficiencies(state.catalogs, nextCharacter.class);
   const defaultSpellSlots = getCharacterSpellSlotDefaults(state.catalogs, nextCharacter);
   syncSpellSlotsWithDefaults(nextPlay, defaultSpellSlots, { preserveUserOverrides: options.preserveUserOverrides !== false });
-  store.updateCharacter({ ...patch, play: nextPlay });
+  const nextProgression = recomputeCharacterProgression(state.catalogs, nextCharacter);
+  const autoTrackers = getAutoResourcesFromRules(state.catalogs, nextCharacter, nextProgression.unlockedFeatures, nextCharacter.feats);
+  nextPlay.featureUses = syncAutoFeatureUses(nextPlay, autoTrackers);
+  nextPlay.resources = (Array.isArray(nextPlay.resources) ? nextPlay.resources : []).filter(
+    (resource) => !String(resource?.autoId ?? "").startsWith(AUTO_RESOURCE_ID_PREFIX)
+  );
+  const selectedSubclass = getSelectedSubclassEntry(state.catalogs, nextCharacter);
+  const existingSelection = nextCharacter.classSelection?.subclass ?? {};
+  const classSelection = {
+    subclass: {
+      name: selectedSubclass?.name ?? String(existingSelection.name ?? nextCharacter.subclass ?? "").trim(),
+      source: selectedSubclass?.source ?? normalizeSourceTag(existingSelection.source),
+      className: selectedSubclass?.className ?? String(existingSelection.className ?? nextCharacter.class ?? "").trim(),
+      classSource: selectedSubclass?.classSource ?? normalizeSourceTag(existingSelection.classSource),
+    },
+  };
+  const subclassName = classSelection.subclass.name || "";
+  store.updateCharacter({
+    ...patch,
+    subclass: subclassName,
+    classSelection,
+    progression: nextProgression,
+    feats: nextCharacter.feats,
+    play: nextPlay,
+  });
 }
 
 function createLevelUpDraft(character) {
@@ -3128,7 +4470,12 @@ function renderBuildMode(state) {
   return `
     <main class="layout">
       <section class="card">
-        <h1 class="title">Character Builder</h1>
+        <div class="title-with-history">
+          <h1 class="title">Character Editor</h1>
+          ${renderCharacterHistorySelector("build-character-history-select", state.character?.id ?? null, {
+            className: "character-history-control character-history-control-inline",
+          })}
+        </div>
         ${renderPersistenceNotice()}
         ${getModeToggle(state.mode)}
         ${renderStepper(state.stepIndex)}
@@ -3164,6 +4511,7 @@ function dockDiceOverlay(isPlayMode) {
 
 function renderPlayMode(state) {
   const className = String(state.character.class ?? "").trim();
+  const subclassName = String(state.character.classSelection?.subclass?.name ?? state.character.subclass ?? "").trim();
   const classHtml = className
     ? `<button type="button" class="class-info-btn" data-open-class-info title="View class details">${esc(className)}</button>`
     : "Adventurer";
@@ -3173,12 +4521,18 @@ function renderPlayMode(state) {
         <div class="card">
           <div class="play-header">
             <div class="play-header-main">
-              <h1 class="title">Character Builder</h1>
+              <div class="title-with-history">
+                <h1 class="title">Character Sheet</h1>
+                ${renderCharacterHistorySelector("play-character-history-select", state.character?.id ?? null, {
+                  className: "character-history-control character-history-control-inline",
+                })}
+              </div>
               ${renderPersistenceNotice()}
               ${getModeToggle(state.mode)}
               <p class="muted">
                 ${esc(state.character.name || "Unnamed Hero")} - Level ${esc(state.character.level)}
                 ${classHtml}
+                ${subclassName ? ` (${esc(subclassName)})` : ""}
               </p>
               <div class="toolbar">
                 <button class="btn secondary" type="button" data-open-levelup>Level Up</button>
@@ -3218,6 +4572,7 @@ function render(state) {
   syncDiceResultElements();
   syncSpellCastStatusElements();
   renderRollHistory();
+  bindCharacterHistoryEvents();
   bindModeEvents();
   if (isPlayMode) bindPlayEvents(state);
   else bindBuildEvents(state);
@@ -3243,7 +4598,10 @@ store.subscribe((state) => {
   const persistedCharacter = withSyncMeta(state.character, Math.max(1, localCharacterVersion), localCharacterUpdatedAt);
   saveAppState({ ...state, character: persistedCharacter });
   queueRemoteSave(state);
-  if (isUuid(state.character?.id)) rememberLastCharacterId(state.character.id);
+  if (isUuid(state.character?.id)) {
+    rememberLastCharacterId(state.character.id);
+    upsertCharacterHistory(state.character, { touchAccess: false });
+  }
 });
 
 async function bootstrap() {
