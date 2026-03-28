@@ -1,19 +1,21 @@
 # Character Builder (Vanilla SPA)
 
-Single-page character builder with curated 5etools sources and modal-based advanced pickers.
+Single-page character builder with curated source catalogs and modal-based advanced pickers.
 
 ## Data dependency (no submodule)
 
-This project vendors `5etools-src` into `data/5etools-src` using a pinned clone workflow.
+This project vendors source data into `data/` using a pinned clone workflow.
+
+Run the vendor script:
 
 ```bash
-./scripts/vendor-5etools.sh
+bash ./scripts/vendor-catalog-data.sh
 ```
 
 Optionally pin to a tag/branch:
 
 ```bash
-./scripts/vendor-5etools.sh v2.25.4
+bash ./scripts/vendor-catalog-data.sh v2.25.4
 ```
 
 ## Run locally (Node service)
@@ -120,5 +122,5 @@ docker compose logs redis --tail=100
 
 ## Notes
 
-- The app loads data from `data/5etools-src/data/...`.
+- The app loads data from the configured root in `src/data-loader.js`.
 - If data is unavailable, it falls back to a minimal sample catalog.

@@ -1,6 +1,6 @@
 import { SOURCE_LABELS } from "./config/sources.js";
 
-const DATA_ROOT = "./data/5etools-src/data";
+const DATA_ROOT = "./data/catalog-src/data";
 
 async function fetchJson(path) {
   const res = await fetch(path);

@@ -126,6 +126,17 @@ const SKILL_KEY_BY_CANONICAL = SKILLS.reduce((acc, skill) => {
   return acc;
 }, {});
 
+const SKILL_PROFICIENCY_NONE = "none";
+const SKILL_PROFICIENCY_HALF = "half";
+const SKILL_PROFICIENCY_PROFICIENT = "proficient";
+const SKILL_PROFICIENCY_EXPERTISE = "expertise";
+const SKILL_PROFICIENCY_MODES = [
+  SKILL_PROFICIENCY_NONE,
+  SKILL_PROFICIENCY_HALF,
+  SKILL_PROFICIENCY_PROFICIENT,
+  SKILL_PROFICIENCY_EXPERTISE,
+];
+
 const SAVE_ABILITIES = ["str", "dex", "con", "int", "wis", "cha"];
 const ABILITY_LABELS = {
   str: "STR",
@@ -264,6 +275,115 @@ function upsertCharacterHistory(character, options = {}) {
     { id, name: nextName, level: nextLevel, className: nextClassName, lastAccessedAt: new Date().toISOString() },
     ...withoutCurrent,
   ]);
+}
+
+function readFileText(file) {
+  if (!file || typeof file.text !== "function") throw new Error("Choose a JSON file to import.");
+  return file.text();
+}
+
+function sanitizeFileNamePart(value) {
+  const parsed = String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return parsed || "character";
+}
+
+function exportCharacterToJsonFile(character) {
+  if (!character || typeof character !== "object" || Array.isArray(character)) {
+    throw new Error("No character available to export.");
+  }
+  const fileNameBase = sanitizeFileNamePart(character.name);
+  const blob = new Blob([JSON.stringify(character, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `${fileNameBase}.json`;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+async function doesRemoteCharacterExist(id) {
+  if (!isUuid(id)) return false;
+  try {
+    await getCharacter(id);
+    return true;
+  } catch (error) {
+    if (error && typeof error === "object" && "status" in error && error.status === 404) return false;
+    throw error;
+  }
+}
+
+function buildImportOverwriteMessage(importedId, options = {}) {
+  const sourceLabel = String(options.sourceLabel ?? "Import");
+  const isCurrentCharacter = Boolean(options.isCurrentCharacter);
+  const displayName = String(options.displayName ?? "").trim();
+  const targetLabel = isCurrentCharacter
+    ? `the currently open character${displayName ? ` (${displayName})` : ""}`
+    : `another saved character${displayName ? ` (${displayName})` : ""}`;
+  return (
+    `${sourceLabel} warning:\n\n` +
+    `UUID ${importedId} already exists and importing will overwrite ${targetLabel}.\n\n` +
+    "Do you want to continue?"
+  );
+}
+
+async function importCharacterFromParsedJson(parsed, options = {}) {
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("Invalid JSON payload");
+  }
+
+  const sourceLabel = String(options.sourceLabel ?? "Import");
+  const importedId = isUuid(parsed.id) ? parsed.id : null;
+  const currentId = isUuid(store.getState().character?.id) ? store.getState().character.id : null;
+  const nextVersion = Math.max(appState.localCharacterVersion, getCharacterVersion(parsed)) + 1;
+  const preparedCharacter = withSyncMeta(withCharacterChangeLog(parsed), nextVersion);
+
+  if (importedId) {
+    const isCurrentCharacter = importedId === currentId;
+    const existingHistoryEntry = loadCharacterHistory().find((entry) => entry.id === importedId) ?? null;
+    const existsRemotely = await doesRemoteCharacterExist(importedId);
+    if (isCurrentCharacter || existsRemotely) {
+      const displayName = isCurrentCharacter
+        ? getCharacterDisplayName(store.getState().character?.name)
+        : getCharacterDisplayName(existingHistoryEntry?.name);
+      const shouldContinue = window.confirm(
+        buildImportOverwriteMessage(importedId, {
+          sourceLabel,
+          isCurrentCharacter,
+          displayName,
+        })
+      );
+      if (!shouldContinue) return { cancelled: true, id: importedId };
+    }
+
+    const payload = await saveCharacter(importedId, { ...preparedCharacter, id: importedId });
+    const normalized = getCharacterFromApiPayload(payload, importedId);
+    setCharacterIdInUrl(normalized.id, false);
+    await applyRemoteCharacterPayload(payload, normalized.id);
+    return { cancelled: false, id: normalized.id };
+  }
+
+  const payload = await createCharacter(preparedCharacter);
+  const normalized = getCharacterFromApiPayload(payload, null);
+  setCharacterIdInUrl(normalized.id, false);
+  await applyRemoteCharacterPayload(payload, normalized.id);
+  return { cancelled: false, id: normalized.id };
+}
+
+async function importCharacterFromJsonFile(file, options = {}) {
+  const text = await readFileText(file);
+  let parsed = null;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new Error("Invalid JSON payload");
+  }
+  return importCharacterFromParsedJson(parsed, options);
 }
 
 function renderCharacterHistorySelector(selectId, selectedCharacterId = null, options = {}) {
@@ -2245,6 +2365,84 @@ function findCatalogEntryByName(entries, selectedName) {
   return entries.find((entry) => String(entry?.name ?? "").trim().toLowerCase() === normalized) ?? null;
 }
 
+function findCatalogEntriesByName(entries, selectedName) {
+  if (!Array.isArray(entries)) return [];
+  const normalized = String(selectedName ?? "").trim().toLowerCase();
+  if (!normalized) return [];
+  return entries.filter((entry) => String(entry?.name ?? "").trim().toLowerCase() === normalized);
+}
+
+function findCatalogEntryByNameAndSource(entries, selectedName, selectedSource = "") {
+  const byName = findCatalogEntriesByName(entries, selectedName);
+  if (!byName.length) return null;
+  const source = normalizeSourceTag(selectedSource);
+  if (!source) return byName.length === 1 ? byName[0] : null;
+  return byName.find((entry) => normalizeSourceTag(entry?.source) === source) ?? null;
+}
+
+function resolveImportedFeats(catalogs, feats) {
+  if (!Array.isArray(feats)) return [];
+  const entries = Array.isArray(catalogs?.feats) ? catalogs.feats : [];
+  return feats
+    .map((feat) => {
+      const name = String(feat?.name ?? "").trim();
+      if (!name) return null;
+      const source = String(feat?.source ?? "").trim();
+      const matched = findCatalogEntryByNameAndSource(entries, name, source);
+      const canonical = matched
+        ? {
+            name: String(matched.name ?? "").trim(),
+            source: normalizeSourceTag(matched.source),
+            id: buildEntityId(["feat", matched.name, matched.source]),
+          }
+        : {
+            name,
+            source,
+            id: String(feat?.id ?? "").trim() || buildEntityId(["feat", name, source || "unknown"]),
+          };
+      return {
+        ...feat,
+        ...canonical,
+      };
+    })
+    .filter((feat) => feat && feat.name);
+}
+
+function resolveImportedOptionalFeatures(catalogs, optionalFeatures) {
+  if (!Array.isArray(optionalFeatures)) return [];
+  const entries = Array.isArray(catalogs?.optionalFeatures) ? catalogs.optionalFeatures : [];
+  return optionalFeatures
+    .map((feature) => {
+      const name = String(feature?.name ?? "").trim();
+      if (!name) return null;
+      const source = String(feature?.source ?? "").trim();
+      const matched = findCatalogEntryByNameAndSource(entries, name, source);
+      const canonical = matched
+        ? {
+            name: String(matched.name ?? "").trim(),
+            source: normalizeSourceTag(matched.source),
+            id: buildEntityId(["optionalfeature", matched.name, matched.source]),
+          }
+        : {
+            name,
+            source,
+            id: String(feature?.id ?? "").trim() || buildEntityId(["optionalfeature", name, source || "unknown"]),
+          };
+      return {
+        ...feature,
+        ...canonical,
+      };
+    })
+    .filter((feature) => feature && feature.name);
+}
+
+function resolveImportedCharacterSelections(catalogs, character) {
+  return {
+    feats: resolveImportedFeats(catalogs, character?.feats),
+    optionalFeatures: resolveImportedOptionalFeatures(catalogs, character?.optionalFeatures),
+  };
+}
+
 function normalizeAbilityKey(value) {
   const key = String(value ?? "").trim().toLowerCase();
   return SAVE_ABILITIES.includes(key) ? key : "";
@@ -2271,29 +2469,49 @@ function getAutoChoiceSelectionMap(play, sourceKey) {
   return isRecordObject(selected) ? selected : {};
 }
 
+function normalizeChoiceToken(value) {
+  return String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+}
+
 function getAutoChoiceSelectedValues(play, sourceKey, choiceId, from, count) {
   const selectionMap = getAutoChoiceSelectionMap(play, sourceKey);
   const storedRaw = selectionMap[choiceId];
+  const fromByToken = new Map(
+    from
+      .map((entry) => [normalizeChoiceToken(entry), entry])
+      .filter(([token, entry]) => token && entry)
+  );
   const stored = (Array.isArray(storedRaw) ? storedRaw : [])
-    .map((entry) => String(entry ?? "").trim().toLowerCase())
-    .filter((entry) => from.includes(entry));
-  const uniqueStored = stored.filter((entry, index) => stored.indexOf(entry) === index);
+    .map((entry) => normalizeChoiceToken(entry))
+    .filter((token) => fromByToken.has(token));
+  const uniqueStored = stored.filter((token, index) => stored.indexOf(token) === index);
   if (!uniqueStored.length) return from.slice(0, Math.max(0, Math.min(from.length, count)));
-  const normalizedByOrder = from.filter((entry) => uniqueStored.includes(entry));
+  const normalizedByOrder = from.filter((entry) => uniqueStored.includes(normalizeChoiceToken(entry)));
   return normalizedByOrder.slice(0, Math.max(0, Math.min(from.length, count)));
 }
 
 function getStoredAutoChoiceSelectedValues(play, sourceKey, choiceId, from, count) {
   const selectionMap = getAutoChoiceSelectionMap(play, sourceKey);
   const storedRaw = selectionMap[choiceId];
+  const fromByToken = new Map(
+    from
+      .map((entry) => [normalizeChoiceToken(entry), entry])
+      .filter(([token, entry]) => token && entry)
+  );
   const stored = (Array.isArray(storedRaw) ? storedRaw : [])
-    .map((entry) => String(entry ?? "").trim().toLowerCase())
-    .filter((entry) => from.includes(entry));
+    .map((entry) => normalizeChoiceToken(entry))
+    .filter((token) => fromByToken.has(token));
   if (String(sourceKey ?? "").startsWith("asi:")) {
-    return stored.slice(0, Math.max(0, Math.min(from.length, count)));
+    return stored
+      .map((token) => fromByToken.get(token))
+      .filter(Boolean)
+      .slice(0, Math.max(0, Math.min(from.length, count)));
   }
-  const uniqueStored = stored.filter((entry, index) => stored.indexOf(entry) === index);
-  const normalizedByOrder = from.filter((entry) => uniqueStored.includes(entry));
+  const uniqueStored = stored.filter((token, index) => stored.indexOf(token) === index);
+  const normalizedByOrder = from.filter((entry) => uniqueStored.includes(normalizeChoiceToken(entry)));
   return normalizedByOrder.slice(0, Math.max(0, Math.min(from.length, count)));
 }
 
@@ -2404,6 +2622,54 @@ function deriveLegacyProficiencyOverrides(current, auto, keys) {
   return overrides;
 }
 
+function hasStoredProficiencyState(stateMap, keys) {
+  return keys.some((key) => typeof stateMap?.[key] === "boolean");
+}
+
+function normalizeSkillProficiencyMode(value, fallback = SKILL_PROFICIENCY_NONE) {
+  const mode = String(value ?? "").trim().toLowerCase();
+  return SKILL_PROFICIENCY_MODES.includes(mode) ? mode : fallback;
+}
+
+function isSkillModeProficient(mode) {
+  return mode === SKILL_PROFICIENCY_PROFICIENT || mode === SKILL_PROFICIENCY_EXPERTISE;
+}
+
+function hasStoredSkillModeState(stateMap, keys) {
+  return keys.some((key) => SKILL_PROFICIENCY_MODES.includes(String(stateMap?.[key] ?? "").trim().toLowerCase()));
+}
+
+function mapSkillModesToProficiencyMap(modeMap, keys) {
+  return keys.reduce((acc, key) => {
+    acc[key] = isSkillModeProficient(normalizeSkillProficiencyMode(modeMap?.[key], SKILL_PROFICIENCY_NONE));
+    return acc;
+  }, {});
+}
+
+function mergeSkillModesWithOverrides(autoModes, overrides, keys) {
+  return keys.reduce((acc, key) => {
+    const overrideMode = normalizeSkillProficiencyMode(overrides?.[key], "");
+    if (overrideMode) {
+      acc[key] = overrideMode;
+      return acc;
+    }
+    acc[key] = normalizeSkillProficiencyMode(autoModes?.[key], SKILL_PROFICIENCY_NONE);
+    return acc;
+  }, {});
+}
+
+function getClassLevelByName(character, className) {
+  const target = String(className ?? "").trim().toLowerCase();
+  if (!target) return 0;
+  const { primaryLevel, multiclass } = getCharacterClassLevels(character);
+  let total = 0;
+  if (String(character?.class ?? "").trim().toLowerCase() === target) total += primaryLevel;
+  multiclass.forEach((entry) => {
+    if (String(entry?.class ?? "").trim().toLowerCase() === target) total += Math.max(0, toNumber(entry?.level, 0));
+  });
+  return total;
+}
+
 function applySkillProficiencyOption(activeSkills, option, context) {
   if (!isRecordObject(option)) return;
   const fixedSkillKeys = Object.entries(option)
@@ -2506,6 +2772,21 @@ function getAutomaticSkillProficiencies(catalogs, character, play) {
     acc[skill.key] = activeSkills.has(skill.key);
     return acc;
   }, {});
+}
+
+function getAutomaticSkillProficiencyModes(catalogs, character, play) {
+  const baseProficiencies = getAutomaticSkillProficiencies(catalogs, character, play);
+  const modes = SKILLS.reduce((acc, skill) => {
+    acc[skill.key] = baseProficiencies?.[skill.key] ? SKILL_PROFICIENCY_PROFICIENT : SKILL_PROFICIENCY_NONE;
+    return acc;
+  }, {});
+  const bardLevel = getClassLevelByName(character, "bard");
+  if (bardLevel >= 2) {
+    SKILLS.forEach((skill) => {
+      if (modes[skill.key] === SKILL_PROFICIENCY_NONE) modes[skill.key] = SKILL_PROFICIENCY_HALF;
+    });
+  }
+  return modes;
 }
 
 function optionList(options, selected) {
@@ -3585,21 +3866,22 @@ function bindOnboardingEvents() {
     openModal({
       title: "Import Character JSON",
       bodyHtml: `
-        <p class="subtitle">Paste a JSON backup to create a new saved character.</p>
-        <textarea id="home-import-json-input" rows="14" style="width:100%; background:#0b1220; color:#e5e7eb; border:1px solid rgba(255,255,255,0.2); border-radius:10px; padding:0.6rem;"></textarea>
+        <p class="subtitle">Choose a JSON backup file to import.</p>
+        <input id="home-import-json-file" type="file" accept=".json,application/json" />
       `,
       actions: [
         {
-          label: "Create From JSON",
+          label: "Import",
           onClick: async (done) => {
-            const input = document.getElementById("home-import-json-input");
+            const input = document.getElementById("home-import-json-file");
+            const file = input?.files?.[0] ?? null;
+            if (!file) {
+              alert("Choose a JSON file to import.");
+              return;
+            }
             try {
-              const parsed = JSON.parse(input?.value ?? "{}");
-              const nextVersion = Math.max(appState.localCharacterVersion, getCharacterVersion(parsed)) + 1;
-              const payload = await createCharacter(withSyncMeta(withCharacterChangeLog(parsed), nextVersion));
-              const normalized = getCharacterFromApiPayload(payload, null);
-              setCharacterIdInUrl(normalized.id, false);
-              await applyRemoteCharacterPayload(payload, normalized.id);
+              const result = await importCharacterFromJsonFile(file, { sourceLabel: "Homepage import" });
+              if (result?.cancelled) return;
               done();
             } catch (error) {
               alert(error instanceof Error ? error.message : "Invalid JSON payload");
@@ -3725,6 +4007,8 @@ const events = createEvents({
   openSpellDetailsModal,
   getCharacterSpellSlotDefaults,
   createOrSavePermanentCharacter,
+  importCharacterFromJsonFile,
+  exportCharacterToJsonFile,
   openClassDetailsModal,
   openFeatureDetailsModal,
   openFeatDetailsModal,
@@ -3843,7 +4127,11 @@ function syncSpellSlotsWithDefaults(play, defaults, options = {}) {
 }
 
 function updateCharacterWithRequiredSettings(state, patch, options = {}) {
-  const nextCharacter = { ...state.character, ...patch };
+  let nextCharacter = { ...state.character, ...patch };
+  nextCharacter = {
+    ...nextCharacter,
+    ...resolveImportedCharacterSelections(state.catalogs, nextCharacter),
+  };
   const nextPlaySeed = isRecordObject(patch.play) ? patch.play : state.character.play;
   const nextPlay = structuredClone(nextPlaySeed ?? {});
   const autoAbilityBonuses = getAutomaticAbilityBonuses(state.catalogs, nextCharacter, nextPlay);
@@ -3865,30 +4153,58 @@ function updateCharacterWithRequiredSettings(state, patch, options = {}) {
   }, {});
 
   const autoSaveProficiencies = getAutomaticSaveProficiencies(state.catalogs, nextCharacter);
-  const autoSkillProficiencies = getAutomaticSkillProficiencies(state.catalogs, nextCharacter, nextPlay);
+  const autoSkillProficiencyModes = getAutomaticSkillProficiencyModes(state.catalogs, nextCharacter, nextPlay);
+  const autoSkillProficiencies = mapSkillModesToProficiencyMap(autoSkillProficiencyModes, SKILLS.map((skill) => skill.key));
   let saveOverrides = isRecordObject(nextPlay.saveProficiencyOverrides) ? { ...nextPlay.saveProficiencyOverrides } : {};
   let skillOverrides = isRecordObject(nextPlay.skillProficiencyOverrides) ? { ...nextPlay.skillProficiencyOverrides } : {};
-  if (!Object.keys(saveOverrides).length) {
+  let skillModeOverrides = isRecordObject(nextPlay.skillProficiencyModeOverrides) ? { ...nextPlay.skillProficiencyModeOverrides } : {};
+  const hasLegacySaveSnapshot = hasStoredProficiencyState(nextPlay.saveProficiencies, SAVE_ABILITIES);
+  const hasSavedAutoSaveState = hasStoredProficiencyState(nextPlay.autoSaveProficiencies, SAVE_ABILITIES);
+  if (!Object.keys(saveOverrides).length && hasLegacySaveSnapshot && !hasSavedAutoSaveState) {
     saveOverrides = deriveLegacyProficiencyOverrides(nextPlay.saveProficiencies, autoSaveProficiencies, SAVE_ABILITIES);
   }
-  if (!Object.keys(skillOverrides).length) {
-    skillOverrides = deriveLegacyProficiencyOverrides(
-      nextPlay.skillProficiencies,
-      autoSkillProficiencies,
-      SKILLS.map((skill) => skill.key)
+  const skillKeys = SKILLS.map((skill) => skill.key);
+  const hasLegacySkillSnapshot = hasStoredProficiencyState(nextPlay.skillProficiencies, skillKeys);
+  const hasSavedAutoSkillState = hasStoredProficiencyState(nextPlay.autoSkillProficiencies, skillKeys);
+  const hasSavedSkillModeOverrides = hasStoredSkillModeState(nextPlay.skillProficiencyModeOverrides, skillKeys);
+  if (!hasSavedSkillModeOverrides && Object.keys(skillOverrides).length) {
+    const migrated = {};
+    Object.entries(skillOverrides).forEach(([key, value]) => {
+      if (!skillKeys.includes(key) || typeof value !== "boolean") return;
+      migrated[key] = value ? SKILL_PROFICIENCY_PROFICIENT : SKILL_PROFICIENCY_NONE;
+    });
+    skillModeOverrides = migrated;
+  }
+  if (!Object.keys(skillModeOverrides).length && hasLegacySkillSnapshot && !hasSavedAutoSkillState) {
+    const legacySkillOverrides = deriveLegacyProficiencyOverrides(nextPlay.skillProficiencies, autoSkillProficiencies, skillKeys);
+    skillModeOverrides = Object.fromEntries(
+      Object.entries(legacySkillOverrides).map(([key, value]) => [
+        key,
+        value ? SKILL_PROFICIENCY_PROFICIENT : SKILL_PROFICIENCY_NONE,
+      ])
     );
   }
+  const nextSkillModes = mergeSkillModesWithOverrides(autoSkillProficiencyModes, skillModeOverrides, skillKeys);
+  skillOverrides = Object.fromEntries(
+    skillKeys
+      .map((key) => {
+        const currentIsProf = isSkillModeProficient(nextSkillModes[key]);
+        const autoIsProf = isSkillModeProficient(autoSkillProficiencyModes[key]);
+        if (currentIsProf === autoIsProf) return null;
+        return [key, currentIsProf];
+      })
+      .filter(Boolean)
+  );
   nextPlay.autoAbilityBonuses = autoAbilityBonuses;
   nextPlay.autoSaveProficiencies = autoSaveProficiencies;
+  nextPlay.autoSkillProficiencyModes = autoSkillProficiencyModes;
   nextPlay.autoSkillProficiencies = autoSkillProficiencies;
   nextPlay.saveProficiencyOverrides = saveOverrides;
+  nextPlay.skillProficiencyModeOverrides = skillModeOverrides;
   nextPlay.skillProficiencyOverrides = skillOverrides;
   nextPlay.saveProficiencies = mergeProficienciesWithOverrides(autoSaveProficiencies, saveOverrides, SAVE_ABILITIES);
-  nextPlay.skillProficiencies = mergeProficienciesWithOverrides(
-    autoSkillProficiencies,
-    skillOverrides,
-    SKILLS.map((skill) => skill.key)
-  );
+  nextPlay.skillProficiencyModes = nextSkillModes;
+  nextPlay.skillProficiencies = mapSkillModesToProficiencyMap(nextSkillModes, skillKeys);
   const defaultSpellSlots = getCharacterSpellSlotDefaults(state.catalogs, nextCharacter);
   syncSpellSlotsWithDefaults(nextPlay, defaultSpellSlots, { preserveUserOverrides: options.preserveUserOverrides !== false });
   const nextProgression = recomputeCharacterProgression(state.catalogs, nextCharacter);

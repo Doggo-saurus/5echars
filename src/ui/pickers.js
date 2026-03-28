@@ -239,6 +239,7 @@ export function createPickers(deps) {
   function openItemModal(state) {
     const allItems = state.catalogs.items;
     const sourceOptions = [...new Set(allItems.map((it) => it.source).filter(Boolean))].sort();
+    const itemNameCollator = new Intl.Collator(undefined, { sensitivity: "base", numeric: true, ignorePunctuation: true });
     const close = openModal({
       title: "Choose Items",
       bodyHtml: `
@@ -358,6 +359,23 @@ export function createPickers(deps) {
         .toLowerCase();
     }
 
+    function getItemSortName(item) {
+      const name = String(item?.name ?? "").trim();
+      if (!name) return "";
+      // Sort "+1 Longsword" with "Longsword" entries instead of before "A".
+      return name.replace(/^\+\d+\s+/u, "").trim();
+    }
+
+    function compareItemsByName(a, b) {
+      const nameA = getItemSortName(a);
+      const nameB = getItemSortName(b);
+      const byBaseName = itemNameCollator.compare(nameA, nameB);
+      if (byBaseName !== 0) return byBaseName;
+      const byFullName = itemNameCollator.compare(String(a?.name ?? ""), String(b?.name ?? ""));
+      if (byFullName !== 0) return byFullName;
+      return itemNameCollator.compare(String(a?.source ?? ""), String(b?.source ?? ""));
+    }
+
     function matchesRequirement(item, requirement) {
       if (!requirement || typeof requirement !== "object") return false;
       return Object.entries(requirement).every(([key, expected]) => {
@@ -396,7 +414,7 @@ export function createPickers(deps) {
         .filter((item) => item && !Array.isArray(item.requires))
         .filter((item) => requirements.some((requirement) => matchesRequirement(item, requirement)))
         .filter((item) => !isExcludedByVariant(item, variant?.excludes))
-        .sort((a, b) => String(a.name ?? "").localeCompare(String(b.name ?? "")))
+        .sort(compareItemsByName)
         .slice(0, 500);
     }
 
@@ -498,7 +516,7 @@ export function createPickers(deps) {
       filteredItems = allItems
         .filter((item) => matchesSearchQuery(searchValue, item.name, item.sourceLabel, item.source))
         .filter((item) => !sourceValue || item.source === sourceValue)
-        .slice(0, 250);
+        .sort(compareItemsByName);
 
       listEl.innerHTML = filteredItems.length
         ? filteredItems

@@ -20,6 +20,11 @@ body {
   min-height: 100%;
 }
 
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
 body {
   margin: 0;
   font-family: "Segoe UI", "Noto Sans", sans-serif;
@@ -81,6 +86,61 @@ body {
   font-weight: 600;
 }
 
+.stepper button.stepper-cog-btn {
+  min-width: 2.2rem;
+  padding-inline: 0.65rem;
+  font-size: 1rem;
+}
+
+.file-input-hidden {
+  display: none;
+}
+
+.import-export-toolbar {
+  align-items: center;
+}
+
+.dndbeyond-import-guide {
+  margin-top: 1rem;
+  border: 1px solid rgba(245, 158, 11, 0.32);
+  background: linear-gradient(180deg, rgba(245, 158, 11, 0.11), rgba(11, 18, 32, 0.92));
+  overflow: hidden;
+}
+
+.dndbeyond-import-guide .title {
+  margin-bottom: 0.35rem;
+}
+
+.dndbeyond-import-steps {
+  margin: 0.7rem 0 0;
+  padding-left: 1.25rem;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.dndbeyond-import-steps li {
+  color: var(--text);
+  line-height: 1.45;
+}
+
+.dndbeyond-import-prompt {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  margin: 0.45rem 0 0;
+  padding: 0.6rem 0.7rem;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(2, 6, 23, 0.88);
+  color: #f8fafc;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 0.83rem;
+}
+
 .mode-toggle {
   margin-bottom: 0.9rem;
 }
@@ -130,7 +190,7 @@ input[type="number"]::-webkit-inner-spin-button {
   margin: 0;
 }
 
-input, select {
+input, select, textarea {
   width: 100%;
   border: 1px solid rgba(255, 255, 255, 0.2);
   border-radius: 10px;
@@ -410,10 +470,58 @@ input, select {
 .pill-btn {
   color: var(--text);
   cursor: pointer;
+  text-align: left;
 }
 
 .pill-btn:hover {
   border-color: rgba(255, 255, 255, 0.3);
+}
+
+button:is(
+  [data-roll-initiative],
+  [data-roll-death-save],
+  [data-ability-roll],
+  [data-save-roll-btn],
+  [data-skill-roll-btn],
+  [data-attack-roll],
+  [data-auto-attack-roll],
+  #reroll-last-roll,
+  [data-levelup-hp-reroll]
+) {
+  border-color: rgba(56, 189, 248, 0.36);
+  background: linear-gradient(180deg, rgba(56, 189, 248, 0.11), rgba(56, 189, 248, 0.04));
+  box-shadow: inset 0 0 0 1px rgba(56, 189, 248, 0.16);
+}
+
+button:is(
+  [data-roll-initiative],
+  [data-roll-death-save],
+  [data-ability-roll],
+  [data-save-roll-btn],
+  [data-skill-roll-btn],
+  [data-attack-roll],
+  [data-auto-attack-roll],
+  #reroll-last-roll,
+  [data-levelup-hp-reroll]
+):hover {
+  border-color: rgba(56, 189, 248, 0.5);
+  background: linear-gradient(180deg, rgba(56, 189, 248, 0.16), rgba(56, 189, 248, 0.06));
+  box-shadow: inset 0 0 0 1px rgba(56, 189, 248, 0.24);
+}
+
+button:is(
+  [data-roll-initiative],
+  [data-roll-death-save],
+  [data-ability-roll],
+  [data-save-roll-btn],
+  [data-skill-roll-btn],
+  [data-attack-roll],
+  [data-auto-attack-roll],
+  #reroll-last-roll,
+  [data-levelup-hp-reroll]
+):focus-visible {
+  outline: 2px solid rgba(56, 189, 248, 0.46);
+  outline-offset: 1px;
 }
 
 .build-spell-pill-btn {
@@ -741,6 +849,7 @@ body.play-mode #dice-overlay {
   gap: 0.32rem;
   color: var(--text);
   font-size: 0.86rem;
+  white-space: nowrap;
 }
 
 .auto-choice-option input[type="checkbox"] {
@@ -1812,6 +1921,18 @@ body.play-mode #dice-overlay {
   background: var(--accent);
 }
 
+.save-prof-btn.is-auto {
+  border-color: rgba(56, 189, 248, 0.7);
+  color: #e0f2fe;
+  background: rgba(56, 189, 248, 0.2);
+}
+
+.save-prof-btn.is-over-limit {
+  border-color: rgba(248, 113, 113, 0.72);
+  color: #fecaca;
+  background: rgba(248, 113, 113, 0.2);
+}
+
 .save-prof-btn.is-readonly {
   cursor: default;
   pointer-events: none;
@@ -1878,6 +1999,16 @@ body.play-mode #dice-overlay {
   background: rgba(245, 158, 11, 0.12);
 }
 
+.skill-btn.is-auto {
+  border-color: rgba(56, 189, 248, 0.45);
+  background: rgba(56, 189, 248, 0.08);
+}
+
+.skill-btn.is-over-limit {
+  border-color: rgba(248, 113, 113, 0.5);
+  background: rgba(248, 113, 113, 0.1);
+}
+
 .skill-left {
   display: flex;
   align-items: center;
@@ -1888,6 +2019,7 @@ body.play-mode #dice-overlay {
 .skill-prof-btn {
   min-width: 1.35rem;
   height: 1.35rem;
+  padding: 0 0.25rem;
   border-radius: 6px;
   border: 1px solid rgba(255, 255, 255, 0.35);
   background: rgba(255, 255, 255, 0.04);
@@ -1901,6 +2033,10 @@ body.play-mode #dice-overlay {
   flex-shrink: 0;
 }
 
+.skill-prof-btn.is-half {
+  min-width: 2rem;
+}
+
 .skill-prof-btn:hover {
   border-color: rgba(255, 255, 255, 0.55);
 }
@@ -1911,9 +2047,35 @@ body.play-mode #dice-overlay {
   background: var(--accent);
 }
 
+.skill-prof-btn.is-auto {
+  border-color: rgba(56, 189, 248, 0.7);
+  color: #e0f2fe;
+  background: rgba(56, 189, 248, 0.2);
+}
+
+.skill-prof-btn.is-over-limit {
+  border-color: rgba(248, 113, 113, 0.72);
+  color: #fecaca;
+  background: rgba(248, 113, 113, 0.2);
+}
+
 .skill-prof-btn.is-readonly {
   cursor: default;
   pointer-events: none;
+}
+
+.ability-save-row.is-over-limit .save-name {
+  color: #fecaca;
+}
+
+.ability-save-row.is-over-limit .pill {
+  border-color: rgba(248, 113, 113, 0.38);
+}
+
+.proficiency-limit-warning {
+  margin: 0.4rem 0 0.6rem;
+  color: #fecaca;
+  font-size: 0.86rem;
 }
 
 .skill-name {
@@ -2557,6 +2719,22 @@ body.play-mode #dice-overlay {
 }
 
 @media (max-width: 640px) {
+  .play-sheet-head {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.6rem;
+  }
+
+  .dice-result-wrap {
+    width: 100%;
+  }
+
+  .dice-style-row {
+    width: 100%;
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+
   .title-with-history {
     flex-wrap: wrap;
     align-items: center;

@@ -51,6 +51,9 @@ function getDefaultPlayState() {
     autoSkillProficiencies: {},
     saveProficiencyOverrides: {},
     skillProficiencyOverrides: {},
+    skillProficiencyModes: {},
+    autoSkillProficiencyModes: {},
+    skillProficiencyModeOverrides: {},
     autoAbilityBonuses: {},
     autoChoiceSelections: {},
     featureModes: {},
@@ -95,6 +98,54 @@ function normalizeInventoryEntry(entry) {
     id: String(entry.id ?? "").trim() || createInventoryEntryId(),
     name,
     equipped: Boolean(entry.equipped),
+  };
+}
+
+function buildEntityId(parts) {
+  return parts
+    .map((part) =>
+      String(part ?? "")
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+    )
+    .filter(Boolean)
+    .join("__");
+}
+
+function normalizeFeatEntry(entry) {
+  const isObject = entry && typeof entry === "object" && !Array.isArray(entry);
+  const name = isObject ? String(entry.name ?? "").trim() : String(entry ?? "").trim();
+  if (!name) return null;
+  const source = isObject ? String(entry.source ?? "").trim() : "";
+  const idRaw = isObject ? String(entry.id ?? "").trim() : "";
+  const id = idRaw || buildEntityId(["feat", name, source || "unknown"]);
+  return {
+    id,
+    name,
+    source,
+    via: isObject && typeof entry.via === "string" ? entry.via : "manual",
+    levelGranted: toNumber(isObject ? entry.levelGranted : undefined, 0),
+    slotId: isObject && typeof entry.slotId === "string" ? entry.slotId : "",
+  };
+}
+
+function normalizeOptionalFeatureEntry(entry) {
+  const isObject = entry && typeof entry === "object" && !Array.isArray(entry);
+  const name = isObject ? String(entry.name ?? "").trim() : String(entry ?? "").trim();
+  if (!name) return null;
+  const source = isObject ? String(entry.source ?? "").trim() : "";
+  const idRaw = isObject ? String(entry.id ?? "").trim() : "";
+  const id = idRaw || buildEntityId(["optionalfeature", name, source || "unknown"]);
+  return {
+    id,
+    name,
+    source,
+    levelGranted: toNumber(isObject ? entry.levelGranted : undefined, 0),
+    slotId: isObject && typeof entry.slotId === "string" ? entry.slotId : "",
+    className: isObject && typeof entry.className === "string" ? entry.className : "",
+    slotType: isObject && typeof entry.slotType === "string" ? entry.slotType : "",
+    featureType: isObject && typeof entry.featureType === "string" ? entry.featureType : "",
   };
 }
 
@@ -181,6 +232,14 @@ function normalizeCharacter(character) {
       character.play?.autoSkillProficiencies && typeof character.play.autoSkillProficiencies === "object"
         ? { ...character.play.autoSkillProficiencies }
         : {},
+    skillProficiencyModes:
+      character.play?.skillProficiencyModes && typeof character.play.skillProficiencyModes === "object"
+        ? { ...character.play.skillProficiencyModes }
+        : {},
+    autoSkillProficiencyModes:
+      character.play?.autoSkillProficiencyModes && typeof character.play.autoSkillProficiencyModes === "object"
+        ? { ...character.play.autoSkillProficiencyModes }
+        : {},
     saveProficiencyOverrides:
       character.play?.saveProficiencyOverrides && typeof character.play.saveProficiencyOverrides === "object"
         ? { ...character.play.saveProficiencyOverrides }
@@ -188,6 +247,10 @@ function normalizeCharacter(character) {
     skillProficiencyOverrides:
       character.play?.skillProficiencyOverrides && typeof character.play.skillProficiencyOverrides === "object"
         ? { ...character.play.skillProficiencyOverrides }
+        : {},
+    skillProficiencyModeOverrides:
+      character.play?.skillProficiencyModeOverrides && typeof character.play.skillProficiencyModeOverrides === "object"
+        ? { ...character.play.skillProficiencyModeOverrides }
         : {},
     autoAbilityBonuses:
       character.play?.autoAbilityBonuses && typeof character.play.autoAbilityBonuses === "object"
@@ -209,31 +272,9 @@ function normalizeCharacter(character) {
     inventory: Array.isArray(character.inventory) ? character.inventory.map((entry) => normalizeInventoryEntry(entry)).filter(Boolean) : [],
     spells: Array.isArray(character.spells) ? character.spells : [],
     multiclass: Array.isArray(character.multiclass) ? character.multiclass : [],
-    feats: Array.isArray(character.feats)
-      ? character.feats
-          .map((feat) => ({
-            id: typeof feat?.id === "string" ? feat.id : "",
-            name: typeof feat?.name === "string" ? feat.name : "",
-            source: typeof feat?.source === "string" ? feat.source : "",
-            via: typeof feat?.via === "string" ? feat.via : "manual",
-            levelGranted: toNumber(feat?.levelGranted, 0),
-            slotId: typeof feat?.slotId === "string" ? feat.slotId : "",
-          }))
-          .filter((feat) => feat.id && feat.name)
-      : [],
+    feats: Array.isArray(character.feats) ? character.feats.map((feat) => normalizeFeatEntry(feat)).filter(Boolean) : [],
     optionalFeatures: Array.isArray(character.optionalFeatures)
-      ? character.optionalFeatures
-          .map((feature) => ({
-            id: typeof feature?.id === "string" ? feature.id : "",
-            name: typeof feature?.name === "string" ? feature.name : "",
-            source: typeof feature?.source === "string" ? feature.source : "",
-            levelGranted: toNumber(feature?.levelGranted, 0),
-            slotId: typeof feature?.slotId === "string" ? feature.slotId : "",
-            className: typeof feature?.className === "string" ? feature.className : "",
-            slotType: typeof feature?.slotType === "string" ? feature.slotType : "",
-            featureType: typeof feature?.featureType === "string" ? feature.featureType : "",
-          }))
-          .filter((feature) => feature.id && feature.name)
+      ? character.optionalFeatures.map((feature) => normalizeOptionalFeatureEntry(feature)).filter(Boolean)
       : [],
     subclass: subclassName,
     classSelection: {

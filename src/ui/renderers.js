@@ -39,76 +39,9 @@ export function createRenderers(deps) {
     getCharacterChangeLog,
   } = deps;
 
-  function normalizeSourceTag(value) {
-    return String(value ?? "").trim().toUpperCase();
-  }
-
-  function to5etoolsSlug(value) {
-    return String(value ?? "")
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "_")
-      .replace(/^_+|_+$/g, "");
-  }
-
-  function buildClassPageHref(className, source) {
-    const classSlug = to5etoolsSlug(className);
-    const sourceSlug = to5etoolsSlug(source);
-    if (!classSlug || !sourceSlug) return "https://5e.tools/classes.html";
-    return `https://5e.tools/classes.html#${classSlug}_${sourceSlug}`;
-  }
-
-  function buildSubclassStateHref(className, classSource, subclassShortName, subclassSource) {
-    const classSlug = to5etoolsSlug(className);
-    const classSourceSlug = to5etoolsSlug(classSource);
-    const subclassSlug = to5etoolsSlug(subclassShortName);
-    const subclassSourceSlug = to5etoolsSlug(subclassSource);
-    if (!classSlug || !classSourceSlug || !subclassSlug || !subclassSourceSlug) return buildClassPageHref(className, classSource);
-    return `https://5e.tools/classes.html#${classSlug}_${classSourceSlug},state:sub_${subclassSlug}_${subclassSourceSlug}=b1`;
-  }
-
-  function findSelectedSubclassEntry(catalogs, character, classEntry) {
-    const selectedName = String(character?.classSelection?.subclass?.name ?? character?.subclass ?? "").trim().toLowerCase();
-    if (!selectedName) return null;
-    const selectedSource = normalizeSourceTag(character?.classSelection?.subclass?.source);
-    const className = String(classEntry?.name ?? "").trim().toLowerCase();
-    const classSource = normalizeSourceTag(classEntry?.source);
-    if (!className || !Array.isArray(catalogs?.subclasses)) return null;
-    const matches = catalogs.subclasses
-      .filter((entry) => String(entry?.className ?? "").trim().toLowerCase() === className)
-      .filter((entry) => {
-        const entryClassSource = normalizeSourceTag(entry?.classSource);
-        return !classSource || !entryClassSource || entryClassSource === classSource;
-      });
-    return (
-      matches.find((entry) => {
-        const nameMatch = String(entry?.name ?? "").trim().toLowerCase() === selectedName;
-        if (!nameMatch) return false;
-        if (!selectedSource) return true;
-        return normalizeSourceTag(entry?.source) === selectedSource;
-      }) ?? null
-    );
-  }
-
   function getPlayManualLinks(state) {
-    const classEntry = findCatalogEntryByName(state?.catalogs?.classes, state?.character?.class);
-    if (!classEntry) return [];
-    const classPageHref = buildClassPageHref(classEntry.name, classEntry.source);
-    const links = [];
-    links.push({ label: `${classEntry.name} class overview`, meta: "Class page", href: classPageHref });
-    links.push({ label: `${classEntry.name} progression table`, meta: "Levels and features", href: classPageHref });
-
-    const subclassEntry = findSelectedSubclassEntry(state?.catalogs, state?.character, classEntry);
-    if (subclassEntry) {
-      const subclassShortName = String(subclassEntry?.shortName ?? subclassEntry?.name ?? "").trim();
-      const subclassHref = buildSubclassStateHref(classEntry.name, classEntry.source, subclassShortName, subclassEntry.source);
-      links.push({ label: `${subclassEntry.name} subclass overview`, meta: "Selected subclass", href: subclassHref });
-      links.push({ label: `${subclassEntry.name} subclass features`, meta: "Expanded subclass section", href: subclassHref });
-    }
-
-    links.push({ label: "All classes", meta: "Browse class list", href: "https://5e.tools/classes.html" });
-    links.push({ label: "Status conditions", meta: "Conditions reference", href: "https://5e.tools/conditionsdiseases.html" });
-    return links;
+    void state;
+    return [];
   }
 
   function formatCharacterLogTime(isoTimestamp) {
@@ -154,16 +87,77 @@ export function createRenderers(deps) {
     return `<div class="character-log-details">${rowsHtml}</div>`;
   }
 
+  function buildProficiencyEditState(keys, selectedMap, autoMap) {
+    const autoByKey = {};
+    const manualByKey = {};
+    let removedAutoCount = 0;
+    let manualSelectedCount = 0;
+    keys.forEach((key) => {
+      const isSelected = Boolean(selectedMap?.[key]);
+      const isAuto = Boolean(autoMap?.[key]);
+      const isManual = isSelected && !isAuto;
+      autoByKey[key] = isSelected && isAuto;
+      manualByKey[key] = isManual;
+      if (isAuto && !isSelected) removedAutoCount += 1;
+      if (isManual) manualSelectedCount += 1;
+    });
+    const overBy = Math.max(0, manualSelectedCount - removedAutoCount);
+    const invalidByKey = {};
+    keys.forEach((key) => {
+      invalidByKey[key] = overBy > 0 && manualByKey[key];
+    });
+    return {
+      autoByKey,
+      manualByKey,
+      invalidByKey,
+      removedAutoCount,
+      manualSelectedCount,
+      overBy,
+    };
+  }
+
+  function getProficiencyEditMeta(character) {
+    const play = character?.play ?? {};
+    const saveKeys = saveAbilities;
+    const skillKeys = skills.map((skill) => skill.key);
+    const saves = buildProficiencyEditState(saveKeys, play.saveProficiencies, play.autoSaveProficiencies);
+    const skill = buildProficiencyEditState(skillKeys, play.skillProficiencies, play.autoSkillProficiencies);
+    return { saves, skill };
+  }
+
+  function normalizeSkillProficiencyMode(value) {
+    const mode = String(value ?? "").trim().toLowerCase();
+    if (mode === "half" || mode === "proficient" || mode === "expertise") return mode;
+    return "none";
+  }
+
+  function getSkillProficiencyBonus(proficiencyBonus, mode) {
+    if (mode === "expertise") return proficiencyBonus * 2;
+    if (mode === "proficient") return proficiencyBonus;
+    if (mode === "half") return Math.floor(proficiencyBonus / 2);
+    return 0;
+  }
+
+  function getSkillModeLabel(mode) {
+    if (mode === "expertise") return "E";
+    if (mode === "proficient") return "P";
+    if (mode === "half") return "1/2";
+    return "-";
+  }
+
   function renderSaveRowsImpl(state, options = {}) {
     const { character, derived } = state;
     const { canToggle = false, includeRollButtons = false } = options;
     const play = character.play ?? {};
+    const saveEditState = canToggle ? options?.proficiencyEditMeta?.saves : null;
 
     return saveAbilities
       .map((ability) => {
         const score = toNumber(character.abilities?.[ability], 10);
         const mod = derived.mods[ability];
         const isProf = Boolean(play.saveProficiencies?.[ability]);
+        const isAutoProf = Boolean(saveEditState?.autoByKey?.[ability]);
+        const isOverLimit = Boolean(saveEditState?.invalidByKey?.[ability]);
         const total = mod + (isProf ? derived.proficiencyBonus : 0);
         const abilityLabel = abilityLabels[ability] ?? ability.toUpperCase();
         const saveName = `${abilityLabel} Save`;
@@ -171,15 +165,16 @@ export function createRenderers(deps) {
           ? `
             <button
               type="button"
-              class="save-prof-btn ${isProf ? "is-active" : ""}"
+              class="save-prof-btn ${isProf ? "is-active" : ""} ${isAutoProf ? "is-auto" : ""} ${isOverLimit ? "is-over-limit" : ""}"
               data-save-prof-btn="${ability}"
               aria-pressed="${isProf ? "true" : "false"}"
+              ${isAutoProf ? "disabled aria-disabled='true' title='Auto-granted proficiency'" : ""}
             >
               ${isProf ? "P" : "-"}
             </button>
           `
           : `
-            <span class="save-prof-btn is-readonly ${isProf ? "is-active" : ""}" aria-hidden="true">
+            <span class="save-prof-btn is-readonly ${isProf ? "is-active" : ""} ${isAutoProf ? "is-auto" : ""}" aria-hidden="true">
               ${isProf ? "P" : "-"}
             </span>
           `;
@@ -197,7 +192,7 @@ export function createRenderers(deps) {
           : `<span class="save-mod-btn">${signed(total)}</span>`;
 
         return `
-      <div class="ability-save-row">
+      <div class="ability-save-row ${isOverLimit ? "is-over-limit" : ""}">
         <button type="button" class="pill pill-btn" data-ability-roll="${ability}" title="Roll ${abilityLabel} check">
           ${abilityLabel} ${score} / ${signed(mod)}
         </button>
@@ -218,26 +213,33 @@ export function createRenderers(deps) {
     const { character, derived } = state;
     const { canToggle = false, includeRollButtons = false } = options;
     const play = character.play ?? {};
+    const skillEditState = canToggle ? options?.proficiencyEditMeta?.skill : null;
 
     return skills
       .map((skill) => {
-        const isProf = Boolean(play.skillProficiencies?.[skill.key]);
-        const total = derived.mods[skill.ability] + (isProf ? derived.proficiencyBonus : 0);
+        const skillMode = normalizeSkillProficiencyMode(play.skillProficiencyModes?.[skill.key] ?? (play.skillProficiencies?.[skill.key] ? "proficient" : "none"));
+        const autoSkillMode = normalizeSkillProficiencyMode(
+          play.autoSkillProficiencyModes?.[skill.key] ?? (play.autoSkillProficiencies?.[skill.key] ? "proficient" : "none")
+        );
+        const isProf = skillMode === "proficient" || skillMode === "expertise";
+        const isAutoProf = autoSkillMode === "proficient" || autoSkillMode === "expertise";
+        const isOverLimit = Boolean(skillEditState?.invalidByKey?.[skill.key]);
+        const total = derived.mods[skill.ability] + getSkillProficiencyBonus(derived.proficiencyBonus, skillMode);
         const profControl = canToggle
           ? `
             <button
               type="button"
-              class="skill-prof-btn ${isProf ? "is-active" : ""}"
+              class="skill-prof-btn ${isProf ? "is-active" : ""} ${isAutoProf ? "is-auto" : ""} ${isOverLimit ? "is-over-limit" : ""} ${skillMode === "half" ? "is-half" : ""} ${skillMode === "expertise" ? "is-expertise" : ""}"
               data-skill-prof-btn="${skill.key}"
               aria-pressed="${isProf ? "true" : "false"}"
-              title="Toggle proficiency"
+              title="Cycle proficiency mode"
             >
-              ${isProf ? "P" : "-"}
+              ${getSkillModeLabel(skillMode)}
             </button>
           `
           : `
-            <span class="skill-prof-btn is-readonly ${isProf ? "is-active" : ""}" aria-hidden="true">
-              ${isProf ? "P" : "-"}
+            <span class="skill-prof-btn is-readonly ${isProf ? "is-active" : ""} ${isAutoProf ? "is-auto" : ""} ${skillMode === "half" ? "is-half" : ""} ${skillMode === "expertise" ? "is-expertise" : ""}" aria-hidden="true">
+              ${getSkillModeLabel(skillMode)}
             </span>
           `;
         const rollControl = includeRollButtons
@@ -255,7 +257,7 @@ export function createRenderers(deps) {
 
         return `
       <div class="skill-row">
-        <div class="skill-btn ${isProf ? "is-active" : ""}">
+        <div class="skill-btn ${isProf ? "is-active" : ""} ${isAutoProf ? "is-auto" : ""} ${isOverLimit ? "is-over-limit" : ""}">
           <span class="skill-left">
             ${profControl}
             <span class="skill-name">${esc(skill.label)} <span class="muted">(${skill.ability.toUpperCase()})</span></span>
@@ -307,14 +309,26 @@ export function createRenderers(deps) {
     return sourceSelections;
   }
 
+  function normalizeChoiceToken(value) {
+    return String(value ?? "")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, "");
+  }
+
   function getSelectedChoiceValues(character, sourceKey, choiceId, from, count) {
     const selectionMap = getAutoChoiceSelectionMap(character, sourceKey);
     const storedRaw = selectionMap[choiceId];
+    const fromByToken = new Map(
+      from
+        .map((entry) => [normalizeChoiceToken(entry), entry])
+        .filter(([token, entry]) => token && entry)
+    );
     const stored = (Array.isArray(storedRaw) ? storedRaw : [])
-      .map((entry) => String(entry ?? "").trim().toLowerCase())
-      .filter((entry) => from.includes(entry));
-    const uniqueStored = stored.filter((entry, index) => stored.indexOf(entry) === index);
-    const normalizedByOrder = from.filter((entry) => uniqueStored.includes(entry));
+      .map((entry) => normalizeChoiceToken(entry))
+      .filter((token) => fromByToken.has(token));
+    const uniqueStored = stored.filter((token, index) => stored.indexOf(token) === index);
+    const normalizedByOrder = from.filter((entry) => uniqueStored.includes(normalizeChoiceToken(entry)));
     if (!normalizedByOrder.length) return from.slice(0, Math.max(0, Math.min(from.length, count)));
     return normalizedByOrder.slice(0, Math.max(0, Math.min(from.length, count)));
   }
@@ -323,12 +337,22 @@ export function createRenderers(deps) {
     const allowDuplicates = Boolean(options?.allowDuplicates);
     const selectionMap = getAutoChoiceSelectionMap(character, sourceKey);
     const storedRaw = selectionMap[choiceId];
+    const fromByToken = new Map(
+      from
+        .map((entry) => [normalizeChoiceToken(entry), entry])
+        .filter(([token, entry]) => token && entry)
+    );
     const stored = (Array.isArray(storedRaw) ? storedRaw : [])
-      .map((entry) => String(entry ?? "").trim().toLowerCase())
-      .filter((entry) => from.includes(entry));
-    if (allowDuplicates) return stored.slice(0, Math.max(0, Math.min(from.length, count)));
-    const uniqueStored = stored.filter((entry, index) => stored.indexOf(entry) === index);
-    const normalizedByOrder = from.filter((entry) => uniqueStored.includes(entry));
+      .map((entry) => normalizeChoiceToken(entry))
+      .filter((token) => fromByToken.has(token));
+    if (allowDuplicates) {
+      return stored
+        .map((token) => fromByToken.get(token))
+        .filter(Boolean)
+        .slice(0, Math.max(0, Math.min(from.length, count)));
+    }
+    const uniqueStored = stored.filter((token, index) => stored.indexOf(token) === index);
+    const normalizedByOrder = from.filter((entry) => uniqueStored.includes(normalizeChoiceToken(entry)));
     return normalizedByOrder.slice(0, Math.max(0, Math.min(from.length, count)));
   }
 
@@ -424,15 +448,16 @@ export function createRenderers(deps) {
   }
 
   function renderChoiceCheckboxes(sourceKey, choiceId, count, options, selectedValues, labelFn) {
+    const selectedTokens = new Set((Array.isArray(selectedValues) ? selectedValues : []).map((entry) => normalizeChoiceToken(entry)).filter(Boolean));
     return `
       <div class="auto-choice-group">
         <p class="muted auto-choice-label">Pick ${count}</p>
         <div class="auto-choice-options">
           ${options
             .map((optionValue) => {
-              const option = String(optionValue ?? "").trim().toLowerCase();
+              const option = String(optionValue ?? "").trim();
               if (!option) return "";
-              const checked = selectedValues.includes(option);
+              const checked = selectedTokens.has(normalizeChoiceToken(option));
               return `
                 <label class="auto-choice-option">
                   <input
@@ -460,7 +485,8 @@ export function createRenderers(deps) {
         <p class="muted auto-choice-label">Spend ${count} points</p>
         <div class="auto-choice-selects">
           ${Array.from({ length: count }, (_, index) => {
-            const selected = String(selectedValues[index] ?? "").trim().toLowerCase();
+            const selected = String(selectedValues[index] ?? "").trim();
+            const selectedToken = normalizeChoiceToken(selected);
             return `
               <label class="auto-choice-select">
                 <span class="muted">Point ${index + 1}</span>
@@ -473,9 +499,9 @@ export function createRenderers(deps) {
                   <option value="">(none)</option>
                   ${options
                     .map((optionValue) => {
-                      const option = String(optionValue ?? "").trim().toLowerCase();
+                      const option = String(optionValue ?? "").trim();
                       if (!option) return "";
-                      const isSelected = option === selected;
+                      const isSelected = normalizeChoiceToken(option) === selectedToken;
                       return `<option value="${esc(option)}" ${isSelected ? "selected" : ""}>${esc(labelFn(option))}</option>`;
                     })
                     .join("")}
@@ -1360,12 +1386,10 @@ export function createRenderers(deps) {
       <h2 class="title">Basics</h2>
       <div class="row">
         <label>Name <input id="name" value="${esc(character.name)}"></label>
-        <label>Level <input type="number" min="1" max="20" id="level" value="${esc(character.level)}"></label>
       </div>
-      <div class="toolbar">
-        <button class="btn secondary" type="button" data-open-levelup>Level Up</button>
-      </div>
-      <label>Notes <input id="notes" value="${esc(character.notes)}"></label>
+      <label>Notes
+        <textarea id="notes" rows="5">${esc(character.notes)}</textarea>
+      </label>
     `;
     }
     if (stepIndex === 2) {
@@ -1464,8 +1488,9 @@ export function createRenderers(deps) {
     `;
     }
     if (stepIndex === 4) {
-      const saveRows = renderSaveRowsImpl(state, { canToggle: true, includeRollButtons: false });
-      const skillRows = renderSkillRowsImpl(state, { canToggle: true, includeRollButtons: false });
+      const proficiencyEditMeta = getProficiencyEditMeta(character);
+      const saveRows = renderSaveRowsImpl(state, { canToggle: true, includeRollButtons: false, proficiencyEditMeta });
+      const skillRows = renderSkillRowsImpl(state, { canToggle: true, includeRollButtons: false, proficiencyEditMeta });
       return `
       <h2 class="title">Abilities</h2>
       <div class="row ability-edit-grid">
@@ -1535,26 +1560,40 @@ export function createRenderers(deps) {
       </div>
     `;
     }
-    const permalinkUrl = character.id ? `${window.location.origin}${window.location.pathname}?char=${encodeURIComponent(character.id)}` : "";
-    return `
-    <h2 class="title">Review & Export</h2>
-    <p class="subtitle">Create a shareable character link and keep a JSON backup if you want one.</p>
-    <div class="toolbar">
-      <button class="btn" id="create-permanent-character">${character.id ? "Save Character Link" : "Create Permanent Character Link"}</button>
-      <button class="btn secondary" id="copy-character-link" ${character.id ? "" : "disabled"}>Copy Character Link</button>
-    </div>
-    ${
-      character.id
-        ? `<p class="muted">Bookmark this URL to reopen: <code>${esc(permalinkUrl)}</code></p>`
-        : `<p class="muted">No character link yet. Create one, then bookmark it.</p>`
+    if (stepIndex === 7) {
+      return `
+      <h2 class="title">Import & Export</h2>
+      <p class="subtitle">Import a character backup file or export the current character as JSON.</p>
+      <div class="toolbar import-export-toolbar">
+        <input type="file" id="import-character-json-file" class="file-input-hidden" accept=".json,application/json" />
+        <button class="btn secondary" id="import-character-json" type="button">Import</button>
+        <button class="btn secondary" id="export-character-json" type="button">Export</button>
+      </div>
+      <p class="muted">
+        Import checks the JSON UUID. You will be warned before replacing the current character or any existing character.
+      </p>
+      <section class="dndbeyond-import-guide card">
+        <h3 class="title">Import from D&amp;D Beyond</h3>
+        <p class="muted">Follow these steps to convert a D&amp;D Beyond character export into this builder's JSON format.</p>
+        <ol class="dndbeyond-import-steps">
+          <li>
+            In D&amp;D Beyond, open your character, click <strong>Manage</strong>, then choose <strong>Export to PDF</strong>.
+          </li>
+          <li>
+            Open ChatGPT or Claude and upload/paste the exported PDF document.
+          </li>
+          <li>
+            Use this prompt:
+            <pre class="dndbeyond-import-prompt">Convert the supplied PDF document to the character builder JSON format described at https://characterbuild.duckdns.org/JSON_FORMAT_REFERENCE.md. Output only valid JSON. Use human-readable names directly from the source document (class, spells, feats, optional features) and do not invent internal IDs.</pre>
+          </li>
+          <li>
+            Download the JSON file provided by the LLM, then import it using the <strong>Import</strong> button above.
+          </li>
+        </ol>
+      </section>
+    `;
     }
-    <textarea id="export-json" rows="12" style="width:100%; background:#0b1220; color:#e5e7eb; border:1px solid rgba(255,255,255,0.2); border-radius:10px; padding:0.6rem;">${esc(
-      JSON.stringify(character, null, 2)
-    )}</textarea>
-    <div class="toolbar">
-      <button class="btn secondary" id="import-json">Import JSON</button>
-    </div>
-  `;
+    return "";
   }
 
   function renderSummaryImpl(state) {
@@ -1582,11 +1621,13 @@ export function createRenderers(deps) {
   function renderStepperImpl(stepIndex) {
     return `
     <div class="stepper">
-      ${STEPS.map(
-        (step, i) => `
-        <button data-step="${i}" class="${i === stepIndex ? "active" : ""}">${i + 1}. ${esc(step)}</button>
-      `
-      ).join("")}
+      ${STEPS.map((step, i) => {
+        const isCogStep = i === 7;
+        const label = isCogStep ? "⚙" : `${i + 1}. ${esc(step)}`;
+        const ariaLabel = isCogStep ? ` aria-label="${i + 1}. ${esc(step)}" title="${i + 1}. ${esc(step)}"` : "";
+        const className = `${i === stepIndex ? "active " : ""}${isCogStep ? "stepper-cog-btn" : ""}`.trim();
+        return `<button data-step="${i}" class="${className}"${ariaLabel}>${label}</button>`;
+      }).join("")}
     </div>
   `;
   }

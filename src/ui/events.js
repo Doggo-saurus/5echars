@@ -22,6 +22,8 @@ export function createEvents(deps) {
     openSpellDetailsModal,
     getCharacterSpellSlotDefaults,
     createOrSavePermanentCharacter,
+    importCharacterFromJsonFile,
+    exportCharacterToJsonFile,
     openClassDetailsModal,
     openFeatureDetailsModal,
     openFeatDetailsModal,
@@ -85,6 +87,56 @@ export function createEvents(deps) {
         .map(([key, value]) => [String(key ?? "").trim(), Math.max(0, Math.floor(toNumber(value, 0)))])
         .filter(([key, value]) => key && value > 0)
     );
+  }
+
+  function normalizeChoiceToken(value) {
+    return String(value ?? "")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, "");
+  }
+
+  function normalizeSkillProficiencyMode(value) {
+    const mode = String(value ?? "").trim().toLowerCase();
+    if (mode === "half" || mode === "proficient" || mode === "expertise") return mode;
+    return "none";
+  }
+
+  function getSkillProficiencyBonus(proficiencyBonus, mode) {
+    if (mode === "expertise") return proficiencyBonus * 2;
+    if (mode === "proficient") return proficiencyBonus;
+    if (mode === "half") return Math.floor(proficiencyBonus / 2);
+    return 0;
+  }
+
+  function getClassLevelByName(character, className) {
+    const target = String(className ?? "").trim().toLowerCase();
+    if (!target) return 0;
+    const { primaryLevel, multiclass } = getCharacterClassLevels(character);
+    let total = 0;
+    if (String(character?.class ?? "").trim().toLowerCase() === target) total += primaryLevel;
+    multiclass.forEach((entry) => {
+      if (String(entry?.class ?? "").trim().toLowerCase() === target) total += Math.max(0, toNumber(entry?.level, 0));
+    });
+    return total;
+  }
+
+  function getAllowedSkillModesForCharacter(character, autoMode) {
+    const bardLevel = getClassLevelByName(character, "bard");
+    const rogueLevel = getClassLevelByName(character, "rogue");
+    const canHalf = bardLevel >= 2;
+    const canExpertise = bardLevel >= 3 || rogueLevel >= 1;
+    const modes = ["none"];
+    if (canHalf) modes.push("half");
+    modes.push("proficient");
+    if (canExpertise) modes.push("expertise");
+    if (autoMode === "proficient") {
+      return canExpertise ? ["proficient", "expertise"] : ["proficient"];
+    }
+    if (autoMode === "half") {
+      return canExpertise ? ["half", "proficient", "expertise"] : ["half", "proficient"];
+    }
+    return modes;
   }
 
   function getCharacterClassLevels(character) {
@@ -346,8 +398,10 @@ export function createEvents(deps) {
       input.addEventListener("change", () => {
         const sourceKey = String(input.dataset.autoChoiceSource ?? "").trim();
         const choiceId = String(input.dataset.autoChoiceId ?? "").trim();
-        const value = String(input.dataset.autoChoiceValue ?? "").trim().toLowerCase();
+        const value = String(input.dataset.autoChoiceValue ?? "").trim();
+        const valueToken = normalizeChoiceToken(value);
         if (!sourceKey || !choiceId || !value) return;
+        if (!valueToken) return;
         const maxCount = Math.max(1, toNumber(input.dataset.autoChoiceMax, 1));
         const nextPlay =
           state.character.play && typeof state.character.play === "object" && !Array.isArray(state.character.play)
@@ -362,13 +416,18 @@ export function createEvents(deps) {
             ? { ...selections[sourceKey] }
             : {};
         const currentValues = Array.isArray(sourceSelections[choiceId])
-          ? sourceSelections[choiceId].map((entry) => String(entry ?? "").trim().toLowerCase()).filter(Boolean)
+          ? sourceSelections[choiceId].map((entry) => String(entry ?? "").trim()).filter(Boolean)
           : [];
-        const uniqueValues = currentValues.filter((entry, index) => currentValues.indexOf(entry) === index);
         const isChecked = input.checked;
-        let nextValues = isChecked
-          ? [...uniqueValues.filter((entry) => entry !== value), value]
-          : uniqueValues.filter((entry) => entry !== value);
+        const valueByToken = new Map();
+        currentValues.forEach((entry) => {
+          const token = normalizeChoiceToken(entry);
+          if (!token) return;
+          valueByToken.set(token, entry);
+        });
+        if (isChecked) valueByToken.set(valueToken, value);
+        else valueByToken.delete(valueToken);
+        let nextValues = [...valueByToken.values()];
         if (nextValues.length > maxCount) nextValues = nextValues.slice(nextValues.length - maxCount);
         sourceSelections[choiceId] = nextValues;
         selections[sourceKey] = sourceSelections;
@@ -400,7 +459,7 @@ export function createEvents(deps) {
             const selectChoiceId = String(selectEl.dataset.autoChoiceId ?? "").trim();
             return selectSource === sourceKey && selectChoiceId === choiceId;
           })
-          .map((selectEl) => String(selectEl.value ?? "").trim().toLowerCase())
+          .map((selectEl) => String(selectEl.value ?? "").trim())
           .filter(Boolean)
           .slice(0, maxCount);
         sourceSelections[choiceId] = nextValues;
@@ -426,8 +485,9 @@ export function createEvents(deps) {
         const ability = button.dataset.saveProfBtn;
         withUpdatedPlay(state, (play) => {
           const current = Boolean(play.saveProficiencies?.[ability]);
-          const next = !current;
           const autoValue = Boolean(play.autoSaveProficiencies?.[ability]);
+          if (autoValue && current) return;
+          const next = !current;
           const overrides =
             play.saveProficiencyOverrides && typeof play.saveProficiencyOverrides === "object" && !Array.isArray(play.saveProficiencyOverrides)
               ? { ...play.saveProficiencyOverrides }
@@ -447,18 +507,35 @@ export function createEvents(deps) {
       button.addEventListener("click", () => {
         const key = button.dataset.skillProfBtn;
         withUpdatedPlay(state, (play) => {
-          const current = Boolean(play.skillProficiencies?.[key]);
-          const next = !current;
-          const autoValue = Boolean(play.autoSkillProficiencies?.[key]);
+          const skillMode = normalizeSkillProficiencyMode(play.skillProficiencyModes?.[key] ?? (play.skillProficiencies?.[key] ? "proficient" : "none"));
+          const autoMode = normalizeSkillProficiencyMode(
+            play.autoSkillProficiencyModes?.[key] ?? (play.autoSkillProficiencies?.[key] ? "proficient" : "none")
+          );
+          const cycleModes = getAllowedSkillModesForCharacter(state.character, autoMode);
+          if (!cycleModes.length) return;
+          const index = cycleModes.indexOf(skillMode);
+          const nextMode = cycleModes[(index + 1) % cycleModes.length];
+          const next = nextMode === "proficient" || nextMode === "expertise";
+          const autoValue = autoMode === "proficient" || autoMode === "expertise";
           const overrides =
             play.skillProficiencyOverrides
             && typeof play.skillProficiencyOverrides === "object"
             && !Array.isArray(play.skillProficiencyOverrides)
               ? { ...play.skillProficiencyOverrides }
               : {};
+          const modeOverrides =
+            play.skillProficiencyModeOverrides
+            && typeof play.skillProficiencyModeOverrides === "object"
+            && !Array.isArray(play.skillProficiencyModeOverrides)
+              ? { ...play.skillProficiencyModeOverrides }
+              : {};
+          if (nextMode === autoMode) delete modeOverrides[key];
+          else modeOverrides[key] = nextMode;
           if (next === autoValue) delete overrides[key];
           else overrides[key] = next;
+          play.skillProficiencyModeOverrides = modeOverrides;
           play.skillProficiencyOverrides = overrides;
+          play.skillProficiencyModes = { ...(play.skillProficiencyModes ?? {}), [key]: nextMode };
           play.skillProficiencies = { ...(play.skillProficiencies ?? {}), [key]: next };
         });
       });
@@ -584,14 +661,26 @@ export function createEvents(deps) {
         alert(link);
       }
     });
-    app.querySelector("#import-json")?.addEventListener("click", () => {
-      const input = app.querySelector("#export-json");
+    app.querySelector("#import-character-json")?.addEventListener("click", () => {
+      app.querySelector("#import-character-json-file")?.click();
+    });
+    app.querySelector("#import-character-json-file")?.addEventListener("change", async (evt) => {
+      const input = evt.target instanceof HTMLInputElement ? evt.target : null;
+      const file = input?.files?.[0] ?? null;
+      if (!file) return;
       try {
-        const parsed = JSON.parse(input.value);
-        store.hydrate(parsed);
-        updateCharacterWithRequiredSettings(store.getState(), {}, { preserveUserOverrides: true });
-      } catch {
-        alert("Invalid JSON payload");
+        await importCharacterFromJsonFile(file, { sourceLabel: "Edit mode import" });
+      } catch (error) {
+        alert(error instanceof Error ? error.message : "Invalid JSON payload");
+      } finally {
+        if (input) input.value = "";
+      }
+    });
+    app.querySelector("#export-character-json")?.addEventListener("click", () => {
+      try {
+        exportCharacterToJsonFile(store.getState().character);
+      } catch (error) {
+        alert(error instanceof Error ? error.message : "Failed to export JSON");
       }
     });
   }
@@ -1060,8 +1149,10 @@ export function createEvents(deps) {
           const skill = SKILLS.find((entry) => entry.key === key);
           if (!skill) return;
           const mod = toNumber(state.derived.mods?.[skill.ability], 0);
-          const isProf = Boolean(state.character.play?.skillProficiencies?.[key]);
-          const bonus = mod + (isProf ? state.derived.proficiencyBonus : 0);
+          const skillMode = normalizeSkillProficiencyMode(
+            state.character.play?.skillProficiencyModes?.[key] ?? (state.character.play?.skillProficiencies?.[key] ? "proficient" : "none")
+          );
+          const bonus = mod + getSkillProficiencyBonus(state.derived.proficiencyBonus, skillMode);
           rollVisualD20(skill.label, bonus);
         },
         (rollMode) => {
@@ -1069,8 +1160,10 @@ export function createEvents(deps) {
           const skill = SKILLS.find((entry) => entry.key === key);
           if (!skill) return;
           const mod = toNumber(state.derived.mods?.[skill.ability], 0);
-          const isProf = Boolean(state.character.play?.skillProficiencies?.[key]);
-          const bonus = mod + (isProf ? state.derived.proficiencyBonus : 0);
+          const skillMode = normalizeSkillProficiencyMode(
+            state.character.play?.skillProficiencyModes?.[key] ?? (state.character.play?.skillProficiencies?.[key] ? "proficient" : "none")
+          );
+          const bonus = mod + getSkillProficiencyBonus(state.derived.proficiencyBonus, skillMode);
           rollVisualD20(skill.label, bonus, rollMode);
         }
       );
