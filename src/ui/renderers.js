@@ -36,6 +36,7 @@ export function createRenderers(deps) {
     renderPersistenceNotice,
     getModeToggle,
     getAutoAttacks,
+    getCharacterChangeLog,
   } = deps;
 
   function normalizeSourceTag(value) {
@@ -108,6 +109,49 @@ export function createRenderers(deps) {
     links.push({ label: "All classes", meta: "Browse class list", href: "https://5e.tools/classes.html" });
     links.push({ label: "Status conditions", meta: "Conditions reference", href: "https://5e.tools/conditionsdiseases.html" });
     return links;
+  }
+
+  function formatCharacterLogTime(isoTimestamp) {
+    if (typeof isoTimestamp !== "string" || !isoTimestamp) return "";
+    const parsed = new Date(isoTimestamp);
+    if (Number.isNaN(parsed.getTime())) return "";
+    return parsed.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  }
+
+  function renderCharacterLogSummaryParts(summaryParts) {
+    const parts = Array.isArray(summaryParts) && summaryParts.length
+      ? summaryParts
+      : [{ text: "Updated character", style: "plain" }];
+    return parts
+      .map((part) => {
+        const text = esc(part?.text ?? "");
+        const style = String(part?.style ?? "plain");
+        const className =
+          style === "bold"
+            ? "character-log-part character-log-part-bold"
+            : style === "highlight"
+              ? "character-log-part character-log-part-highlight"
+              : "character-log-part";
+        return `<span class="${className}">${text}</span>`;
+      })
+      .join("");
+  }
+
+  function renderCharacterLogDetails(details) {
+    if (!Array.isArray(details) || !details.length) return "";
+    const rowsHtml = details
+      .map((row) => `
+        <div class="character-log-row">
+          <span class="character-log-row-key">${esc(row?.label ?? "")}</span>
+          <span class="character-log-row-value">
+            <span class="character-log-before">${esc(row?.before ?? "empty")}</span>
+            <span class="character-log-arrow" aria-hidden="true">→</span>
+            <span class="character-log-after">${esc(row?.after ?? "empty")}</span>
+          </span>
+        </div>
+      `)
+      .join("");
+    return `<div class="character-log-details">${rowsHtml}</div>`;
   }
 
   function renderSaveRowsImpl(state, options = {}) {
@@ -1176,24 +1220,26 @@ export function createRenderers(deps) {
               <span class="death-save-label">Death Saves</span>
               <button type="button" class="btn secondary death-save-roll-btn" data-roll-death-save>Roll</button>
             </div>
-            <label class="inline-field">Success
-              <div class="num-input-wrap">
-                <input id="play-ds-success" type="number" min="0" max="3" value="${esc(toNumber(play.deathSavesSuccess, 0))}">
-                <div class="num-stepper">
-                  <button type="button" class="num-step-btn" data-step-target="ds-success" data-step-delta="1">+</button>
-                  <button type="button" class="num-step-btn" data-step-target="ds-success" data-step-delta="-1">-</button>
+            <div class="death-save-meters">
+              <label class="inline-field">Success
+                <div class="num-input-wrap">
+                  <input id="play-ds-success" type="number" min="0" max="3" value="${esc(toNumber(play.deathSavesSuccess, 0))}">
+                  <div class="num-stepper">
+                    <button type="button" class="num-step-btn" data-step-target="ds-success" data-step-delta="1">+</button>
+                    <button type="button" class="num-step-btn" data-step-target="ds-success" data-step-delta="-1">-</button>
+                  </div>
                 </div>
-              </div>
-            </label>
-            <label class="inline-field">Fail
-              <div class="num-input-wrap">
-                <input id="play-ds-fail" type="number" min="0" max="3" value="${esc(toNumber(play.deathSavesFail, 0))}">
-                <div class="num-stepper">
-                  <button type="button" class="num-step-btn" data-step-target="ds-fail" data-step-delta="1">+</button>
-                  <button type="button" class="num-step-btn" data-step-target="ds-fail" data-step-delta="-1">-</button>
+              </label>
+              <label class="inline-field">Fail
+                <div class="num-input-wrap">
+                  <input id="play-ds-fail" type="number" min="0" max="3" value="${esc(toNumber(play.deathSavesFail, 0))}">
+                  <div class="num-stepper">
+                    <button type="button" class="num-step-btn" data-step-target="ds-fail" data-step-delta="1">+</button>
+                    <button type="button" class="num-step-btn" data-step-target="ds-fail" data-step-delta="-1">-</button>
+                  </div>
                 </div>
-              </div>
-            </label>
+              </label>
+            </div>
           </div>
         </article>
 
@@ -1644,6 +1690,7 @@ export function createRenderers(deps) {
       totalDelta: 0,
       baseDelta: 0,
       conDelta: 0,
+      featDelta: 0,
       gainedEntries: [],
       levelDelta: 0,
       conMod: 0,
@@ -1819,6 +1866,7 @@ export function createRenderers(deps) {
             <div class="levelup-save-row"><span class="muted">Net Change</span><span>${esc(hpDeltaPrefix)}${esc(hitPointPlan.totalDelta)}</span></div>
             <div class="levelup-save-row"><span class="muted">Hit Die Contribution</span><span>${hitPointPlan.baseDelta > 0 ? "+" : ""}${esc(hitPointPlan.baseDelta)}</span></div>
             <div class="levelup-save-row"><span class="muted">Constitution (${hitPointPlan.conMod >= 0 ? "+" : ""}${esc(hitPointPlan.conMod)} x ${esc(hitPointPlan.levelDelta)})</span><span>${hitPointPlan.conDelta > 0 ? "+" : ""}${esc(hitPointPlan.conDelta)}</span></div>
+            <div class="levelup-save-row"><span class="muted">Feat Contribution</span><span>${hitPointPlan.featDelta > 0 ? "+" : ""}${esc(hitPointPlan.featDelta)}</span></div>
           </div>
           <div class="levelup-preview-block">
             <h5>Save Proficiencies</h5>
@@ -1909,6 +1957,21 @@ export function createRenderers(deps) {
           )
           .join("")
       : `<span class="play-manual-empty">No rulebook links available.</span>`;
+    const characterLogEntries = Array.isArray(getCharacterChangeLog?.()) ? getCharacterChangeLog() : [];
+    const characterLogHtml = characterLogEntries.length
+      ? characterLogEntries
+          .map((entry) => `
+            <article class="character-log-entry">
+              <div class="character-log-meta">
+                <span class="character-log-section">${esc(entry?.sectionLabel ?? "Character")}</span>
+                <time class="character-log-time">${esc(formatCharacterLogTime(entry?.at ?? ""))}</time>
+              </div>
+              <div class="character-log-summary">${renderCharacterLogSummaryParts(entry?.summaryParts)}</div>
+              ${renderCharacterLogDetails(entry?.details)}
+            </article>
+          `)
+          .join("")
+      : `<span class="character-log-empty">No character changes yet.</span>`;
     return `
     <main class="layout layout-play">
       <section>
@@ -1926,6 +1989,14 @@ export function createRenderers(deps) {
                 </summary>
                 <div class="play-manual-links">
                   ${manualLinksHtml}
+                </div>
+              </details>
+              <details class="play-character-log-menu">
+                <summary class="btn secondary play-character-log-trigger" title="Open character change log" aria-label="Open character change log">
+                  <span class="play-character-log-icon" aria-hidden="true">📜</span>
+                </summary>
+                <div class="play-character-log-panel">
+                  ${characterLogHtml}
                 </div>
               </details>
             </div>

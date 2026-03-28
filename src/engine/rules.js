@@ -83,6 +83,47 @@ function sanitizeHitPointRollOverrides(raw) {
   );
 }
 
+function normalizeFeatName(value) {
+  return String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+}
+
+function getFeatHitPointBonus(character, totalLevel) {
+  const feats = Array.isArray(character?.feats) ? character.feats : [];
+  const featNames = new Set(feats.map((feat) => normalizeFeatName(feat?.name)).filter(Boolean));
+  // Tough: increase hit point maximum by 2 per level.
+  if (featNames.has("tough")) return Math.max(1, totalLevel) * 2;
+  return 0;
+}
+
+export function getHitPointBreakdown(catalogs, character, options = {}) {
+  const abilities = character?.abilities ?? {};
+  const conMod = abilityMod(abilities.con);
+  const { totalLevel } = getCharacterClassLevels(character);
+  const primaryFaces = getClassHitDieFaces(catalogs, character?.class);
+  const overrides = sanitizeHitPointRollOverrides(options.rollOverrides ?? character?.hitPointRollOverrides);
+  const additionalBaseHp = getAdditionalHitPointEntries(catalogs, character).reduce((sum, entry) => {
+    const rolled = Math.floor(toNumber(overrides[entry.key], NaN));
+    if (Number.isFinite(rolled) && rolled >= 1 && rolled <= entry.faces) return sum + rolled;
+    return sum + getFixedHitPointGain(entry.faces);
+  }, 0);
+  const firstLevelHp = primaryFaces + conMod;
+  const conFromAdditionalLevels = Math.max(0, totalLevel - 1) * conMod;
+  const featBonusHp = getFeatHitPointBonus(character, totalLevel);
+  const total = Math.max(1, firstLevelHp + additionalBaseHp + conFromAdditionalLevels + featBonusHp);
+  return {
+    total,
+    conMod,
+    totalLevel,
+    firstLevelHp,
+    additionalBaseHp,
+    conFromAdditionalLevels,
+    featBonusHp,
+  };
+}
+
 function getEquippedInventoryEntries(character) {
   const inventory = Array.isArray(character?.inventory) ? character.inventory : [];
   return inventory.filter((entry) => entry && typeof entry === "object" && !Array.isArray(entry) && Boolean(entry.equipped));
@@ -138,15 +179,7 @@ export function computeDerivedStats(character, catalogs = null) {
     cha: abilityMod(abilities.cha),
   };
   const prof = proficiencyBonus(character.level);
-  const { totalLevel } = getCharacterClassLevels(character);
-  const primaryFaces = getClassHitDieFaces(catalogs, character?.class);
-  const overrides = sanitizeHitPointRollOverrides(character?.hitPointRollOverrides);
-  const additionalBaseHp = getAdditionalHitPointEntries(catalogs, character).reduce((sum, entry) => {
-    const rolled = Math.floor(toNumber(overrides[entry.key], NaN));
-    if (Number.isFinite(rolled) && rolled >= 1 && rolled <= entry.faces) return sum + rolled;
-    return sum + getFixedHitPointGain(entry.faces);
-  }, 0);
-  const hp = Math.max(1, primaryFaces + mods.con + additionalBaseHp + Math.max(0, totalLevel - 1) * mods.con);
+  const hp = getHitPointBreakdown(catalogs, character).total;
   const ac = getArmorClassFromEquipment(character, mods.dex);
 
   return {

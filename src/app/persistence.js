@@ -20,6 +20,7 @@ export function createPersistence(deps) {
     persistedState,
     appState,
     defaultSourcePreset,
+    withCharacterChangeLog,
   } = deps;
 
   async function loadCharacterById(characterId) {
@@ -37,7 +38,10 @@ export function createPersistence(deps) {
       }
       await applyRemoteCharacterPayload({ id: characterId, character: localCharacter }, characterId, "play");
       try {
-        const synced = await saveCharacter(characterId, withSyncMeta(localCharacter, getCharacterVersion(localCharacter)));
+        const synced = await saveCharacter(
+          characterId,
+          withSyncMeta(withCharacterChangeLog(localCharacter), getCharacterVersion(localCharacter))
+        );
         updatePersistenceStatusFromPayload(synced);
       } catch (syncError) {
         markBrowserOnlyPersistence(syncError);
@@ -52,7 +56,10 @@ export function createPersistence(deps) {
 
     if (!shouldUseRemote && localCharacter) {
       try {
-        const synced = await saveCharacter(characterId, withSyncMeta(localCharacter, getCharacterVersion(localCharacter)));
+        const synced = await saveCharacter(
+          characterId,
+          withSyncMeta(withCharacterChangeLog(localCharacter), getCharacterVersion(localCharacter))
+        );
         updatePersistenceStatusFromPayload(synced);
       } catch (error) {
         markBrowserOnlyPersistence(error);
@@ -63,7 +70,7 @@ export function createPersistence(deps) {
   async function createOrSavePermanentCharacter(state) {
     const existingId = isUuid(state.character?.id) ? state.character.id : null;
     const nextVersion = Math.max(appState.localCharacterVersion, getCharacterVersion(state.character)) + 1;
-    const versionedCharacter = withSyncMeta(state.character, nextVersion);
+    const versionedCharacter = withSyncMeta(withCharacterChangeLog(state.character), nextVersion);
     if (existingId) {
       const payload = await saveCharacter(existingId, versionedCharacter);
       await applyRemoteCharacterPayload(payload, existingId);
@@ -91,7 +98,7 @@ export function createPersistence(deps) {
         try {
           const latestState = store.getState();
           const nextVersion = Math.max(appState.localCharacterVersion, getCharacterVersion(latestState.character)) + 1;
-          const versionedCharacter = withSyncMeta(latestState.character, nextVersion);
+          const versionedCharacter = withSyncMeta(withCharacterChangeLog(latestState.character), nextVersion);
           const payload = await saveCharacter(characterId, versionedCharacter);
           appState.localCharacterVersion = Math.max(appState.localCharacterVersion, nextVersion);
           appState.localCharacterUpdatedAt = withSyncMeta(versionedCharacter, nextVersion).__syncMeta?.updatedAt ?? appState.localCharacterUpdatedAt;

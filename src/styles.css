@@ -219,12 +219,14 @@ input, select {
   margin-top: 0;
 }
 
-.title-with-history .play-manual-menu {
+.title-with-history .play-manual-menu,
+.title-with-history .play-character-log-menu {
   margin-left: 0;
   align-self: center;
 }
 
-.title-with-history .play-manual-trigger {
+.title-with-history .play-manual-trigger,
+.title-with-history .play-character-log-trigger {
   margin-top: 0;
 }
 
@@ -482,6 +484,10 @@ input, select {
   width: min(900px, 95vw);
   max-height: 90vh;
   overflow: auto;
+}
+
+.modal.rest-modal {
+  width: min(460px, 92vw);
 }
 
 #dice-overlay {
@@ -1070,6 +1076,12 @@ body.play-mode #dice-overlay {
   outline: none;
 }
 
+.play-character-log-menu {
+  position: relative;
+  flex: 0 0 auto;
+  outline: none;
+}
+
 .play-manual-trigger {
   display: inline-flex;
   align-items: center;
@@ -1081,11 +1093,33 @@ body.play-mode #dice-overlay {
   -webkit-tap-highlight-color: transparent;
 }
 
+.play-character-log-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  list-style: none;
+  text-decoration: none;
+  outline: none;
+  -webkit-tap-highlight-color: transparent;
+  width: 2.2rem;
+  min-width: 2.2rem;
+  padding-left: 0.45rem;
+  padding-right: 0.45rem;
+}
+
 .play-manual-trigger::-webkit-details-marker {
   display: none;
 }
 
 .play-manual-trigger::marker {
+  content: "";
+}
+
+.play-character-log-trigger::-webkit-details-marker {
+  display: none;
+}
+
+.play-character-log-trigger::marker {
   content: "";
 }
 
@@ -1095,8 +1129,20 @@ body.play-mode #dice-overlay {
   outline: none;
 }
 
+.play-character-log-menu:focus,
+.play-character-log-menu:focus-visible,
+.play-character-log-menu:focus-within {
+  outline: none;
+}
+
 .play-manual-trigger:focus,
 .play-manual-trigger:active {
+  outline: none;
+  box-shadow: none;
+}
+
+.play-character-log-trigger:focus,
+.play-character-log-trigger:active {
   outline: none;
   box-shadow: none;
 }
@@ -1106,8 +1152,18 @@ body.play-mode #dice-overlay {
   box-shadow: none;
 }
 
+.play-character-log-trigger:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+
 .play-manual-icon {
   font-size: 0.95rem;
+  line-height: 1;
+}
+
+.play-character-log-icon {
+  font-size: 1rem;
   line-height: 1;
 }
 
@@ -1161,6 +1217,119 @@ body.play-mode #dice-overlay {
 
 .play-manual-links a:hover {
   background: rgba(99, 102, 241, 0.16);
+}
+
+.play-character-log-panel {
+  position: absolute;
+  top: calc(100% + 0.35rem);
+  right: 0;
+  width: min(500px, 92vw);
+  min-width: 290px;
+  max-height: 360px;
+  display: none;
+  overflow: auto;
+  z-index: 35;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 10px;
+  background: rgba(11, 18, 32, 0.98);
+  box-shadow: 0 12px 24px rgba(0, 0, 0, 0.34);
+}
+
+.play-character-log-menu[open] .play-character-log-panel {
+  display: block;
+}
+
+.character-log-entry {
+  display: grid;
+  gap: 0.33rem;
+  padding: 0.55rem 0.72rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.character-log-entry:last-child {
+  border-bottom: 0;
+}
+
+.character-log-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.45rem;
+}
+
+.character-log-section {
+  color: var(--muted);
+  font-size: 0.73rem;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.character-log-time {
+  color: var(--muted);
+  font-size: 0.73rem;
+}
+
+.character-log-summary {
+  color: var(--text);
+  font-size: 0.86rem;
+  line-height: 1.3;
+}
+
+.character-log-part {
+  color: inherit;
+}
+
+.character-log-part-bold {
+  font-weight: 700;
+}
+
+.character-log-part-highlight {
+  font-weight: 700;
+  background: rgba(251, 191, 36, 0.2);
+  border-radius: 5px;
+  padding: 0 0.22rem;
+}
+
+.character-log-details {
+  display: grid;
+  gap: 0.18rem;
+  margin-top: 0.1rem;
+}
+
+.character-log-row {
+  display: grid;
+  grid-template-columns: minmax(70px, 0.45fr) 1fr;
+  gap: 0.4rem;
+  font-size: 0.75rem;
+  line-height: 1.25;
+}
+
+.character-log-row-key {
+  color: var(--muted);
+}
+
+.character-log-row-value {
+  color: var(--text);
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.3rem;
+  min-width: 0;
+}
+
+.character-log-before,
+.character-log-after {
+  word-break: break-word;
+}
+
+.character-log-arrow {
+  color: var(--muted);
+}
+
+.character-log-empty {
+  display: block;
+  color: var(--muted);
+  padding: 0.65rem 0.75rem;
+  font-size: 0.82rem;
 }
 
 .play-sheet-shell {
@@ -1872,11 +2041,11 @@ body.play-mode #dice-overlay {
 }
 
 .hp-pair-row .hp-control:first-child {
-  justify-self: center;
+  justify-self: start;
 }
 
 .hp-control-right {
-  justify-self: center;
+  justify-self: start;
 }
 
 .hp-control-right .num-input-wrap,
@@ -1886,7 +2055,7 @@ body.play-mode #dice-overlay {
 
 .death-save-row {
   display: grid;
-  grid-template-columns: auto auto auto;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0.7rem;
   align-items: end;
 }
@@ -1896,6 +2065,15 @@ body.play-mode #dice-overlay {
   align-items: center;
   gap: 0.55rem;
   padding-bottom: 0.1rem;
+  justify-self: start;
+}
+
+.death-save-meters {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.7rem;
+  align-items: end;
+  min-width: 0;
 }
 
 .death-save-label {
@@ -2037,21 +2215,6 @@ body.play-mode #dice-overlay {
   border-radius: 10px;
   padding: 0.45rem 0.55rem;
   background: rgba(255, 255, 255, 0.03);
-}
-
-.short-rest-option {
-  display: flex;
-  align-items: flex-start;
-  gap: 0.45rem;
-  font-size: 0.86rem;
-  color: var(--text);
-}
-
-.short-rest-option input {
-  width: auto;
-  flex: 0 0 auto;
-  margin: 0;
-  margin-top: 0.1rem;
 }
 
 .short-rest-help {
@@ -2323,12 +2486,18 @@ body.play-mode #dice-overlay {
   }
 
   .core-stats-card .death-save-row {
-    grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-columns: 1fr;
     gap: 0.5rem;
     align-items: end;
   }
 
-  .core-stats-card .death-save-row .inline-field {
+  .core-stats-card .death-save-meters {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.5rem;
+  }
+
+  .core-stats-card .death-save-row .inline-field,
+  .core-stats-card .death-save-meters .inline-field {
     min-width: 0;
   }
 

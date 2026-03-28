@@ -42,11 +42,17 @@ export function createEvents(deps) {
     diceStylePresets,
   } = deps;
   let playManualMenuOutsideClickHandler = null;
+  let playCharacterLogMenuOutsideClickHandler = null;
 
   function clearPlayManualMenuOutsideClickHandler() {
-    if (typeof playManualMenuOutsideClickHandler !== "function") return;
-    document.removeEventListener("pointerdown", playManualMenuOutsideClickHandler, true);
-    playManualMenuOutsideClickHandler = null;
+    if (typeof playManualMenuOutsideClickHandler === "function") {
+      document.removeEventListener("pointerdown", playManualMenuOutsideClickHandler, true);
+      playManualMenuOutsideClickHandler = null;
+    }
+    if (typeof playCharacterLogMenuOutsideClickHandler === "function") {
+      document.removeEventListener("pointerdown", playCharacterLogMenuOutsideClickHandler, true);
+      playCharacterLogMenuOutsideClickHandler = null;
+    }
   }
 
   function normalizeItemTypeCode(value) {
@@ -149,6 +155,43 @@ export function createEvents(deps) {
       }
     });
     play.featureUses = featureUses;
+  }
+
+  function resolveCurrentHp(play, derivedMaxHp) {
+    const maxHp = Math.max(1, toNumber(derivedMaxHp, 1));
+    const raw = play?.hpCurrent;
+    if (raw == null) return maxHp;
+    if (typeof raw === "string" && !raw.trim()) return maxHp;
+    const parsed = toNumber(raw, NaN);
+    if (!Number.isFinite(parsed)) return maxHp;
+    return Math.max(0, Math.min(maxHp, Math.floor(parsed)));
+  }
+
+  function buildShortRestHealingNotation(spends, pools, conMod) {
+    const diceByFaces = {};
+    let totalDice = 0;
+    Object.entries(spends).forEach(([poolKey, spendCountRaw]) => {
+      const spendCount = Math.max(0, Math.floor(toNumber(spendCountRaw, 0)));
+      if (spendCount < 1) return;
+      const pool = pools.find((entry) => entry.key === poolKey);
+      if (!pool) return;
+      const faces = Math.max(1, Math.floor(toNumber(pool.faces, 0)));
+      diceByFaces[faces] = Math.max(0, toNumber(diceByFaces[faces], 0)) + spendCount;
+      totalDice += spendCount;
+    });
+    const diceTerms = Object.entries(diceByFaces)
+      .map(([faces, count]) => ({
+        faces: Math.max(1, Math.floor(toNumber(faces, 0))),
+        count: Math.max(0, Math.floor(toNumber(count, 0))),
+      }))
+      .filter((entry) => entry.count > 0)
+      .sort((a, b) => b.faces - a.faces)
+      .map((entry) => `${entry.count}d${entry.faces}`);
+    if (!diceTerms.length || totalDice < 1) return "";
+    const modifierTotal = Math.floor(toNumber(conMod, 0)) * totalDice;
+    if (modifierTotal > 0) return `${diceTerms.join("+")}+${modifierTotal}`;
+    if (modifierTotal < 0) return `${diceTerms.join("+")}${modifierTotal}`;
+    return diceTerms.join("+");
   }
 
   function isBodyArmorEntry(entry) {
@@ -815,6 +858,7 @@ export function createEvents(deps) {
       openClassDetailsModal(state);
     });
     const manualMenuEl = app.querySelector(".play-manual-menu");
+    const characterLogMenuEl = app.querySelector(".play-character-log-menu");
     if (manualMenuEl) {
       playManualMenuOutsideClickHandler = (event) => {
         if (!manualMenuEl.hasAttribute("open")) return;
@@ -832,6 +876,31 @@ export function createEvents(deps) {
         if (event.key !== "Escape") return;
         manualMenuEl.removeAttribute("open");
       });
+      if (characterLogMenuEl) {
+        manualMenuEl.addEventListener("toggle", () => {
+          if (!manualMenuEl.hasAttribute("open")) return;
+          characterLogMenuEl.removeAttribute("open");
+        });
+      }
+    }
+    if (characterLogMenuEl) {
+      playCharacterLogMenuOutsideClickHandler = (event) => {
+        if (!characterLogMenuEl.hasAttribute("open")) return;
+        const target = event.target;
+        if (target instanceof Node && characterLogMenuEl.contains(target)) return;
+        characterLogMenuEl.removeAttribute("open");
+      };
+      document.addEventListener("pointerdown", playCharacterLogMenuOutsideClickHandler, true);
+      characterLogMenuEl.addEventListener("keydown", (event) => {
+        if (event.key !== "Escape") return;
+        characterLogMenuEl.removeAttribute("open");
+      });
+      if (manualMenuEl) {
+        characterLogMenuEl.addEventListener("toggle", () => {
+          if (!characterLogMenuEl.hasAttribute("open")) return;
+          manualMenuEl.removeAttribute("open");
+        });
+      }
     }
     app.querySelectorAll("[data-open-feature]").forEach((button) => {
       button.addEventListener("click", () => {
@@ -1384,10 +1453,9 @@ export function createEvents(deps) {
       const pools = getHitDicePools(currentState);
       const spentMap = normalizeHitDiceSpent(currentState.character?.play?.hitDiceSpent);
       const conMod = toNumber(currentState.derived?.mods?.con, 0);
+      const conLabel = conMod >= 0 ? `+${conMod}` : `${conMod}`;
       const maxHp = Math.max(1, toNumber(currentState.derived?.hp, 1));
-      const hpCurrentRaw = currentState.character?.play?.hpCurrent;
-      const hasExplicitCurrentHp = hpCurrentRaw != null && String(hpCurrentRaw).trim() !== "";
-      const currentHp = hasExplicitCurrentHp ? Math.max(0, toNumber(hpCurrentRaw, maxHp)) : maxHp;
+      const currentHp = resolveCurrentHp(currentState.character?.play, maxHp);
       const rowsHtml = pools
         .map((pool) => {
           const spent = Math.max(0, toNumber(spentMap[pool.key], 0));
@@ -1396,7 +1464,7 @@ export function createEvents(deps) {
             <div class="short-rest-hitdie-row">
               <span class="short-rest-hitdie-meta">
                 <strong>${esc(pool.className)}</strong>
-                <span class="muted">d${esc(pool.faces)} | ${esc(available)}/${esc(pool.max)} available</span>
+                <span class="muted">d${esc(pool.faces)} | ${esc(available)}/${esc(pool.max)} available | ${esc(conLabel)} CON per die</span>
               </span>
               <div class="short-rest-hitdie-controls">
                 <button type="button" class="btn secondary short-rest-adjust-btn" data-short-rest-adjust="${esc(pool.key)}" data-short-rest-delta="-1" ${available > 0 ? "" : "disabled"}>-</button>
@@ -1420,13 +1488,9 @@ export function createEvents(deps) {
         title: "Short Rest",
         bodyHtml: `
           <div class="short-rest-shell">
-            <p class="muted short-rest-copy">Spend hit dice, then apply short-rest refreshes.</p>
+            <p class="muted short-rest-copy">Choose how many hit dice to spend, then apply short-rest refreshes.</p>
             <div class="short-rest-stat-row"><span>HP</span><strong>${esc(currentHp)} / ${esc(maxHp)}</strong></div>
             <p class="muted short-rest-help">Use + and - to choose how many hit dice to spend for each class.</p>
-            <label class="short-rest-option">
-              <input type="checkbox" id="short-rest-average-healing">
-              Use average healing per die (dX/2 + 1 + CON)
-            </label>
             <div class="short-rest-hitdice-list">
               ${rowsHtml || "<p class='muted'>No hit dice available.</p>"}
             </div>
@@ -1436,9 +1500,8 @@ export function createEvents(deps) {
           { label: "Cancel", secondary: true, onClick: (close) => close() },
           {
             label: "Apply Short Rest",
-            onClick: (close) => {
+            onClick: async (close) => {
               const modal = document.querySelector(".modal");
-              const useAverage = Boolean(modal?.querySelector("#short-rest-average-healing")?.checked);
               const spends = {};
               let totalSpentDice = 0;
               pools.forEach((pool) => {
@@ -1453,20 +1516,18 @@ export function createEvents(deps) {
               });
 
               let totalHealing = 0;
-              Object.entries(spends).forEach(([poolKey, spendCount]) => {
-                const pool = pools.find((entry) => entry.key === poolKey);
-                if (!pool) return;
-                for (let idx = 0; idx < spendCount; idx += 1) {
-                  const roll = useAverage
-                    ? Math.floor(Math.max(1, pool.faces) / 2) + 1
-                    : Math.floor(Math.random() * Math.max(1, pool.faces)) + 1;
-                  totalHealing += Math.max(0, roll + conMod);
+              if (totalSpentDice > 0) {
+                const notation = buildShortRestHealingNotation(spends, pools, conMod);
+                if (notation) {
+                  const rollResult = await rollVisualNotation("Short Rest Hit Dice", notation);
+                  const rolledTotal = Number(rollResult?.total);
+                  if (Number.isFinite(rolledTotal)) totalHealing = Math.max(0, Math.floor(rolledTotal));
                 }
-              });
+              }
 
               const latestState = store.getState();
               const latestMaxHp = Math.max(1, toNumber(latestState.derived?.hp, 1));
-              const latestCurrentHp = Math.max(0, toNumber(latestState.character?.play?.hpCurrent, latestMaxHp));
+              const latestCurrentHp = resolveCurrentHp(latestState.character?.play, latestMaxHp);
               const healedHp = Math.min(latestMaxHp, latestCurrentHp + totalHealing);
               withUpdatedPlay(latestState, (play) => {
                 refreshShortRestResources(play);
@@ -1479,10 +1540,7 @@ export function createEvents(deps) {
                 play.hitDiceSpent = nextSpentMap;
                 if (totalHealing > 0) play.hpCurrent = healedHp;
               });
-              if (totalSpentDice > 0) {
-                const modeLabel = useAverage ? "average" : "rolled";
-                setDiceResult(`Short Rest: ${modeLabel} ${totalSpentDice} hit dice for ${totalHealing} HP (${latestCurrentHp} -> ${healedHp}).`);
-              } else {
+              if (totalSpentDice < 1) {
                 setDiceResult("Short Rest applied. No hit dice were spent.");
               }
               close();
@@ -1491,6 +1549,7 @@ export function createEvents(deps) {
         ],
       });
       const modal = document.querySelector(".modal");
+      if (modal) modal.classList.add("rest-modal");
       modal?.querySelectorAll("[data-short-rest-adjust]").forEach((button) => {
         button.addEventListener("click", () => {
           const poolKey = String(button.dataset.shortRestAdjust ?? "").trim();
@@ -1561,6 +1620,8 @@ export function createEvents(deps) {
           },
         ],
       });
+      const modal = document.querySelector(".modal");
+      if (modal) modal.classList.add("rest-modal");
     });
   }
 
