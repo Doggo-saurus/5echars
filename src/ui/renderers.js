@@ -447,7 +447,9 @@ export function createRenderers(deps) {
       .join(", ");
   }
 
-  function renderChoiceCheckboxes(sourceKey, choiceId, count, options, selectedValues, labelFn) {
+  function renderChoiceCheckboxes(sourceKey, choiceId, count, options, selectedValues, labelFn, config = {}) {
+    const metaByOption = config?.metaByOption && typeof config.metaByOption === "object" ? config.metaByOption : {};
+    const disabledValues = config?.disabledValues instanceof Set ? config.disabledValues : new Set();
     const selectedTokens = new Set((Array.isArray(selectedValues) ? selectedValues : []).map((entry) => normalizeChoiceToken(entry)).filter(Boolean));
     return `
       <div class="auto-choice-group">
@@ -458,8 +460,13 @@ export function createRenderers(deps) {
               const option = String(optionValue ?? "").trim();
               if (!option) return "";
               const checked = selectedTokens.has(normalizeChoiceToken(option));
+              const optionMeta = Array.isArray(metaByOption?.[option]) ? metaByOption[option].filter(Boolean) : [];
+              const isDisabled = disabledValues.has(option);
+              const metaHtml = optionMeta.length
+                ? `<span class="auto-choice-option-meta">${optionMeta.map((label) => `<span class="auto-choice-badge">${esc(label)}</span>`).join("")}</span>`
+                : "";
               return `
-                <label class="auto-choice-option">
+                <label class="auto-choice-option ${isDisabled ? "is-disabled" : ""}">
                   <input
                     type="checkbox"
                     data-auto-choice-input="1"
@@ -468,8 +475,10 @@ export function createRenderers(deps) {
                     data-auto-choice-value="${esc(option)}"
                     data-auto-choice-max="${esc(count)}"
                     ${checked ? "checked" : ""}
+                    ${isDisabled ? "disabled" : ""}
                   >
-                  <span>${esc(labelFn(option))}</span>
+                  <span class="auto-choice-option-label">${esc(labelFn(option))}</span>
+                  ${metaHtml}
                 </label>
               `;
             })
@@ -597,10 +606,59 @@ export function createRenderers(deps) {
     return blocks.join("");
   }
 
-  function renderClassSkillChoiceEditors(classEntry, character) {
+  function collectEntitySkillSelections(entry, sourceKey, character) {
+    const activeSkills = new Set();
+    if (!entry || typeof entry !== "object") return activeSkills;
+    const skillOptions = Array.isArray(entry?.skillProficiencies) ? entry.skillProficiencies : [];
+    const skillOptionIndex = skillOptions.findIndex((option) => option && typeof option === "object");
+    const skillOption = skillOptionIndex >= 0 ? skillOptions[skillOptionIndex] : null;
+    if (!skillOption) return activeSkills;
+    Object.entries(skillOption).forEach(([key, value]) => {
+      if (key === "choose" || key === "any") return;
+      if (value !== true) return;
+      const skillKey = normalizeSkillKey(key);
+      if (skillKey) activeSkills.add(skillKey);
+    });
+    const anyCount = Math.max(0, toNumber(skillOption.any, 0));
+    if (anyCount > 0) {
+      const pool = skills.map((skill) => skill.key).filter((skillKey) => !activeSkills.has(skillKey));
+      const selected = getSelectedChoiceValues(character, sourceKey, `s:${skillOptionIndex}:any`, pool, anyCount);
+      selected.forEach((skillKey) => activeSkills.add(skillKey));
+    }
+    const choose = skillOption?.choose && typeof skillOption.choose === "object" ? skillOption.choose : null;
+    if (choose) {
+      const from = (Array.isArray(choose.from) ? choose.from : [])
+        .map((entryValue) => normalizeSkillKey(entryValue))
+        .filter(Boolean)
+        .filter((skillKey, index, list) => list.indexOf(skillKey) === index);
+      const count = Math.max(1, toNumber(choose.count, 1));
+      const available = from.filter((skillKey) => !activeSkills.has(skillKey));
+      const selected = getSelectedChoiceValues(character, sourceKey, `s:${skillOptionIndex}:choose`, available, count);
+      selected.forEach((skillKey) => activeSkills.add(skillKey));
+    }
+    return activeSkills;
+  }
+
+  function getAutoGrantedSkillSourceMap(catalogs, character) {
+    const map = {};
+    const addSkillSource = (skillKey, label) => {
+      if (!skillKey || !label) return;
+      const current = Array.isArray(map[skillKey]) ? map[skillKey] : [];
+      if (!current.includes(label)) current.push(label);
+      map[skillKey] = current;
+    };
+    const raceEntry = findCatalogEntryByName(catalogs?.races, character?.race);
+    const backgroundEntry = findCatalogEntryByName(catalogs?.backgrounds, character?.background);
+    collectEntitySkillSelections(raceEntry, "race", character).forEach((skillKey) => addSkillSource(skillKey, "Race"));
+    collectEntitySkillSelections(backgroundEntry, "background", character).forEach((skillKey) => addSkillSource(skillKey, "Background"));
+    return map;
+  }
+
+  function renderClassSkillChoiceEditors(classEntry, character, catalogs) {
     if (!classEntry || typeof classEntry !== "object") return "";
     const skillEntries = Array.isArray(classEntry?.startingProficiencies?.skills) ? classEntry.startingProficiencies.skills : [];
     const classSourceKey = `class:${String(classEntry?.name ?? "").trim().toLowerCase() || "primary"}`;
+    const autoSourceMap = getAutoGrantedSkillSourceMap(catalogs, character);
     const blocks = [];
     skillEntries.forEach((entry, optionIndex) => {
       const choose = entry && typeof entry === "object" ? entry.choose : null;
@@ -610,19 +668,28 @@ export function createRenderers(deps) {
         .filter(Boolean)
         .filter((skillKey, index, list) => list.indexOf(skillKey) === index);
       if (!from.length) return;
-      const count = Math.max(1, Math.min(from.length, toNumber(choose.count, 1)));
+      const blocked = new Set(from.filter((skillKey) => Array.isArray(autoSourceMap?.[skillKey]) && autoSourceMap[skillKey].length));
+      const selectable = from.filter((skillKey) => !blocked.has(skillKey));
+      const count = Math.max(0, Math.min(selectable.length, toNumber(choose.count, 1)));
       const choiceId = `cs:${optionIndex}:choose`;
-      const selected = getSelectedChoiceValues(character, classSourceKey, choiceId, from, count);
+      const selected = count > 0 ? getSelectedChoiceValues(character, classSourceKey, choiceId, selectable, count) : [];
+      const helperText = blocked.size
+        ? `<p class="muted auto-choice-help">Unavailable: already granted by ${[...new Set([...blocked].flatMap((skillKey) => autoSourceMap[skillKey] ?? []))]
+            .join(" / ")
+            .toLowerCase()}.</p>`
+        : "";
       blocks.push(`
         <div class="auto-choice-card">
           <p class="muted"><strong>Class skill choice</strong></p>
+          ${helperText}
           ${renderChoiceCheckboxes(
             classSourceKey,
             choiceId,
             count,
             from,
             selected,
-            (skillKey) => skills.find((skill) => skill.key === skillKey)?.label ?? skillKey
+            (skillKey) => skills.find((skill) => skill.key === skillKey)?.label ?? skillKey,
+            { metaByOption: autoSourceMap, disabledValues: blocked }
           )}
         </div>
       `);
@@ -692,7 +759,7 @@ export function createRenderers(deps) {
           <input id="build-slot-max-${level}" type="number" min="0" max="9" data-build-slot-max="${level}" value="${esc(max)}">
         </label>
         <div class="spell-slot-actions">
-          <button type="button" class="spell-slot-btn" data-build-slot-default="${level}" ${isOverridden ? "" : "disabled"} aria-label="Reset level ${level} slots to class defaults">Default</button>
+          <button type="button" class="spell-slot-btn spell-slot-btn-reset" data-build-slot-default="${level}" ${isOverridden ? "" : "disabled"} aria-label="Reset level ${level} slots to class defaults">Default</button>
           <span class="muted">Used ${used}/${max}</span>
         </div>
       </div>
@@ -748,7 +815,9 @@ export function createRenderers(deps) {
     const preparedCount = usesPreparedSpells ? countPreparedSpells(state) : 0;
     const grouped = new Map();
 
-    (state.character.spells ?? []).forEach((name) => {
+    (state.character.spells ?? []).forEach((spellEntry) => {
+      const name = String(spellEntry ?? "").trim();
+      if (!name) return;
       const spell = getSpellByName(state, name);
       const level = spell ? toNumber(spell.level, 0) : 99;
       const isCantrip = level === 0;
@@ -771,7 +840,7 @@ export function createRenderers(deps) {
       .map(([level, rows]) => {
         const title = level === 99 ? "Unknown Level" : getSpellLevelLabel(level);
         const body = rows
-          .sort((a, b) => a.name.localeCompare(b.name))
+          .sort((a, b) => String(a?.name ?? "").localeCompare(String(b?.name ?? "")))
           .map(({ name, spell, isPrepared, stateClass, hasSlotsAvailable, canTogglePrepared, isCantrip }) => {
             const school = spell?.school ? spellSchoolLabels[spell.school] ?? spell.school : "";
             const source = spell?.sourceLabel ?? spell?.source ?? "";
@@ -1446,7 +1515,7 @@ export function createRenderers(deps) {
     if (stepIndex === 3) {
       const subclassOptions = getSubclassSelectOptions(state);
       const classEntry = findCatalogEntryByName(catalogs.classes, character.class);
-      const classSkillChoiceEditors = renderClassSkillChoiceEditors(classEntry, character);
+      const classSkillChoiceEditors = renderClassSkillChoiceEditors(classEntry, character, catalogs);
       return `
       <h2 class="title">Class & Multiclass</h2>
       <div class="row">
@@ -1584,7 +1653,7 @@ export function createRenderers(deps) {
           </li>
           <li>
             Use this prompt:
-            <pre class="dndbeyond-import-prompt">Convert the supplied PDF document to the character builder JSON format described at https://characterbuild.duckdns.org/JSON_FORMAT_REFERENCE.md. Output only valid JSON. Use human-readable names directly from the source document (class, spells, feats, optional features) and do not invent internal IDs.</pre>
+            <pre class="dndbeyond-import-prompt">Convert the supplied PDF document to the character builder JSON format described at https://characterbuild.duckdns.org/JSON_FORMAT_REFERENCE.md. Output only valid JSON. Use human-readable names directly from the source document (class, spells, feats, optional features) and do not invent internal IDs. Provide the result as a downloadable JSON file.</pre>
           </li>
           <li>
             Download the JSON file provided by the LLM, then import it using the <strong>Import</strong> button above.

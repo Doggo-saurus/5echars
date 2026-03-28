@@ -2046,8 +2046,10 @@ function syncAutoFeatureUses(play, trackers) {
 }
 
 function extractSpellNameFromGrant(value) {
-  if (typeof value === "string") return value.split("|")[0].replace(/#c$/i, "").trim();
-  if (isRecordObject(value) && typeof value.spell === "string") return value.spell.split("|")[0].replace(/#c$/i, "").trim();
+  if (typeof value === "string") return cleanSpellInlineTags(value.split("|")[0].replace(/#c$/i, "").trim());
+  if (isRecordObject(value) && typeof value.spell === "string") {
+    return cleanSpellInlineTags(value.spell.split("|")[0].replace(/#c$/i, "").trim());
+  }
   return "";
 }
 
@@ -2075,16 +2077,29 @@ function collectAdditionalSpellNamesFromEntries(entries, classLevel) {
 }
 
 function getAutoGrantedSpellNames(catalogs, character) {
-  const names = new Set();
+  const catalogNameByLower = new Map(
+    (Array.isArray(catalogs?.spells) ? catalogs.spells : [])
+      .map((spell) => String(spell?.name ?? "").trim())
+      .filter(Boolean)
+      .map((name) => [name.toLowerCase(), name])
+  );
+  const names = new Map();
+  const addName = (rawName) => {
+    const cleaned = cleanSpellInlineTags(rawName);
+    if (!cleaned) return;
+    const key = cleaned.toLowerCase();
+    const canonical = catalogNameByLower.get(key) ?? cleaned;
+    if (!names.has(key)) names.set(key, canonical);
+  };
   const tracks = getClassLevelTracks(character);
   tracks.forEach((track) => {
     const classEntry = getClassCatalogEntry(catalogs, track.className);
     if (!classEntry) return;
-    collectAdditionalSpellNamesFromEntries(classEntry.additionalSpells, track.level).forEach((name) => names.add(name));
+    collectAdditionalSpellNamesFromEntries(classEntry.additionalSpells, track.level).forEach((name) => addName(name));
     if (!track.isPrimary) return;
     const subclassEntry = getSelectedSubclassEntry(catalogs, character);
     if (!subclassEntry) return;
-    collectAdditionalSpellNamesFromEntries(subclassEntry.additionalSpells, track.level).forEach((name) => names.add(name));
+    collectAdditionalSpellNamesFromEntries(subclassEntry.additionalSpells, track.level).forEach((name) => addName(name));
   });
   return [...names.values()];
 }
@@ -3123,7 +3138,12 @@ function getSpellSlotRow(play, defaults, level) {
 }
 
 function getSpellByName(state, spellName) {
-  return state.catalogs.spells.find((spell) => spell.name === spellName) ?? null;
+  const normalized = cleanSpellInlineTags(String(spellName ?? "").trim());
+  if (!normalized) return null;
+  const exact = state.catalogs.spells.find((spell) => spell.name === normalized);
+  if (exact) return exact;
+  const lowered = normalized.toLowerCase();
+  return state.catalogs.spells.find((spell) => String(spell?.name ?? "").trim().toLowerCase() === lowered) ?? null;
 }
 
 function getSpellLevelLabel(level) {
@@ -3922,9 +3942,10 @@ function bindCharacterHistoryEvents() {
 }
 
 function withUpdatedPlay(state, updater) {
-  const nextPlay = structuredClone(state.character.play ?? {});
+  const currentState = store.getState();
+  const nextPlay = structuredClone(currentState.character.play ?? {});
   updater(nextPlay);
-  store.updateCharacter({ play: nextPlay });
+  updateCharacterWithRequiredSettings(currentState, { play: nextPlay }, { preserveUserOverrides: true });
 }
 
 const pickers = createPickers({

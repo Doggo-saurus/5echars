@@ -8,6 +8,7 @@ WORKDIR /app
 COPY public ./public
 COPY src ./src
 COPY data ./data
+COPY JSON_FORMAT_REFERENCE.md ./JSON_FORMAT_REFERENCE.md
 COPY server ./server
 
 RUN chown -R node:node /app
