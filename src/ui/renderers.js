@@ -14,6 +14,7 @@ export function createRenderers(deps) {
     optionList,
     getSubclassSelectOptions,
     getFeatSlotsWithSelection,
+    getOptionalFeatureSlotsWithSelection,
     getCharacterSpellSlotDefaults,
     getSpellSlotValues,
     getSpellByName,
@@ -36,6 +37,78 @@ export function createRenderers(deps) {
     getModeToggle,
     getAutoAttacks,
   } = deps;
+
+  function normalizeSourceTag(value) {
+    return String(value ?? "").trim().toUpperCase();
+  }
+
+  function to5etoolsSlug(value) {
+    return String(value ?? "")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "_")
+      .replace(/^_+|_+$/g, "");
+  }
+
+  function buildClassPageHref(className, source) {
+    const classSlug = to5etoolsSlug(className);
+    const sourceSlug = to5etoolsSlug(source);
+    if (!classSlug || !sourceSlug) return "https://5e.tools/classes.html";
+    return `https://5e.tools/classes.html#${classSlug}_${sourceSlug}`;
+  }
+
+  function buildSubclassStateHref(className, classSource, subclassShortName, subclassSource) {
+    const classSlug = to5etoolsSlug(className);
+    const classSourceSlug = to5etoolsSlug(classSource);
+    const subclassSlug = to5etoolsSlug(subclassShortName);
+    const subclassSourceSlug = to5etoolsSlug(subclassSource);
+    if (!classSlug || !classSourceSlug || !subclassSlug || !subclassSourceSlug) return buildClassPageHref(className, classSource);
+    return `https://5e.tools/classes.html#${classSlug}_${classSourceSlug},state:sub_${subclassSlug}_${subclassSourceSlug}=b1`;
+  }
+
+  function findSelectedSubclassEntry(catalogs, character, classEntry) {
+    const selectedName = String(character?.classSelection?.subclass?.name ?? character?.subclass ?? "").trim().toLowerCase();
+    if (!selectedName) return null;
+    const selectedSource = normalizeSourceTag(character?.classSelection?.subclass?.source);
+    const className = String(classEntry?.name ?? "").trim().toLowerCase();
+    const classSource = normalizeSourceTag(classEntry?.source);
+    if (!className || !Array.isArray(catalogs?.subclasses)) return null;
+    const matches = catalogs.subclasses
+      .filter((entry) => String(entry?.className ?? "").trim().toLowerCase() === className)
+      .filter((entry) => {
+        const entryClassSource = normalizeSourceTag(entry?.classSource);
+        return !classSource || !entryClassSource || entryClassSource === classSource;
+      });
+    return (
+      matches.find((entry) => {
+        const nameMatch = String(entry?.name ?? "").trim().toLowerCase() === selectedName;
+        if (!nameMatch) return false;
+        if (!selectedSource) return true;
+        return normalizeSourceTag(entry?.source) === selectedSource;
+      }) ?? null
+    );
+  }
+
+  function getPlayManualLinks(state) {
+    const classEntry = findCatalogEntryByName(state?.catalogs?.classes, state?.character?.class);
+    if (!classEntry) return [];
+    const classPageHref = buildClassPageHref(classEntry.name, classEntry.source);
+    const links = [];
+    links.push({ label: `${classEntry.name} class overview`, meta: "Class page", href: classPageHref });
+    links.push({ label: `${classEntry.name} progression table`, meta: "Levels and features", href: classPageHref });
+
+    const subclassEntry = findSelectedSubclassEntry(state?.catalogs, state?.character, classEntry);
+    if (subclassEntry) {
+      const subclassShortName = String(subclassEntry?.shortName ?? subclassEntry?.name ?? "").trim();
+      const subclassHref = buildSubclassStateHref(classEntry.name, classEntry.source, subclassShortName, subclassEntry.source);
+      links.push({ label: `${subclassEntry.name} subclass overview`, meta: "Selected subclass", href: subclassHref });
+      links.push({ label: `${subclassEntry.name} subclass features`, meta: "Expanded subclass section", href: subclassHref });
+    }
+
+    links.push({ label: "All classes", meta: "Browse class list", href: "https://5e.tools/classes.html" });
+    links.push({ label: "Status conditions", meta: "Conditions reference", href: "https://5e.tools/conditionsdiseases.html" });
+    return links;
+  }
 
   function renderSaveRowsImpl(state, options = {}) {
     const { character, derived } = state;
@@ -454,6 +527,39 @@ export function createRenderers(deps) {
     return blocks.join("");
   }
 
+  function renderClassSkillChoiceEditors(classEntry, character) {
+    if (!classEntry || typeof classEntry !== "object") return "";
+    const skillEntries = Array.isArray(classEntry?.startingProficiencies?.skills) ? classEntry.startingProficiencies.skills : [];
+    const classSourceKey = `class:${String(classEntry?.name ?? "").trim().toLowerCase() || "primary"}`;
+    const blocks = [];
+    skillEntries.forEach((entry, optionIndex) => {
+      const choose = entry && typeof entry === "object" ? entry.choose : null;
+      if (!choose || typeof choose !== "object") return;
+      const from = (Array.isArray(choose.from) ? choose.from : [])
+        .map((value) => normalizeSkillKey(value))
+        .filter(Boolean)
+        .filter((skillKey, index, list) => list.indexOf(skillKey) === index);
+      if (!from.length) return;
+      const count = Math.max(1, Math.min(from.length, toNumber(choose.count, 1)));
+      const choiceId = `cs:${optionIndex}:choose`;
+      const selected = getSelectedChoiceValues(character, classSourceKey, choiceId, from, count);
+      blocks.push(`
+        <div class="auto-choice-card">
+          <p class="muted"><strong>Class skill choice</strong></p>
+          ${renderChoiceCheckboxes(
+            classSourceKey,
+            choiceId,
+            count,
+            from,
+            selected,
+            (skillKey) => skills.find((skill) => skill.key === skillKey)?.label ?? skillKey
+          )}
+        </div>
+      `);
+    });
+    return blocks.join("");
+  }
+
   function normalizeInventoryEntry(entry, index) {
     if (typeof entry === "string") {
       return {
@@ -601,7 +707,7 @@ export function createRenderers(deps) {
             const source = spell?.sourceLabel ?? spell?.source ?? "";
             const meta = [school, source].filter(Boolean).join(" - ");
             const knownTag = usesPreparedSpells ? (isPrepared ? "Prepared" : "Unprepared") : "Known";
-            const slotTag = toNumber(spell?.level, 0) > 0 && isPrepared ? (hasSlotsAvailable ? "Slots OK" : "No Slots") : "";
+            const slotTag = toNumber(spell?.level, 0) > 0 && isPrepared ? (hasSlotsAvailable ? "Slots Available" : "No Slots Left") : "";
             const knownAndSlotTag = slotTag ? `${knownTag} · ${slotTag}` : knownTag;
             const prepButtonTitle = isCantrip
               ? "Cantrips are always prepared"
@@ -628,7 +734,7 @@ export function createRenderers(deps) {
               }
               <button type="button" class="spell-name-btn" data-spell-open="${esc(name)}">${esc(name)}</button>
               <span class="spell-known-tag muted">${knownAndSlotTag}</span>
-              <span class="spell-meta muted">${esc(meta || "No metadata")}</span>
+              <span class="spell-meta muted">${esc(meta || "")}</span>
               <button type="button" class="btn secondary spell-cast-btn" data-spell-cast="${esc(name)}">Cast</button>
             </div>
           `;
@@ -653,7 +759,59 @@ export function createRenderers(deps) {
     const hpTemp = toNumber(play.hpTemp, 0);
     const speed = toNumber(play.speed, 30);
     const initiativeBonus = toNumber(play.initiativeBonus, 0);
-    const conditionText = (play.conditions ?? []).map((c) => `<span class="pill">${esc(c)}</span>`).join(" ");
+    const normalizeConditionName = (value) => String(value ?? "").trim().toLowerCase();
+    const catalogConditionsRaw = Array.isArray(state.catalogs?.conditions) ? state.catalogs.conditions : [];
+    const catalogConditionEntries = catalogConditionsRaw
+      .filter((entry) => entry && typeof entry === "object")
+      .filter((entry) => String(entry?.name ?? "").trim())
+      .sort((a, b) => String(a?.name ?? "").localeCompare(String(b?.name ?? "")));
+    const catalogConditionNames = [...new Set(catalogConditionEntries.map((entry) => String(entry.name).trim()))];
+    const activeConditions = Array.isArray(play.conditions)
+      ? play.conditions.map((entry) => String(entry ?? "").trim()).filter(Boolean)
+      : [];
+    const activeConditionSet = new Set(activeConditions.map((entry) => normalizeConditionName(entry)).filter(Boolean));
+    const knownConditionSet = new Set(catalogConditionNames.map((entry) => normalizeConditionName(entry)).filter(Boolean));
+    const activeKnownCount = catalogConditionNames.filter((entry) => activeConditionSet.has(normalizeConditionName(entry))).length;
+    const conditionButtonsHtml = catalogConditionEntries.length
+      ? catalogConditionEntries
+          .map((entry) => {
+            const conditionName = String(entry?.name ?? "").trim();
+            if (!conditionName) return "";
+            const normalized = normalizeConditionName(conditionName);
+            const isActive = activeConditionSet.has(normalized);
+            const summaryLines = getRuleDescriptionLines(entry).filter(Boolean);
+            const summary = String(summaryLines[0] ?? "").trim();
+            const title = summary || `Toggle ${conditionName}`;
+            return `
+              <button
+                type="button"
+                class="condition-pill-btn ${isActive ? "is-active" : ""}"
+                data-toggle-condition-name="${esc(conditionName)}"
+                aria-pressed="${isActive ? "true" : "false"}"
+                title="${esc(title)}"
+              >
+                <span class="condition-pill-label">${esc(conditionName)}</span>
+              </button>
+            `;
+          })
+          .join("")
+      : "<p class='muted'>Conditions data unavailable. You can still track conditions from saved characters.</p>";
+    const extraConditions = activeConditions.filter((entry) => !knownConditionSet.has(normalizeConditionName(entry)));
+    const extraConditionsHtml = extraConditions.length
+      ? `
+        <div class="condition-extra-list">
+          ${extraConditions
+            .map(
+              (condition) => `
+                <button type="button" class="condition-extra-chip" data-remove-condition-name="${esc(condition)}" title="Remove ${esc(condition)}">
+                  ${esc(condition)} <span aria-hidden="true">x</span>
+                </button>
+              `
+            )
+            .join("")}
+        </div>
+      `
+      : "";
 
     const savesHtml = renderSaveRowsImpl(state, { canToggle: false, includeRollButtons: true });
     const skillsHtml = renderSkillRowsImpl(state, { canToggle: false, includeRollButtons: true });
@@ -684,7 +842,7 @@ export function createRenderers(deps) {
                 data-auto-attack-damage="${esc(attack.damage || "")}"
                 aria-label="Roll ${esc(attackName)} to hit"
               >
-                To Hit: ${esc(attack.toHit || "n/a")}
+                To Hit: ${esc(attack.toHit || "-")}
               </button>
               <button
                 type="button"
@@ -695,7 +853,7 @@ export function createRenderers(deps) {
                 data-auto-attack-damage="${esc(attack.damage || "")}"
                 aria-label="Roll ${esc(attackName)} damage"
               >
-                Damage: ${esc(attack.damage || "n/a")}
+                Damage: ${esc(attack.damage || "-")}
               </button>
             </div>
           </div>
@@ -707,7 +865,7 @@ export function createRenderers(deps) {
             <div class="attack-row-top">
               <input
                 id="attack-name-${manualIdx}"
-                placeholder="Attack name"
+                placeholder="Attack (e.g. Longsword)"
                 value="${esc(attack.name ?? "")}"
                 data-attack-field="${manualIdx}:name"
               >
@@ -718,13 +876,13 @@ export function createRenderers(deps) {
             <div class="attack-row-stats">
               <input
                 id="attack-hit-${manualIdx}"
-                placeholder="+To hit"
+                placeholder="To hit bonus (e.g. +5)"
                 value="${esc(attack.toHit ?? "")}"
                 data-attack-field="${manualIdx}:toHit"
               >
               <input
                 id="attack-dmg-${manualIdx}"
-                placeholder="Damage"
+                placeholder="Damage roll (e.g. 1d8+3)"
                 value="${esc(attack.damage ?? "")}"
                 data-attack-field="${manualIdx}:damage"
               >
@@ -746,7 +904,7 @@ export function createRenderers(deps) {
               ${isAutoAttack ? `data-auto-attack-name="${esc(attackName)}" data-auto-attack-to-hit="${esc(attack.toHit || "")}" data-auto-attack-damage="${esc(attack.damage || "")}"` : ""}
               aria-label="Roll ${esc(attackName)} to hit"
             >
-              To Hit: ${esc(attack.toHit || "n/a")}
+              To Hit: ${esc(attack.toHit || "-")}
             </button>
             <button
               type="button"
@@ -755,7 +913,7 @@ export function createRenderers(deps) {
               ${isAutoAttack ? `data-auto-attack-name="${esc(attackName)}" data-auto-attack-to-hit="${esc(attack.toHit || "")}" data-auto-attack-damage="${esc(attack.damage || "")}"` : ""}
               aria-label="Roll ${esc(attackName)} damage"
             >
-              Damage: ${esc(attack.damage || "n/a")}
+              Damage: ${esc(attack.damage || "-")}
             </button>
           </div>
         </div>
@@ -763,21 +921,12 @@ export function createRenderers(deps) {
       })
       .join("");
 
-    const resourcesHtml = (play.resources ?? [])
-      .map(
-        (resource, idx) => `
-    <div class="play-grid-4">
-      <input id="resource-name-${idx}" placeholder="Resource name" value="${esc(resource.name ?? "")}" data-resource-field="${idx}:name">
-      <input id="resource-current-${idx}" type="number" min="0" placeholder="Current" value="${esc(resource.current ?? 0)}" data-resource-field="${idx}:current">
-      <input id="resource-max-${idx}" type="number" min="0" placeholder="Max" value="${esc(resource.max ?? 0)}" data-resource-field="${idx}:max">
-      <button class="btn secondary" data-remove-resource="${idx}">Remove</button>
-    </div>
-  `
-      )
-      .join("");
     const unlockedFeatures = Array.isArray(character?.progression?.unlockedFeatures) ? character.progression.unlockedFeatures : [];
     const featSlots = Array.isArray(character?.progression?.featSlots) ? character.progression.featSlots : [];
     const selectedFeats = Array.isArray(character?.feats) ? character.feats : [];
+    const selectedOptionalFeatures = Array.isArray(character?.optionalFeatures) ? character.optionalFeatures : [];
+    const classTableEffects = Array.isArray(character?.progression?.classTableEffects) ? character.progression.classTableEffects : [];
+    const featureModes = Array.isArray(character?.progression?.featureModes) ? character.progression.featureModes : [];
     const selectedFeatSlotIds = new Set(
       selectedFeats
         .map((feat) => String(feat?.slotId ?? "").trim())
@@ -848,7 +997,7 @@ export function createRenderers(deps) {
               })
               ?? featCatalog.find((entry) => String(entry?.name ?? "").trim().toLowerCase() === normalizedFeatName)
               ?? null;
-            const sourceLabel = String((detail?.sourceLabel ?? detail?.source ?? featSource) || "UNK");
+            const sourceLabel = String((detail?.sourceLabel ?? detail?.source ?? featSource) || "Unknown Source");
             const prerequisites = Array.isArray(detail?.prerequisite) ? detail.prerequisite : [];
             const descriptionLines = getRuleDescriptionLines(detail);
             const summaryRaw = String(descriptionLines.find(Boolean) ?? "").trim();
@@ -875,7 +1024,7 @@ export function createRenderers(deps) {
                     <span class="pill">${esc(sourceLabel)}</span>
                   </span>
                   <span class="feat-tile-meta">
-                    ${feat.levelGranted ? `Lv ${esc(feat.levelGranted)}` : "Level n/a"} - ${esc(feat.via || "feat slot")}${
+                    ${feat.levelGranted ? `Lv ${esc(feat.levelGranted)}` : "Level ?"} - ${esc(feat.via || "feat slot")}${
                       prerequisites.length ? ` - Prerequisite (${esc(prerequisites.length)})` : ""
                     }
                   </span>
@@ -888,8 +1037,55 @@ export function createRenderers(deps) {
           })
           .join("")
       : "<span class='muted'>No feats selected.</span>";
+    const optionalFeatureListHtml = selectedOptionalFeatures.length
+      ? selectedOptionalFeatures
+          .map(
+            (feature) => `
+            <div class="feature-row feature-row-feat">
+              <div class="feature-main">
+                <strong>${esc(feature.name)}</strong>
+                <span class="muted">${esc(feature.className || "")}${feature.slotType ? ` - ${esc(feature.slotType)}` : ""}</span>
+              </div>
+            </div>
+          `
+          )
+          .join("")
+      : "<span class='muted'>No optional features selected.</span>";
+    const classTableEffectsHtml = classTableEffects.length
+      ? classTableEffects
+          .map(
+            (effect) => `
+            <div class="feature-row feature-row-feat">
+              <div class="feature-main">
+                <strong>${esc(effect.className)} - ${esc(effect.label)}</strong>
+                <span class="muted">${esc(effect.value)}</span>
+              </div>
+            </div>
+          `
+          )
+          .join("")
+      : "<span class='muted'>No class table effects to show.</span>";
+    const featureModesHtml = featureModes.length
+      ? featureModes
+          .map((mode) => {
+            const selected = String(play?.featureModes?.[mode.id] ?? "");
+            return `
+            <label class="inline-field">
+              ${esc(mode.featureName)}
+              <select data-feature-mode-id="${esc(mode.id)}">
+                ${mode.optionValues
+                  .map((option) => `<option value="${esc(option)}" ${option === selected ? "selected" : ""}>${esc(option)}</option>`)
+                  .join("")}
+              </select>
+            </label>
+          `;
+          })
+          .join("")
+      : "<span class='muted'>No mode-based feature choices available.</span>";
 
-    const spellStatus = latestSpellCastStatus();
+    const selectedSpells = Array.isArray(character?.spells) ? character.spells.filter(Boolean) : [];
+    const hasSelectedSpells = selectedSpells.length > 0;
+    const spellStatus = hasSelectedSpells ? latestSpellCastStatus() : { isError: false, message: "" };
 
     return `
     <section class="play-sheet-shell">
@@ -912,7 +1108,7 @@ export function createRenderers(deps) {
         </div>
       </section>
       <div class="play-grid">
-        <article class="card">
+        <article class="card core-stats-card">
           <h3 class="title">Core Stats</h3>
           <div class="summary-grid">
             <div class="pill">HP ${hpCurrent}/${hpTotal}</div>
@@ -1024,6 +1220,9 @@ export function createRenderers(deps) {
           </div>
         </article>
 
+        ${
+          hasSelectedSpells
+            ? `
         <article class="card">
           <h3 class="title">Spells & Slots</h3>
           <div class="play-list spell-slot-grid">
@@ -1032,17 +1231,26 @@ export function createRenderers(deps) {
           <h4>Prepared/Known Spells</h4>
           <p class="muted spell-prep-help">Toggle P to mark prepared. Click a spell name to view details and roll from its description.</p>
           <div id="spell-cast-status" class="spell-cast-status ${spellStatus.isError ? "is-error" : ""}" ${spellStatus.message ? "" : "hidden"}>${esc(
-            spellStatus.message
-          )}</div>
+              spellStatus.message
+            )}</div>
           <div class="spell-level-groups">${renderSpellGroupsByLevelImpl(state)}</div>
         </article>
+        `
+            : ""
+        }
 
         <article class="card">
           <h3 class="title">Features & Feats</h3>
           <h4>Class/Subclass Features</h4>
           ${featureListHtml ? `<ul class="class-feature-list">${featureListHtml}</ul>` : "<p class='muted'>No unlocked class features.</p>"}
+          <h4>Feature Modes</h4>
+          <div class="play-list">${featureModesHtml}</div>
           <h4>Feats</h4>
           <div>${featListHtml}</div>
+          <h4>Optional Features</h4>
+          <div>${optionalFeatureListHtml}</div>
+          <h4>Class Table Effects</h4>
+          <div>${classTableEffectsHtml}</div>
         </article>
 
         <article class="card">
@@ -1052,13 +1260,18 @@ export function createRenderers(deps) {
             <button class="btn secondary" id="play-open-items">Add Item</button>
           </div>
           <div class="inventory-list">${renderInventoryRowsImpl(character)}</div>
-          <div class="play-inline-row">
-            <input id="play-condition-input" placeholder="Add condition (e.g. Poisoned)">
-            <button class="btn secondary" id="add-condition">Add</button>
-          </div>
-          <div class="pill-list">${conditionText || "<span class='muted'>No conditions tracked.</span>"}</div>
-          <div class="play-inline-row">
-            ${(play.conditions ?? []).map((condition, idx) => `<button class="btn secondary" data-remove-condition="${idx}">Remove ${esc(condition)}</button>`).join("")}
+          <h4>Conditions</h4>
+          <div class="condition-panel">
+            <div class="condition-panel-head">
+              <span class="condition-count-pill">${activeKnownCount}/${catalogConditionNames.length || 0} active</span>
+              <button type="button" class="btn secondary condition-clear-btn" data-clear-conditions ${activeConditions.length ? "" : "disabled"}>
+                Clear All
+              </button>
+            </div>
+            <div class="condition-grid">
+              ${conditionButtonsHtml}
+            </div>
+            ${extraConditionsHtml}
           </div>
           <label>Combat Notes
             <textarea id="play-notes" rows="4" style="width:100%; background:#0b1220; color:#e5e7eb; border:1px solid rgba(255,255,255,0.2); border-radius:10px; padding:0.6rem;">${esc(
@@ -1068,12 +1281,9 @@ export function createRenderers(deps) {
         </article>
 
         <article class="card">
-          <h3 class="title">Resources & Rest</h3>
-          <div class="play-list">
-            ${resourcesHtml || "<p class='muted'>No resource trackers yet.</p>"}
-          </div>
+          <h3 class="title">Rest</h3>
+          <p class="muted">Apply short or long rest to refresh tracked class feature uses and reset rest-dependent state.</p>
           <div class="toolbar">
-            <button class="btn secondary" id="add-resource">Add Resource</button>
             <button class="btn secondary" id="short-rest">Short Rest</button>
             <button class="btn" id="long-rest">Long Rest</button>
           </div>
@@ -1088,7 +1298,7 @@ export function createRenderers(deps) {
     if (stepIndex === 0) {
       return `
       <h2 class="title">Source Preset</h2>
-      <p class="subtitle">Choose what books are legal in this builder run.</p>
+      <p class="subtitle">Choose which books and options this character can use.</p>
       <label>Preset
         <select id="source-preset">
           ${Object.keys(sourcePresets)
@@ -1165,6 +1375,8 @@ export function createRenderers(deps) {
     }
     if (stepIndex === 3) {
       const subclassOptions = getSubclassSelectOptions(state);
+      const classEntry = findCatalogEntryByName(catalogs.classes, character.class);
+      const classSkillChoiceEditors = renderClassSkillChoiceEditors(classEntry, character);
       return `
       <h2 class="title">Class & Multiclass</h2>
       <div class="row">
@@ -1181,7 +1393,7 @@ export function createRenderers(deps) {
               .map(
                 (entry) =>
                   `<option value="${esc(entry.name)}|${esc(entry.source)}" ${entry.isSelected ? "selected" : ""}>${esc(entry.name)} (${esc(
-                    entry.sourceLabel || entry.source || "UNK"
+                    entry.sourceLabel || entry.source || "Unknown Source"
                   )})</option>`
               )
               .join("")}
@@ -1192,10 +1404,16 @@ export function createRenderers(deps) {
         <button class="btn secondary" id="open-multiclass">Edit Multiclass</button>
         <button class="btn secondary" type="button" data-open-levelup>Level Up</button>
       </div>
+      ${classSkillChoiceEditors ? `<div class="auto-choice-shell">${classSkillChoiceEditors}</div>` : ""}
       <h3 class="title">Feat Slots</h3>
-      <p class="subtitle">Feat slots are generated from class progression. Fill each slot from the 5etools feat catalog.</p>
+      <p class="subtitle">Feat slots come from your class levels. Pick a feat for each slot.</p>
       <div class="option-list">
         ${renderBuildFeatSlotsImpl(character)}
+      </div>
+      <h3 class="title">Optional Feature Slots</h3>
+      <p class="subtitle">Optional feature slots come from your class levels. Pick an option for each slot.</p>
+      <div class="option-list">
+        ${renderBuildOptionalFeatureSlotsImpl(character)}
       </div>
     `;
     }
@@ -1245,7 +1463,7 @@ export function createRenderers(deps) {
     if (stepIndex === 5) {
       return `
       <h2 class="title">Equipment</h2>
-      <p class="subtitle">Simple inventory list with modal picker.</p>
+      <p class="subtitle">Choose and track the items your character is carrying.</p>
       <div class="toolbar">
         <button class="btn secondary" id="open-items">Pick Items</button>
       </div>
@@ -1257,7 +1475,7 @@ export function createRenderers(deps) {
       const defaultSpellSlots = getCharacterSpellSlotDefaults(catalogs, character);
       return `
       <h2 class="title">Spells</h2>
-      <p class="subtitle">Use modal for quick search and selection.</p>
+      <p class="subtitle">Search and add spells to your spell list.</p>
       <div class="toolbar">
         <button class="btn secondary" id="open-spells">Pick Spells</button>
       </div>
@@ -1265,7 +1483,7 @@ export function createRenderers(deps) {
         ${renderBuildSpellListImpl(character, catalogs)}
       </div>
       <h4>Spell Slots (Edit Max)</h4>
-      <p class="muted spell-prep-help">Defaults come from 5etools class progression, including multiclass caster-level rules when secondary classes are set. Override only when needed.</p>
+      <p class="muted spell-prep-help">Spell slots are auto-calculated from your classes. Change these only if your table uses house rules.</p>
       <div class="play-list spell-slot-grid">
         ${spellSlotLevels.map((level) => renderBuildSpellSlotRowImpl(play, defaultSpellSlots, level)).join("")}
       </div>
@@ -1274,7 +1492,7 @@ export function createRenderers(deps) {
     const permalinkUrl = character.id ? `${window.location.origin}${window.location.pathname}?char=${encodeURIComponent(character.id)}` : "";
     return `
     <h2 class="title">Review & Export</h2>
-    <p class="subtitle">Copy JSON to move this sheet between machines. Permanent links use UUID URLs.</p>
+    <p class="subtitle">Create a shareable character link and keep a JSON backup if you want one.</p>
     <div class="toolbar">
       <button class="btn" id="create-permanent-character">${character.id ? "Save Character Link" : "Create Permanent Character Link"}</button>
       <button class="btn secondary" id="copy-character-link" ${character.id ? "" : "disabled"}>Copy Character Link</button>
@@ -1282,7 +1500,7 @@ export function createRenderers(deps) {
     ${
       character.id
         ? `<p class="muted">Bookmark this URL to reopen: <code>${esc(permalinkUrl)}</code></p>`
-        : `<p class="muted">No UUID link yet. Create one, then bookmark that page URL.</p>`
+        : `<p class="muted">No character link yet. Create one, then bookmark it.</p>`
     }
     <textarea id="export-json" rows="12" style="width:100%; background:#0b1220; color:#e5e7eb; border:1px solid rgba(255,255,255,0.2); border-radius:10px; padding:0.6rem;">${esc(
       JSON.stringify(character, null, 2)
@@ -1360,12 +1578,39 @@ export function createRenderers(deps) {
         <div class="option-row">
           <div>
             <strong>${esc(slotLabel)}</strong>
-            <div class="muted">${slot.feat ? `${esc(slot.feat.name)} (${esc(slot.feat.source || "UNK")})` : "No feat selected."}</div>
+            <div class="muted">${slot.feat ? `${esc(slot.feat.name)} (${esc(slot.feat.source || "Unknown Source")})` : "No feat selected."}</div>
             ${asiEditorHtml}
           </div>
           <div class="option-row-actions">
             <button type="button" class="btn secondary" data-open-feat-picker="${esc(slot.id)}">${slot.feat ? "Replace" : "Pick Feat"}</button>
             ${slot.feat ? `<button type="button" class="btn secondary" data-remove-feat-slot="${esc(slot.id)}">Clear</button>` : ""}
+          </div>
+        </div>
+      `;
+      })
+      .join("");
+  }
+
+  function renderBuildOptionalFeatureSlotsImpl(character) {
+    const slots = getOptionalFeatureSlotsWithSelection(character);
+    if (!slots.length) return "<p class='muted'>No optional feature slots available from current class progression.</p>";
+    return slots
+      .map((slot) => {
+        const selected = slot.optionalFeature;
+        const slotLabel = `${slot.className} Lv ${slot.level} - ${slot.slotType || "Optional Feature"}${
+          slot.featureType ? ` (${slot.featureType})` : ""
+        }`;
+        return `
+        <div class="option-row">
+          <div>
+            <strong>${esc(slotLabel)}</strong>
+            <div class="muted">${selected ? `${esc(selected.name)} (${esc(selected.source || "Unknown Source")})` : "No optional feature selected."}</div>
+          </div>
+          <div class="option-row-actions">
+            <button type="button" class="btn secondary" data-open-optional-feature-picker="${esc(slot.id)}">${
+              selected ? "Replace" : "Pick Feature"
+            }</button>
+            ${selected ? `<button type="button" class="btn secondary" data-remove-optional-feature-slot="${esc(slot.id)}">Clear</button>` : ""}
           </div>
         </div>
       `;
@@ -1393,6 +1638,16 @@ export function createRenderers(deps) {
 
   function renderLevelUpBodyImpl(state, draft) {
     const preview = getLevelUpPreview(state, draft);
+    const hitPointPlan = preview.hitPointPlan ?? {
+      currentMaxHp: toNumber(state?.derived?.hp, 1),
+      nextMaxHp: toNumber(state?.derived?.hp, 1),
+      totalDelta: 0,
+      baseDelta: 0,
+      conDelta: 0,
+      gainedEntries: [],
+      levelDelta: 0,
+      conMod: 0,
+    };
     const classOptions = optionList(state.catalogs.classes, "");
     const multiclassTotal = draft.multiclass.reduce((sum, entry) => sum + Math.max(1, toNumber(entry.level, 1)), 0);
     const budgetRemaining = draft.totalLevel - multiclassTotal;
@@ -1408,16 +1663,96 @@ export function createRenderers(deps) {
       : "<p class='muted levelup-empty'>No spell slot changes.</p>";
     const currentSaveLabels = getSaveProficiencyLabelMap(preview.currentSaves);
     const nextSaveLabels = getSaveProficiencyLabelMap(preview.nextSaves);
+    const featureChangesHtml = preview.addedFeatures.length || preview.removedFeatures.length
+      ? `
+          <div class="levelup-save-row"><span class="muted">Unlocked</span><span>${esc(preview.addedFeatures.map((feature) => feature.name).join(", ") || "None")}</span></div>
+          <div class="levelup-save-row"><span class="muted">Lost</span><span>${esc(preview.removedFeatures.map((feature) => feature.name).join(", ") || "None")}</span></div>
+        `
+      : "<p class='muted levelup-empty'>No class feature unlock changes.</p>";
+    const autoSpellChangesHtml = preview.addedAutoSpells.length || preview.removedAutoSpells.length
+      ? `
+          <div class="levelup-save-row"><span class="muted">Added</span><span>${esc(preview.addedAutoSpells.join(", ") || "None")}</span></div>
+          <div class="levelup-save-row"><span class="muted">Removed</span><span>${esc(preview.removedAutoSpells.join(", ") || "None")}</span></div>
+        `
+      : "<p class='muted levelup-empty'>No auto-granted spell changes.</p>";
+    const classTableChangesHtml = preview.changedClassTableEffects.length
+      ? preview.changedClassTableEffects
+          .slice(0, 12)
+          .map((effect) => `<div class="levelup-slot-change"><span>${esc(effect.className)}: ${esc(effect.label)}</span><span>${esc(effect.value)}</span></div>`)
+          .join("")
+      : "<p class='muted levelup-empty'>No class table effect changes.</p>";
+    const currentOptionalSlots = Array.isArray(preview.currentProgression?.optionalFeatureSlots) ? preview.currentProgression.optionalFeatureSlots.length : 0;
+    const nextOptionalSlots = Array.isArray(preview.nextProgression?.optionalFeatureSlots) ? preview.nextProgression.optionalFeatureSlots.length : 0;
+    const currentFeatSlots = Array.isArray(preview.currentProgression?.featSlots) ? preview.currentProgression.featSlots.length : 0;
+    const nextFeatSlots = Array.isArray(preview.nextProgression?.featSlots) ? preview.nextProgression.featSlots.length : 0;
+    const hitPointRowsHtml = hitPointPlan.gainedEntries.length
+      ? hitPointPlan.gainedEntries
+          .map((entry) => {
+            const isRoll = entry.method === "roll";
+            const gainValue = isRoll ? toNumber(entry.rollValue, entry.fixedValue) : entry.fixedValue;
+            return `
+              <div class="levelup-hp-row">
+                <div class="levelup-hp-head">
+                  <strong>${esc(entry.className)} ${esc(entry.classLevel)}</strong>
+                  <span class="muted">Hit Die d${esc(entry.faces)}</span>
+                </div>
+                <div class="levelup-hp-choice">
+                  <label class="levelup-hp-method">
+                    <input
+                      type="radio"
+                      name="levelup-hp-method-${esc(entry.key)}"
+                      value="fixed"
+                      data-levelup-hp-method
+                      data-levelup-hp-key="${esc(entry.key)}"
+                      data-levelup-hp-faces="${esc(entry.faces)}"
+                      ${isRoll ? "" : "checked"}
+                    >
+                    <span>Average (+${esc(entry.fixedValue)})</span>
+                  </label>
+                  <label class="levelup-hp-method">
+                    <input
+                      type="radio"
+                      name="levelup-hp-method-${esc(entry.key)}"
+                      value="roll"
+                      data-levelup-hp-method
+                      data-levelup-hp-key="${esc(entry.key)}"
+                      data-levelup-hp-faces="${esc(entry.faces)}"
+                      ${isRoll ? "checked" : ""}
+                    >
+                    <span>Roll</span>
+                  </label>
+                  ${
+                    isRoll
+                      ? `<button type="button" class="btn secondary levelup-hp-reroll" data-levelup-hp-reroll="${esc(entry.key)}" data-levelup-hp-faces="${esc(entry.faces)}">Reroll d${esc(entry.faces)}</button>`
+                      : ""
+                  }
+                </div>
+                <div class="levelup-hp-gain">
+                  <span class="muted">${isRoll ? `Rolled ${esc(entry.rollValue)}` : `Fixed ${esc(entry.fixedValue)}`}</span>
+                  <strong>+${esc(gainValue)} base HP</strong>
+                </div>
+              </div>
+            `;
+          })
+          .join("")
+      : "<p class='muted levelup-empty'>No new levels to assign hit dice for.</p>";
+    const hpDeltaPrefix = hitPointPlan.totalDelta > 0 ? "+" : "";
 
     return `
     <div class="levelup-shell">
-      <p class="subtitle">Plan level changes for both play and edit mode. Required class settings are updated from 5etools data.</p>
+      <p class="subtitle">Preview level changes before applying them to your character.</p>
       <div class="levelup-grid">
         <section class="levelup-card">
           <h4>Class Levels</h4>
           <div class="row">
             <label>Total Level
-              <input id="levelup-total-level" type="number" min="1" max="20" value="${esc(draft.totalLevel)}">
+              <div class="num-input-wrap num-input-wrap-inline">
+                <input id="levelup-total-level" type="number" min="1" max="20" value="${esc(draft.totalLevel)}">
+                <div class="num-stepper num-stepper-inline">
+                  <button type="button" class="num-step-btn" data-levelup-step-target="total-level" data-step-delta="-1" aria-label="Decrease total level">-</button>
+                  <button type="button" class="num-step-btn" data-levelup-step-target="total-level" data-step-delta="1" aria-label="Increase total level">+</button>
+                </div>
+              </div>
             </label>
             <label>Primary Class
               <select id="levelup-primary-class">
@@ -1453,7 +1788,13 @@ export function createRenderers(deps) {
                     </select>
                   </label>
                   <label>Level
-                    <input type="number" min="1" max="20" data-levelup-mc-level="${idx}" value="${esc(entry.level)}">
+                    <div class="num-input-wrap num-input-wrap-inline">
+                      <input type="number" min="1" max="20" data-levelup-mc-level="${idx}" value="${esc(entry.level)}">
+                      <div class="num-stepper num-stepper-inline">
+                        <button type="button" class="num-step-btn" data-levelup-step-target="mc-level" data-levelup-step-index="${idx}" data-step-delta="-1" aria-label="Decrease secondary class level">-</button>
+                        <button type="button" class="num-step-btn" data-levelup-step-target="mc-level" data-levelup-step-index="${idx}" data-step-delta="1" aria-label="Increase secondary class level">+</button>
+                      </div>
+                    </div>
                   </label>
                   <button type="button" class="btn secondary" data-levelup-mc-remove="${idx}">Remove</button>
                 </div>
@@ -1466,9 +1807,19 @@ export function createRenderers(deps) {
           <div class="toolbar">
             <button type="button" class="btn secondary" data-levelup-add-mc>Add Secondary Class</button>
           </div>
+          <h5>Hit Dice (New Levels)</h5>
+          <p class="muted levelup-empty">Choose per-level HP gain: take average or roll. Constitution is applied automatically per level.</p>
+          <div class="levelup-hp-list">${hitPointRowsHtml}</div>
         </section>
         <section class="levelup-card">
           <h4>Required Updates Preview</h4>
+          <div class="levelup-preview-block">
+            <h5>Hit Points</h5>
+            <div class="levelup-save-row"><span class="muted">Max HP</span><span>${esc(hitPointPlan.currentMaxHp)} -> ${esc(hitPointPlan.nextMaxHp)}</span></div>
+            <div class="levelup-save-row"><span class="muted">Net Change</span><span>${esc(hpDeltaPrefix)}${esc(hitPointPlan.totalDelta)}</span></div>
+            <div class="levelup-save-row"><span class="muted">Hit Die Contribution</span><span>${hitPointPlan.baseDelta > 0 ? "+" : ""}${esc(hitPointPlan.baseDelta)}</span></div>
+            <div class="levelup-save-row"><span class="muted">Constitution (${hitPointPlan.conMod >= 0 ? "+" : ""}${esc(hitPointPlan.conMod)} x ${esc(hitPointPlan.levelDelta)})</span><span>${hitPointPlan.conDelta > 0 ? "+" : ""}${esc(hitPointPlan.conDelta)}</span></div>
+          </div>
           <div class="levelup-preview-block">
             <h5>Save Proficiencies</h5>
             <div class="levelup-save-row">
@@ -1483,6 +1834,23 @@ export function createRenderers(deps) {
           <div class="levelup-preview-block">
             <h5>Spell Slot Default Changes</h5>
             <div class="levelup-slot-list">${slotChangesHtml}</div>
+          </div>
+          <div class="levelup-preview-block">
+            <h5>Feature Unlock Changes</h5>
+            <div class="levelup-slot-list">${featureChangesHtml}</div>
+          </div>
+          <div class="levelup-preview-block">
+            <h5>Auto-Granted Spell Changes</h5>
+            <div class="levelup-slot-list">${autoSpellChangesHtml}</div>
+          </div>
+          <div class="levelup-preview-block">
+            <h5>Slot Surface Changes</h5>
+            <div class="levelup-save-row"><span class="muted">Feat Slots</span><span>${esc(currentFeatSlots)} -> ${esc(nextFeatSlots)}</span></div>
+            <div class="levelup-save-row"><span class="muted">Optional Feature Slots</span><span>${esc(currentOptionalSlots)} -> ${esc(nextOptionalSlots)}</span></div>
+          </div>
+          <div class="levelup-preview-block">
+            <h5>Class Table Effect Changes</h5>
+            <div class="levelup-slot-list">${classTableChangesHtml}</div>
           </div>
           <div class="levelup-preview-block">
             <h5>Caster Contribution</h5>
@@ -1528,19 +1896,42 @@ export function createRenderers(deps) {
     const classHtml = className
       ? `<button type="button" class="class-info-btn" data-open-class-info title="View class details">${esc(className)}</button>`
       : "Adventurer";
+    const manualLinks = getPlayManualLinks(state);
+    const manualLinksHtml = manualLinks.length
+      ? manualLinks
+          .map(
+            (entry) => `
+            <a href="${entry.href}" target="_blank" rel="noopener noreferrer">
+              <span class="play-manual-link-label">${esc(entry.label)}</span>
+              <span class="play-manual-link-meta">${esc(entry.meta)}</span>
+            </a>
+          `
+          )
+          .join("")
+      : `<span class="play-manual-empty">No rulebook links available.</span>`;
     return `
     <main class="layout layout-play">
       <section>
         <div class="card">
           <div class="play-header">
-            <div class="play-header-main">
-              <div class="title-with-history">
-                <h1 class="title">Character Sheet</h1>
-                ${renderCharacterHistorySelector("play-character-history-select", state.character?.id ?? null, {
-                  className: "character-history-control character-history-control-inline",
-                })}
-              </div>
-              ${renderPersistenceNotice()}
+            <div class="title-with-history">
+              <h1 class="title">Character Sheet</h1>
+              ${renderCharacterHistorySelector("play-character-history-select", state.character?.id ?? null, {
+                className: "character-history-control character-history-control-inline",
+              })}
+              <details class="play-manual-menu">
+                <summary class="btn secondary play-manual-trigger" title="Open character manual links">
+                  <span class="play-manual-icon" aria-hidden="true">📖</span>
+                  <span>Manual</span>
+                </summary>
+                <div class="play-manual-links">
+                  ${manualLinksHtml}
+                </div>
+              </details>
+            </div>
+            ${renderPersistenceNotice()}
+            <div class="play-header-lower">
+              <div class="play-header-main">
               ${getModeToggle(state.mode)}
               <p class="muted">
                 ${esc(state.character.name || "Unnamed Hero")} - Level ${esc(state.character.level)}
@@ -1550,8 +1941,9 @@ export function createRenderers(deps) {
               <div class="toolbar">
                 <button class="btn secondary" type="button" data-open-levelup>Level Up</button>
               </div>
+              </div>
+              <div id="play-header-dice-slot" class="play-header-dice-slot"></div>
             </div>
-            <div id="play-header-dice-slot" class="play-header-dice-slot"></div>
           </div>
         </div>
         ${renderPlayViewImpl(state)}

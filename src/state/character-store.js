@@ -53,19 +53,30 @@ function getDefaultPlayState() {
     skillProficiencyOverrides: {},
     autoAbilityBonuses: {},
     autoChoiceSelections: {},
+    featureModes: {},
+    autoGrantedSpells: [],
     preparedSpells: {},
     spellSlots: getDefaultSpellSlots(),
     spellSlotMaxOverrides: {},
     spellSlotUserOverrides: {},
     spellSlotAutoDefaults: {},
     attacks: [],
-    resources: [],
     featureUses: {},
+    hitDiceSpent: {},
     conditions: [],
     notes: "",
     deathSavesSuccess: 0,
     deathSavesFail: 0,
   };
+}
+
+function normalizeHitPointRollOverrides(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  return Object.fromEntries(
+    Object.entries(raw)
+      .map(([key, value]) => [String(key ?? "").trim(), Math.floor(toNumber(value, NaN))])
+      .filter(([key, value]) => key && Number.isFinite(value) && value > 0)
+  );
 }
 
 function createInventoryEntryId() {
@@ -141,10 +152,27 @@ function normalizeCharacter(character) {
       character.play?.spellSlotAutoDefaults && typeof character.play.spellSlotAutoDefaults === "object"
         ? { ...character.play.spellSlotAutoDefaults }
         : {},
+    resources: [],
     featureUses:
       character.play?.featureUses && typeof character.play.featureUses === "object"
         ? { ...character.play.featureUses }
         : {},
+    hitDiceSpent:
+      character.play?.hitDiceSpent && typeof character.play.hitDiceSpent === "object" && !Array.isArray(character.play.hitDiceSpent)
+        ? Object.fromEntries(
+            Object.entries(character.play.hitDiceSpent)
+              .map(([key, value]) => [String(key ?? "").trim(), Math.max(0, Math.floor(toNumber(value, 0)))])
+              .filter(([key, value]) => key && value > 0)
+          )
+        : {},
+    featureModes:
+      character.play?.featureModes && typeof character.play.featureModes === "object" && !Array.isArray(character.play.featureModes)
+        ? { ...character.play.featureModes }
+        : {},
+    autoGrantedSpells:
+      Array.isArray(character.play?.autoGrantedSpells)
+        ? character.play.autoGrantedSpells.map((name) => String(name ?? "").trim()).filter(Boolean)
+        : [],
     autoSaveProficiencies:
       character.play?.autoSaveProficiencies && typeof character.play.autoSaveProficiencies === "object"
         ? { ...character.play.autoSaveProficiencies }
@@ -193,6 +221,20 @@ function normalizeCharacter(character) {
           }))
           .filter((feat) => feat.id && feat.name)
       : [],
+    optionalFeatures: Array.isArray(character.optionalFeatures)
+      ? character.optionalFeatures
+          .map((feature) => ({
+            id: typeof feature?.id === "string" ? feature.id : "",
+            name: typeof feature?.name === "string" ? feature.name : "",
+            source: typeof feature?.source === "string" ? feature.source : "",
+            levelGranted: toNumber(feature?.levelGranted, 0),
+            slotId: typeof feature?.slotId === "string" ? feature.slotId : "",
+            className: typeof feature?.className === "string" ? feature.className : "",
+            slotType: typeof feature?.slotType === "string" ? feature.slotType : "",
+            featureType: typeof feature?.featureType === "string" ? feature.featureType : "",
+          }))
+          .filter((feature) => feature.id && feature.name)
+      : [],
     subclass: subclassName,
     classSelection: {
       subclass: {
@@ -235,8 +277,52 @@ function normalizeCharacter(character) {
             selectedFeatIds: Array.isArray(character.progression.selectedFeatIds)
               ? character.progression.selectedFeatIds.filter((id) => typeof id === "string" && id)
               : [],
+            optionalFeatureSlots: Array.isArray(character.progression.optionalFeatureSlots)
+              ? character.progression.optionalFeatureSlots
+                  .map((slot) => ({
+                    id: typeof slot?.id === "string" ? slot.id : "",
+                    className: typeof slot?.className === "string" ? slot.className : "",
+                    classSource: typeof slot?.classSource === "string" ? slot.classSource : "",
+                    level: toNumber(slot?.level, 0),
+                    count: Math.max(1, toNumber(slot?.count, 1)),
+                    slotType: typeof slot?.slotType === "string" ? slot.slotType : "Optional Feature",
+                    featureType: typeof slot?.featureType === "string" ? slot.featureType : "",
+                  }))
+                  .filter((slot) => slot.id && slot.className && slot.level > 0)
+              : [],
+            pendingOptionalFeatureSlotIds: Array.isArray(character.progression.pendingOptionalFeatureSlotIds)
+              ? character.progression.pendingOptionalFeatureSlotIds.filter((id) => typeof id === "string" && id)
+              : [],
+            selectedOptionalFeatureIds: Array.isArray(character.progression.selectedOptionalFeatureIds)
+              ? character.progression.selectedOptionalFeatureIds.filter((id) => typeof id === "string" && id)
+              : [],
+            classTableEffects: Array.isArray(character.progression.classTableEffects)
+              ? character.progression.classTableEffects
+                  .map((effect) => ({
+                    id: typeof effect?.id === "string" ? effect.id : "",
+                    className: typeof effect?.className === "string" ? effect.className : "",
+                    label: typeof effect?.label === "string" ? effect.label : "",
+                    kind: typeof effect?.kind === "string" ? effect.kind : "text",
+                    value: effect?.value ?? "",
+                  }))
+                  .filter((effect) => effect.id && effect.className && effect.label)
+              : [],
+            featureModes: Array.isArray(character.progression.featureModes)
+              ? character.progression.featureModes
+                  .map((mode) => ({
+                    id: typeof mode?.id === "string" ? mode.id : "",
+                    featureId: typeof mode?.featureId === "string" ? mode.featureId : "",
+                    featureName: typeof mode?.featureName === "string" ? mode.featureName : "",
+                    className: typeof mode?.className === "string" ? mode.className : "",
+                    optionValues: Array.isArray(mode?.optionValues)
+                      ? mode.optionValues.map((value) => String(value ?? "").trim()).filter(Boolean)
+                      : [],
+                  }))
+                  .filter((mode) => mode.id && mode.featureId && mode.optionValues.length > 0)
+              : [],
           }
         : { ...base.progression },
+    hitPointRollOverrides: normalizeHitPointRollOverrides(character.hitPointRollOverrides),
     play,
   };
 }
@@ -270,6 +356,7 @@ export function createInitialCharacter() {
     inventory: [],
     spells: [],
     feats: [],
+    optionalFeatures: [],
     notes: "",
     multiclass: [],
     classSelection: {
@@ -285,7 +372,13 @@ export function createInitialCharacter() {
       featSlots: [],
       pendingFeatSlotIds: [],
       selectedFeatIds: [],
+      optionalFeatureSlots: [],
+      pendingOptionalFeatureSlotIds: [],
+      selectedOptionalFeatureIds: [],
+      classTableEffects: [],
+      featureModes: [],
     },
+    hitPointRollOverrides: {},
     play: getDefaultPlayState(),
   };
 }
@@ -304,6 +397,7 @@ export function createStore(initialState) {
       optionalFeatures: [],
       spells: [],
       items: [],
+      conditions: [],
     },
     stepIndex: 0,
     mode: "build",
@@ -316,7 +410,7 @@ export function createStore(initialState) {
 
   const getState = () => ({
     ...state,
-    derived: computeDerivedStats(state.character),
+    derived: computeDerivedStats(state.character, state.catalogs),
   });
 
   return {

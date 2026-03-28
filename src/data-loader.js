@@ -76,6 +76,29 @@ function mapMagicVariantsToItems(variants) {
     .filter(Boolean);
 }
 
+function getDefaultConditionsCatalog() {
+  return [
+    { name: "Blinded", source: "PHB" },
+    { name: "Charmed", source: "PHB" },
+    { name: "Deafened", source: "PHB" },
+    { name: "Exhaustion", source: "PHB" },
+    { name: "Frightened", source: "PHB" },
+    { name: "Grappled", source: "PHB" },
+    { name: "Incapacitated", source: "PHB" },
+    { name: "Invisible", source: "PHB" },
+    { name: "Paralyzed", source: "PHB" },
+    { name: "Petrified", source: "PHB" },
+    { name: "Poisoned", source: "PHB" },
+    { name: "Prone", source: "PHB" },
+    { name: "Restrained", source: "PHB" },
+    { name: "Stunned", source: "PHB" },
+    { name: "Unconscious", source: "PHB" },
+  ].map((entry) => ({
+    ...entry,
+    sourceLabel: SOURCE_LABELS[entry.source] ?? entry.source,
+  }));
+}
+
 function getFallbackCatalogs(allowedSources) {
   const source = allowedSources[0] ?? "PHB";
   return {
@@ -89,12 +112,13 @@ function getFallbackCatalogs(allowedSources) {
     optionalFeatures: [],
     spells: [{ name: "Magic Missile", level: 1, source }, { name: "Shield", level: 1, source }],
     items: [{ name: "Longsword", source }, { name: "Leather Armor", source }],
+    conditions: getDefaultConditionsCatalog(),
   };
 }
 
 export async function loadCatalogs(allowedSources) {
   try {
-    const [classData, races, backgrounds, feats, optionalFeatures, spells, items, baseItems, magicVariants, spellSourceLookup] = await Promise.all([
+    const [classData, races, backgrounds, feats, optionalFeatures, spells, items, baseItems, magicVariants, spellSourceLookup, conditions] = await Promise.all([
       loadClassDataFromIndex(),
       loadSingleFile("races.json", "race"),
       loadSingleFile("backgrounds.json", "background"),
@@ -105,6 +129,7 @@ export async function loadCatalogs(allowedSources) {
       loadSingleFile("items-base.json", "baseitem"),
       loadSingleFile("magicvariants.json", "magicvariant"),
       fetchJson(`${DATA_ROOT}/generated/gendata-spell-source-lookup.json`).catch(() => ({})),
+      loadSingleFile("conditionsdiseases.json", "condition"),
     ]);
     const variantItems = mapMagicVariantsToItems(magicVariants);
     const allItems = dedupeByNameAndSource([...items, ...baseItems, ...variantItems]);
@@ -117,6 +142,7 @@ export async function loadCatalogs(allowedSources) {
         spellSourceEntry,
       };
     });
+    const mappedConditions = mapNamed(filterBySources(conditions, allowedSources));
 
     return {
       classes: mapNamed(filterBySources(classData.classes, allowedSources)),
@@ -129,6 +155,7 @@ export async function loadCatalogs(allowedSources) {
       optionalFeatures: mapNamed(filterBySources(optionalFeatures, allowedSources)),
       spells: mappedSpells,
       items: mapNamed(filterBySources(allItems, allowedSources)),
+      conditions: mappedConditions.length ? mappedConditions : getDefaultConditionsCatalog(),
     };
   } catch {
     return getFallbackCatalogs(allowedSources);

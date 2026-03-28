@@ -564,7 +564,7 @@ async function rollVisualNotation(label, notation) {
 
 async function rerollLastRoll() {
   if (!lastRollAction) {
-    setDiceResult("No previous roll to reroll.", true);
+    setDiceResult("There is no previous roll to reroll.", true);
     return;
   }
 
@@ -644,7 +644,7 @@ function openCustomRollModal() {
       submitEl.disabled = false;
       return;
     }
-    selectedEl.innerHTML = `<span class="muted">No dice selected yet.</span>`;
+    selectedEl.innerHTML = `<span class="muted">Choose at least one die to roll.</span>`;
     selectedEl.classList.remove("is-populated");
     submitEl.disabled = true;
   };
@@ -841,6 +841,30 @@ function getClassCatalogEntry(catalogs, className) {
   return catalogs.classes.find((entry) => String(entry?.name ?? "").trim().toLowerCase() === selectedName) ?? null;
 }
 
+function getClassHitDieFaces(catalogs, className) {
+  const classEntry = getClassCatalogEntry(catalogs, className);
+  const faces = Math.max(0, toNumber(classEntry?.hd?.faces, 0));
+  return faces > 0 ? faces : 8;
+}
+
+function getFixedHitPointGain(faces) {
+  return Math.max(1, Math.floor(Math.max(1, faces) / 2) + 1);
+}
+
+function sanitizeHitPointRollOverrides(rawOverrides) {
+  if (!rawOverrides || typeof rawOverrides !== "object" || Array.isArray(rawOverrides)) return {};
+  return Object.fromEntries(
+    Object.entries(rawOverrides)
+      .map(([key, value]) => [String(key ?? "").trim(), Math.floor(toNumber(value, NaN))])
+      .filter(([key, value]) => key && Number.isFinite(value) && value > 0)
+  );
+}
+
+function rollDie(faces) {
+  const max = Math.max(1, Math.floor(toNumber(faces, 0)));
+  return 1 + Math.floor(Math.random() * max);
+}
+
 function normalizeSourceTag(value) {
   return String(value ?? "").trim().toUpperCase();
 }
@@ -967,7 +991,73 @@ function getClassLevelTracks(character) {
 
 function getUnlockedFeatures(catalogs, character) {
   const unlocked = [];
+  const seen = new Set();
   const tracks = getClassLevelTracks(character);
+
+  const collectReferencedTokens = (entry, acc = []) => {
+    if (entry == null) return acc;
+    if (Array.isArray(entry)) {
+      entry.forEach((value) => collectReferencedTokens(value, acc));
+      return acc;
+    }
+    if (!isRecordObject(entry)) return acc;
+    if (entry.type === "refSubclassFeature" && typeof entry.subclassFeature === "string") {
+      acc.push({ type: "subclass", token: entry.subclassFeature });
+    }
+    if (entry.type === "refClassFeature" && typeof entry.classFeature === "string") {
+      acc.push({ type: "class", token: entry.classFeature });
+    }
+    Object.values(entry).forEach((value) => collectReferencedTokens(value, acc));
+    return acc;
+  };
+
+  const enqueueFeature = (feature, trackLevel, classNameHint = "", subclassNameHint = "") => {
+    if (!feature || feature.level == null || feature.level > trackLevel || !feature.id) return;
+    if (seen.has(feature.id)) return;
+    seen.add(feature.id);
+    unlocked.push(feature);
+
+    const detail = resolveFeatureEntryFromCatalogs(catalogs, feature);
+    const refTokens = collectReferencedTokens(detail?.entries ?? []);
+    refTokens.forEach((ref) => {
+      if (!ref?.token) return;
+      if (ref.type === "subclass") {
+        const parsed = parseSubclassFeatureToken(
+          ref.token,
+          feature.source,
+          classNameHint || feature.className,
+          subclassNameHint || feature.subclassName
+        );
+        if (!parsed || parsed.level == null || parsed.level > trackLevel) return;
+        const nextClassName = parsed.className || classNameHint || feature.className;
+        const nextSubclassName = parsed.subclassName || subclassNameHint || feature.subclassName;
+        enqueueFeature(
+          {
+            ...parsed,
+            className: nextClassName,
+            subclassName: nextSubclassName,
+          },
+          trackLevel,
+          nextClassName,
+          nextSubclassName
+        );
+        return;
+      }
+
+      const parsed = parseClassFeatureToken(ref.token, feature.source, classNameHint || feature.className);
+      if (!parsed || parsed.level == null || parsed.level > trackLevel) return;
+      const nextClassName = parsed.className || classNameHint || feature.className;
+      enqueueFeature(
+        {
+          ...parsed,
+          className: nextClassName,
+        },
+        trackLevel,
+        nextClassName,
+        subclassNameHint || feature.subclassName
+      );
+    });
+  };
 
   tracks.forEach((track) => {
     const classEntry = getClassCatalogEntry(catalogs, track.className);
@@ -978,10 +1068,15 @@ function getUnlockedFeatures(catalogs, character) {
       const token = typeof featureEntry === "string" ? featureEntry : featureEntry?.classFeature;
       const parsed = parseClassFeatureToken(token, classSource, classEntry.name);
       if (!parsed || parsed.level == null || parsed.level > track.level) return;
-      unlocked.push({
-        ...parsed,
-        className: classEntry.name,
-      });
+      enqueueFeature(
+        {
+          ...parsed,
+          className: classEntry.name,
+        },
+        track.level,
+        classEntry.name,
+        ""
+      );
     });
 
     if (track.isPrimary) {
@@ -991,20 +1086,22 @@ function getUnlockedFeatures(catalogs, character) {
       subclassFeatures.forEach((token) => {
         const parsed = parseSubclassFeatureToken(token, subclassEntry.source, classEntry.name, subclassEntry.name);
         if (!parsed || parsed.level == null || parsed.level > track.level) return;
-        unlocked.push({
-          ...parsed,
-          className: classEntry.name,
-          subclassName: subclassEntry.name,
-        });
+        const resolvedSubclassName = parsed.subclassName || subclassEntry.shortName || subclassEntry.name;
+        enqueueFeature(
+          {
+            ...parsed,
+            className: classEntry.name,
+            subclassName: resolvedSubclassName,
+          },
+          track.level,
+          classEntry.name,
+          resolvedSubclassName
+        );
       });
     }
   });
 
-  const deduped = new Map();
-  unlocked.forEach((feature) => {
-    deduped.set(feature.id, feature);
-  });
-  return [...deduped.values()].sort((a, b) => {
+  return unlocked.sort((a, b) => {
     const levelDelta = toNumber(a.level, 0) - toNumber(b.level, 0);
     if (levelDelta !== 0) return levelDelta;
     return String(a.name).localeCompare(String(b.name));
@@ -1065,6 +1162,71 @@ function getFeatSlots(catalogs, character) {
     if (classDelta !== 0) return classDelta;
     return String(a.slotType).localeCompare(String(b.slotType));
   });
+}
+
+function normalizeOptionalFeatureTypeList(value) {
+  if (Array.isArray(value)) return value.map((entry) => String(entry ?? "").trim()).filter(Boolean);
+  const single = String(value ?? "").trim();
+  return single ? [single] : [];
+}
+
+function getProgressionCountAtLevel(progression, classLevel) {
+  if (Array.isArray(progression)) {
+    const idx = Math.max(0, Math.min(progression.length - 1, classLevel - 1));
+    return Math.max(0, toNumber(progression[idx], 0));
+  }
+  if (isRecordObject(progression)) {
+    let count = 0;
+    Object.entries(progression).forEach(([levelRaw, countRaw]) => {
+      const level = toNumber(levelRaw, NaN);
+      if (!Number.isFinite(level) || level > classLevel) return;
+      count = Math.max(count, Math.max(0, toNumber(countRaw, 0)));
+    });
+    return count;
+  }
+  return 0;
+}
+
+function getOptionalFeatureSlotsForClass(classEntry, classLevel) {
+  if (!classEntry || classLevel <= 0) return [];
+  const slots = [];
+  const groups = Array.isArray(classEntry?.optionalfeatureProgression) ? classEntry.optionalfeatureProgression : [];
+  groups.forEach((group, groupIndex) => {
+    const count = getProgressionCountAtLevel(group?.progression, classLevel);
+    if (count <= 0) return;
+    const featureTypes = normalizeOptionalFeatureTypeList(group?.featureType);
+    const featureType = featureTypes[0] || "";
+    const slotType = cleanSpellInlineTags(group?.name || "Optional Feature");
+    for (let idx = 0; idx < count; idx += 1) {
+      const id = buildEntityId(["optional-slot", classEntry.name, classEntry.source, slotType, featureType, classLevel, groupIndex, idx]);
+      slots.push({
+        id,
+        className: classEntry.name,
+        classSource: normalizeSourceTag(classEntry.source),
+        level: classLevel,
+        count: 1,
+        slotType,
+        featureType,
+      });
+    }
+  });
+  return slots;
+}
+
+function getOptionalFeatureSlots(catalogs, character) {
+  const tracks = getClassLevelTracks(character);
+  return tracks
+    .flatMap((track) => {
+      const classEntry = getClassCatalogEntry(catalogs, track.className);
+      return getOptionalFeatureSlotsForClass(classEntry, track.level);
+    })
+    .sort((a, b) => {
+      const levelDelta = a.level - b.level;
+      if (levelDelta !== 0) return levelDelta;
+      const classDelta = String(a.className).localeCompare(String(b.className));
+      if (classDelta !== 0) return classDelta;
+      return String(a.slotType).localeCompare(String(b.slotType));
+    });
 }
 
 function parseCountToken(value, fallback = 0) {
@@ -1153,7 +1315,9 @@ function getResourceDescriptorFromEntry(detail, fallbackName, classLevel = 0) {
       || /\bonce a day\b/.test(text)
       || /\byou can use (?:this|it) once\b/.test(text)
       || /\bonce before you finish a (?:short|long) rest\b/.test(text)
-      || /\bonce you use this (?:feature|ability)\b/.test(text);
+      || /\bonce you use this (?:feature|ability|benefit)\b/.test(text)
+      || /\byou can't (?:do so|use (?:this|it)) again until you finish a (?:short|long) rest\b/.test(text)
+      || /\byou can(?:not|'t) (?:do so|use (?:this|it)) again until you finish a (?:short|long) rest\b/.test(text);
     if (hasOnceUsePattern) max = 1;
   }
 
@@ -1275,41 +1439,152 @@ function syncAutoFeatureUses(play, trackers) {
   return next;
 }
 
-function syncAutoResources(play, autoResources) {
-  const previousResources = Array.isArray(play?.resources) ? play.resources : [];
-  const manualResources = previousResources.filter((resource) => !String(resource?.autoId ?? "").startsWith(AUTO_RESOURCE_ID_PREFIX));
-  const previousAutoById = new Map(
-    previousResources
-      .filter((resource) => String(resource?.autoId ?? "").startsWith(AUTO_RESOURCE_ID_PREFIX))
-      .map((resource) => [resource.autoId, resource])
-  );
-  const mergedAuto = autoResources.map((resource) => {
-    const previous = previousAutoById.get(resource.autoId);
-    const previousCurrent = previous ? toNumber(previous.current, resource.max) : resource.max;
-    return {
-      autoId: resource.autoId,
-      name: resource.name,
-      max: resource.max,
-      recharge: resource.recharge || "",
-      current: Math.max(0, Math.min(resource.max, previousCurrent)),
-    };
+function extractSpellNameFromGrant(value) {
+  if (typeof value === "string") return value.split("|")[0].replace(/#c$/i, "").trim();
+  if (isRecordObject(value) && typeof value.spell === "string") return value.spell.split("|")[0].replace(/#c$/i, "").trim();
+  return "";
+}
+
+function collectAdditionalSpellNamesFromEntries(entries, classLevel) {
+  const names = new Set();
+  const addFromSpellList = (list) => {
+    (Array.isArray(list) ? list : []).forEach((entry) => {
+      const name = extractSpellNameFromGrant(entry);
+      if (name) names.add(name);
+    });
+  };
+  (Array.isArray(entries) ? entries : []).forEach((block) => {
+    if (!isRecordObject(block)) return;
+    ["prepared", "known", "innate", "expanded"].forEach((key) => {
+      const bucket = block[key];
+      if (!isRecordObject(bucket)) return;
+      Object.entries(bucket).forEach(([levelRaw, list]) => {
+        const unlockLevel = toNumber(levelRaw, NaN);
+        if (!Number.isFinite(unlockLevel) || unlockLevel > classLevel) return;
+        addFromSpellList(list);
+      });
+    });
   });
-  return [...manualResources, ...mergedAuto];
+  return [...names.values()];
+}
+
+function getAutoGrantedSpellNames(catalogs, character) {
+  const names = new Set();
+  const tracks = getClassLevelTracks(character);
+  tracks.forEach((track) => {
+    const classEntry = getClassCatalogEntry(catalogs, track.className);
+    if (!classEntry) return;
+    collectAdditionalSpellNamesFromEntries(classEntry.additionalSpells, track.level).forEach((name) => names.add(name));
+    if (!track.isPrimary) return;
+    const subclassEntry = getSelectedSubclassEntry(catalogs, character);
+    if (!subclassEntry) return;
+    collectAdditionalSpellNamesFromEntries(subclassEntry.additionalSpells, track.level).forEach((name) => names.add(name));
+  });
+  return [...names.values()];
+}
+
+function getClassTableEffects(catalogs, character) {
+  const effects = [];
+  const tracks = getClassLevelTracks(character);
+  tracks.forEach((track) => {
+    const classEntry = getClassCatalogEntry(catalogs, track.className);
+    if (!classEntry) return;
+    const groups = Array.isArray(classEntry.classTableGroups) ? classEntry.classTableGroups : [];
+    const levelIndex = Math.max(0, Math.min(19, toNumber(track.level, 1) - 1));
+    groups.forEach((group, groupIndex) => {
+      const labels = Array.isArray(group?.colLabels) ? group.colLabels : [];
+      const rows = Array.isArray(group?.rows) ? group.rows : [];
+      const row = Array.isArray(rows[levelIndex]) ? rows[levelIndex] : null;
+      if (!row) return;
+      labels.forEach((labelRaw, idx) => {
+        const label = cleanSpellInlineTags(labelRaw);
+        const key = label.toLowerCase();
+        if (!label) return;
+        if (!/(point|die|dice|movement|speed|rage|inspiration|mastery|indomitable|channel divinity|sneak attack|martial arts|wild shape|sorcery|ki)/i.test(key)) {
+          return;
+        }
+        const value = row[idx];
+        let effectValue = "";
+        let kind = "text";
+        if (isRecordObject(value) && typeof value.toRoll === "string") {
+          effectValue = value.toRoll;
+          kind = "dice";
+        } else if (isRecordObject(value) && value.type === "bonusSpeed") {
+          effectValue = `+${Math.max(0, toNumber(value.value, 0))} ft`;
+          kind = "number";
+        } else if (typeof value === "number" || Number.isFinite(toNumber(value, NaN))) {
+          effectValue = String(Math.max(0, toNumber(value, 0)));
+          kind = "number";
+        } else {
+          effectValue = String(value ?? "").trim();
+        }
+        if (!effectValue) return;
+        effects.push({
+          id: buildEntityId(["table-effect", classEntry.name, groupIndex, idx, label]),
+          className: classEntry.name,
+          label,
+          kind,
+          value: effectValue,
+        });
+      });
+    });
+  });
+  return effects;
+}
+
+function extractFeatureModeDescriptors(catalogs, features) {
+  const modes = [];
+  (Array.isArray(features) ? features : []).forEach((feature) => {
+    const detail = resolveFeatureEntryFromCatalogs(catalogs, feature);
+    const entries = Array.isArray(detail?.entries) ? detail.entries : [];
+    entries.forEach((entry, entryIndex) => {
+      if (!isRecordObject(entry) || entry.type !== "options" || !Array.isArray(entry.entries)) return;
+      const optionValues = entry.entries
+        .map((option) => cleanSpellInlineTags(option?.name ?? ""))
+        .filter(Boolean);
+      if (optionValues.length < 2) return;
+      modes.push({
+        id: buildEntityId(["feature-mode", feature.id, entryIndex]),
+        featureId: feature.id,
+        featureName: feature.name,
+        className: feature.className,
+        optionValues,
+      });
+    });
+  });
+  return modes;
 }
 
 function recomputeCharacterProgression(catalogs, character) {
   const unlockedFeatures = getUnlockedFeatures(catalogs, character);
   const featSlots = getFeatSlots(catalogs, character);
+  const optionalFeatureSlots = getOptionalFeatureSlots(catalogs, character);
+  const classTableEffects = getClassTableEffects(catalogs, character);
+  const featureModes = extractFeatureModeDescriptors(catalogs, unlockedFeatures);
   const existingFeats = Array.isArray(character?.feats) ? character.feats : [];
+  const existingOptionalFeatures = Array.isArray(character?.optionalFeatures) ? character.optionalFeatures : [];
   const slotIds = new Set(featSlots.map((slot) => slot.id));
+  const optionalSlotIds = new Set(optionalFeatureSlots.map((slot) => slot.id));
   const nextFeats = existingFeats.filter((feat) => feat && feat.name && (!feat.slotId || slotIds.has(feat.slotId)));
+  const nextOptionalFeatures = existingOptionalFeatures.filter(
+    (feature) => feature && feature.name && (!feature.slotId || optionalSlotIds.has(feature.slotId))
+  );
   const selectedFeatIds = nextFeats.map((feat) => feat.id).filter(Boolean);
+  const selectedOptionalFeatureIds = nextOptionalFeatures.map((feature) => feature.id).filter(Boolean);
   const pendingFeatSlotIds = featSlots.filter((slot) => !nextFeats.some((feat) => feat.slotId === slot.id)).map((slot) => slot.id);
+  const pendingOptionalFeatureSlotIds = optionalFeatureSlots
+    .filter((slot) => !nextOptionalFeatures.some((feature) => feature.slotId === slot.id))
+    .map((slot) => slot.id);
   return {
     unlockedFeatures,
     featSlots,
     pendingFeatSlotIds,
     selectedFeatIds,
+    optionalFeatureSlots,
+    pendingOptionalFeatureSlotIds,
+    selectedOptionalFeatureIds,
+    classTableEffects,
+    featureModes,
   };
 }
 
@@ -1332,7 +1607,25 @@ function resolveFeatureEntryFromCatalogs(catalogs, feature) {
       if (!featureSource) return true;
       return normalizeSourceTag(entry?.source) === featureSource;
     });
-    return matches[0] ?? null;
+    const match = matches[0] ?? null;
+    if (!match) return null;
+    if (Array.isArray(match?.entries) && match.entries.length) return match;
+    const copy = isRecordObject(match?._copy) ? match._copy : null;
+    if (!copy) return match;
+    const copiedName = String(copy?.name ?? "").trim().toLowerCase();
+    const copiedClassName = String(copy?.className ?? "").trim().toLowerCase();
+    const copiedSubclassName = String(copy?.subclassShortName ?? "").trim().toLowerCase();
+    const copiedLevel = toNumber(copy?.level, NaN);
+    const copiedSource = normalizeSourceTag(copy?.source);
+    const copiedEntry = (catalogs?.subclassFeatures ?? []).find((entry) => {
+      if (String(entry?.name ?? "").trim().toLowerCase() !== copiedName) return false;
+      if (String(entry?.className ?? "").trim().toLowerCase() !== copiedClassName) return false;
+      if (String(entry?.subclassShortName ?? "").trim().toLowerCase() !== copiedSubclassName) return false;
+      if (Number.isFinite(copiedLevel) && toNumber(entry?.level, NaN) !== copiedLevel) return false;
+      if (copiedSource && normalizeSourceTag(entry?.source) !== copiedSource) return false;
+      return true;
+    });
+    return copiedEntry ?? match;
   }
 
   const matches = (catalogs?.classFeatures ?? []).filter((entry) => {
@@ -1343,7 +1636,23 @@ function resolveFeatureEntryFromCatalogs(catalogs, feature) {
     if (!featureSource) return true;
     return normalizeSourceTag(entry?.source) === featureSource;
   });
-  return matches[0] ?? null;
+  const match = matches[0] ?? null;
+  if (!match) return null;
+  if (Array.isArray(match?.entries) && match.entries.length) return match;
+  const copy = isRecordObject(match?._copy) ? match._copy : null;
+  if (!copy) return match;
+  const copiedName = String(copy?.name ?? "").trim().toLowerCase();
+  const copiedClassName = String(copy?.className ?? "").trim().toLowerCase();
+  const copiedLevel = toNumber(copy?.level, NaN);
+  const copiedSource = normalizeSourceTag(copy?.source);
+  const copiedEntry = (catalogs?.classFeatures ?? []).find((entry) => {
+    if (String(entry?.name ?? "").trim().toLowerCase() !== copiedName) return false;
+    if (String(entry?.className ?? "").trim().toLowerCase() !== copiedClassName) return false;
+    if (Number.isFinite(copiedLevel) && toNumber(entry?.level, NaN) !== copiedLevel) return false;
+    if (copiedSource && normalizeSourceTag(entry?.source) !== copiedSource) return false;
+    return true;
+  });
+  return copiedEntry ?? match;
 }
 
 function getRuleDescriptionLines(entry) {
@@ -1362,7 +1671,7 @@ function openFeatureDetailsModal(state, featureId) {
           return `<p>${body}</p>`;
         })
         .join("")
-    : "<p class='muted'>No description text available.</p>";
+    : "<p class='muted'>No description is available for this feature.</p>";
   const metaRows = [
     { label: "Type", value: feature.type === "subclass" ? "Subclass Feature" : "Class Feature" },
     { label: "Class", value: feature.className || "" },
@@ -1402,7 +1711,7 @@ function openFeatDetailsModal(state, featId) {
           return `<p>${body}</p>`;
         })
         .join("")
-    : "<p class='muted'>No description text available.</p>";
+    : "<p class='muted'>No description is available for this feat.</p>";
   const metaRows = [
     { label: "Source", value: detail?.sourceLabel ?? detail?.source ?? feat.source ?? "" },
     { label: "Granted At Level", value: feat.levelGranted ? String(feat.levelGranted) : "" },
@@ -1648,6 +1957,30 @@ function collectSkillProficienciesFromEntity(entry, sourceKey, play) {
   return activeSkills;
 }
 
+function collectSkillProficienciesFromClassEntry(classEntry, play, sourceKey = "class") {
+  const activeSkills = new Set();
+  const skills = Array.isArray(classEntry?.startingProficiencies?.skills) ? classEntry.startingProficiencies.skills : [];
+  skills.forEach((entry, optionIndex) => {
+    if (typeof entry === "string") {
+      const skillKey = normalizeSkillKey(entry);
+      if (skillKey) activeSkills.add(skillKey);
+      return;
+    }
+    const choose = isRecordObject(entry?.choose) ? entry.choose : null;
+    if (!choose) return;
+    const from = (Array.isArray(choose.from) ? choose.from : [])
+      .map((value) => normalizeSkillKey(value))
+      .filter(Boolean)
+      .filter((skillKey, index, list) => list.indexOf(skillKey) === index);
+    if (!from.length) return;
+    const count = Math.max(1, Math.min(from.length, toNumber(choose.count, 1)));
+    const choiceId = `cs:${optionIndex}:choose`;
+    const selected = getAutoChoiceSelectedValues(play, sourceKey, choiceId, from, count);
+    selected.forEach((skillKey) => activeSkills.add(skillKey));
+  });
+  return activeSkills;
+}
+
 function getAutomaticSaveProficiencies(catalogs, character) {
   const auto = { ...getClassSaveProficiencies(catalogs, character?.class) };
   const raceEntry = findCatalogEntryByName(catalogs?.races, character?.race);
@@ -1669,9 +2002,16 @@ function getAutomaticSaveProficiencies(catalogs, character) {
 }
 
 function getAutomaticSkillProficiencies(catalogs, character, play) {
+  const classEntry = getClassCatalogEntry(catalogs, character?.class);
   const raceEntry = findCatalogEntryByName(catalogs?.races, character?.race);
   const backgroundEntry = findCatalogEntryByName(catalogs?.backgrounds, character?.background);
   const activeSkills = new Set();
+  if (classEntry) {
+    const className = String(classEntry?.name ?? character?.class ?? "").trim().toLowerCase();
+    collectSkillProficienciesFromClassEntry(classEntry, play, `class:${className || "primary"}`).forEach((skillKey) =>
+      activeSkills.add(skillKey)
+    );
+  }
   [raceEntry, backgroundEntry].forEach((entry) => {
     const sourceKey = entry === raceEntry ? "race" : "background";
     collectSkillProficienciesFromEntity(entry, sourceKey, play).forEach((skillKey) => activeSkills.add(skillKey));
@@ -1687,7 +2027,7 @@ function optionList(options, selected) {
     .map(
       (opt) =>
         `<option value="${esc(opt.name)}" ${selected === opt.name ? "selected" : ""}>${esc(opt.name)} (${esc(
-          opt.sourceLabel ?? opt.source ?? "UNK"
+          opt.sourceLabel ?? opt.source ?? "Unknown Source"
         )})</option>`
     )
     .join("");
@@ -1722,6 +2062,16 @@ function getFeatSlotsWithSelection(character) {
   }));
 }
 
+function getOptionalFeatureSlotsWithSelection(character) {
+  const progression = character?.progression ?? {};
+  const slots = Array.isArray(progression.optionalFeatureSlots) ? progression.optionalFeatureSlots : [];
+  const selected = Array.isArray(character?.optionalFeatures) ? character.optionalFeatures : [];
+  return slots.map((slot) => ({
+    ...slot,
+    optionalFeature: selected.find((feature) => feature.slotId === slot.id) ?? null,
+  }));
+}
+
 function getCharacterHighestClassLevel(character) {
   const tracks = getClassLevelTracks(character);
   return tracks.reduce((highest, track) => Math.max(highest, toNumber(track.level, 0)), 0);
@@ -1741,6 +2091,18 @@ function doesCharacterMeetFeatPrerequisites(character, feat) {
       const minLevel = toNumber(entry.level.level, 0);
       if (minLevel > 0 && highestClassLevel < minLevel) return false;
     }
+    return true;
+  });
+}
+
+function doesCharacterMeetOptionalFeaturePrerequisites(character, optionalFeature) {
+  const prerequisites = Array.isArray(optionalFeature?.prerequisite) ? optionalFeature.prerequisite : [];
+  if (!prerequisites.length) return true;
+  const highestClassLevel = getCharacterHighestClassLevel(character);
+  return prerequisites.some((entry) => {
+    if (!isRecordObject(entry)) return true;
+    const levelRequirement = toNumber(entry.level, NaN);
+    if (Number.isFinite(levelRequirement) && highestClassLevel < levelRequirement) return false;
     return true;
   });
 }
@@ -1829,6 +2191,116 @@ function getCharacterClassLevels(character) {
   const multiclassTotal = cleanedMulticlass.reduce((sum, entry) => sum + entry.level, 0);
   const primaryLevel = Math.max(1, totalLevel - multiclassTotal);
   return { totalLevel, primaryLevel, multiclass: cleanedMulticlass };
+}
+
+function getAdditionalHitPointEntries(catalogs, character) {
+  const { primaryLevel, multiclass } = getCharacterClassLevels(character);
+  const primaryClassName = String(character?.class ?? "").trim();
+  const entries = [];
+  const primaryFaces = getClassHitDieFaces(catalogs, primaryClassName);
+  const primaryKey = getClassKey(primaryClassName) || "primary";
+
+  for (let level = 2; level <= primaryLevel; level += 1) {
+    entries.push({
+      key: `${primaryKey}:${level}`,
+      className: primaryClassName || "Primary class",
+      classLevel: level,
+      faces: primaryFaces,
+    });
+  }
+
+  multiclass.forEach((entry) => {
+    const className = String(entry.class ?? "").trim();
+    const faces = getClassHitDieFaces(catalogs, className);
+    const classKey = getClassKey(className) || "multiclass";
+    for (let level = 1; level <= entry.level; level += 1) {
+      entries.push({
+        key: `${classKey}:${level}`,
+        className,
+        classLevel: level,
+        faces,
+      });
+    }
+  });
+  return entries;
+}
+
+function getCharacterMaxHp(catalogs, character, options = {}) {
+  const abilities = character?.abilities ?? {};
+  const conMod = Math.floor((toNumber(abilities.con, 10) - 10) / 2);
+  const { totalLevel } = getCharacterClassLevels(character);
+  const primaryFaces = getClassHitDieFaces(catalogs, character?.class);
+  const additionalEntries = getAdditionalHitPointEntries(catalogs, character);
+  const overrides = sanitizeHitPointRollOverrides(options.rollOverrides ?? character?.hitPointRollOverrides);
+  const additionalBaseHp = additionalEntries.reduce((sum, entry) => {
+    const rolled = Math.floor(toNumber(overrides[entry.key], NaN));
+    if (Number.isFinite(rolled) && rolled >= 1 && rolled <= entry.faces) return sum + rolled;
+    return sum + getFixedHitPointGain(entry.faces);
+  }, 0);
+  const constitutionHp = Math.max(0, totalLevel - 1) * conMod;
+  return Math.max(1, primaryFaces + conMod + additionalBaseHp + constitutionHp);
+}
+
+function buildLevelUpHitPointPlan(catalogs, currentCharacter, draft) {
+  const currentCharacterDraft = {
+    ...currentCharacter,
+    class: draft.primaryClass,
+    level: draft.totalLevel,
+    multiclass: draft.multiclass,
+  };
+  const currentOverrides = sanitizeHitPointRollOverrides(currentCharacter?.hitPointRollOverrides);
+  const currentEntries = getAdditionalHitPointEntries(catalogs, currentCharacter);
+  const nextEntries = getAdditionalHitPointEntries(catalogs, currentCharacterDraft);
+  const currentEntryKeys = new Set(currentEntries.map((entry) => entry.key));
+  const nextEntryKeys = new Set(nextEntries.map((entry) => entry.key));
+  const gainedEntries = nextEntries.filter((entry) => !currentEntryKeys.has(entry.key));
+  const lostEntries = currentEntries.filter((entry) => !nextEntryKeys.has(entry.key));
+  const choicesRaw = draft?.hitPointChoices;
+  const draftChoices = choicesRaw && typeof choicesRaw === "object" && !Array.isArray(choicesRaw) ? choicesRaw : {};
+  const nextRollOverrides = Object.fromEntries(Object.entries(currentOverrides).filter(([key]) => nextEntryKeys.has(key)));
+  const resolvedGainedEntries = gainedEntries.map((entry) => {
+    const draftChoice = draftChoices?.[entry.key];
+    const method = draftChoice?.method === "roll" ? "roll" : "fixed";
+    let rollValue = Math.floor(toNumber(draftChoice?.rollValue, NaN));
+    if (!(Number.isFinite(rollValue) && rollValue >= 1 && rollValue <= entry.faces)) {
+      rollValue = method === "roll" ? rollDie(entry.faces) : null;
+    }
+    const fixedValue = getFixedHitPointGain(entry.faces);
+    const baseGain = method === "roll" ? rollValue : fixedValue;
+    if (method === "roll" && Number.isFinite(rollValue)) nextRollOverrides[entry.key] = rollValue;
+    else delete nextRollOverrides[entry.key];
+    return {
+      ...entry,
+      method,
+      rollValue,
+      fixedValue,
+      baseGain,
+    };
+  });
+  const { totalLevel: currentTotalLevel } = getCharacterClassLevels(currentCharacter);
+  const { totalLevel: nextTotalLevel } = getCharacterClassLevels(currentCharacterDraft);
+  const levelDelta = nextTotalLevel - currentTotalLevel;
+  const conMod = Math.floor((toNumber(currentCharacter?.abilities?.con, 10) - 10) / 2);
+  const baseDelta = resolvedGainedEntries.reduce((sum, entry) => sum + Math.max(1, toNumber(entry.baseGain, 0)), 0)
+    - lostEntries.reduce((sum, entry) => {
+      const rolled = Math.floor(toNumber(currentOverrides[entry.key], NaN));
+      if (Number.isFinite(rolled) && rolled >= 1 && rolled <= entry.faces) return sum + rolled;
+      return sum + getFixedHitPointGain(entry.faces);
+    }, 0);
+  const conDelta = conMod * levelDelta;
+  const currentMaxHp = getCharacterMaxHp(catalogs, currentCharacter, { rollOverrides: currentOverrides });
+  const nextMaxHp = getCharacterMaxHp(catalogs, currentCharacterDraft, { rollOverrides: nextRollOverrides });
+  return {
+    levelDelta,
+    conMod,
+    currentMaxHp,
+    nextMaxHp,
+    totalDelta: nextMaxHp - currentMaxHp,
+    baseDelta,
+    conDelta,
+    gainedEntries: resolvedGainedEntries,
+    nextRollOverrides,
+  };
 }
 
 function getFullCasterSpellSlotsByLevel(catalogs, casterLevel) {
@@ -2557,7 +3029,7 @@ function renderOnboardingHome() {
           })}
         </div>
         <p class="subtitle">
-          Permanent characters use UUID links. <strong>Create one, then bookmark that URL in your browser.</strong>
+          Saved characters use shareable links. <strong>Create one, then bookmark it in your browser.</strong>
         </p>
         ${
           appState.startupErrorMessage
@@ -2575,8 +3047,8 @@ function renderOnboardingHome() {
         <p class="muted">
           ${
             hasLastCharacter
-              ? `Last local character UUID: ${esc(lastCharacterId)}`
-              : "No last character found in this browser yet."
+              ? `Last local character link ID: ${esc(lastCharacterId)}`
+              : "No recent local character found in this browser."
           }
         </p>
         <p class="muted">Export JSON is available in the Review step after opening or creating a character.</p>
@@ -2634,7 +3106,7 @@ function bindOnboardingEvents() {
     openModal({
       title: "Import Character JSON",
       bodyHtml: `
-        <p class="subtitle">Paste a JSON export to create a new UUID-backed character.</p>
+        <p class="subtitle">Paste a JSON backup to create a new saved character.</p>
         <textarea id="home-import-json-input" rows="14" style="width:100%; background:#0b1220; color:#e5e7eb; border:1px solid rgba(255,255,255,0.2); border-radius:10px; padding:0.6rem;"></textarea>
       `,
       actions: [
@@ -2702,6 +3174,7 @@ const pickers = createPickers({
   matchesSearchQuery,
   buildEntityId,
   doesCharacterMeetFeatPrerequisites,
+  doesCharacterMeetOptionalFeaturePrerequisites,
   updateCharacterWithRequiredSettings,
   getSpellByName,
   getSpellLevelLabel,
@@ -2721,6 +3194,7 @@ const {
   openSpellModal,
   openItemModal,
   openFeatModal,
+  openOptionalFeatureModal,
 } = pickers;
 
 const persistence = createPersistence({
@@ -2761,9 +3235,11 @@ const events = createEvents({
   getClassCatalogEntry,
   normalizeSourceTag,
   withUpdatedPlay,
+  openModal,
   openSpellModal,
   openItemModal,
   openFeatModal,
+  openOptionalFeatureModal,
   openMulticlassModal,
   openLevelUpModal,
   openSpellDetailsModal,
@@ -2806,6 +3282,7 @@ const renderers = createRenderers({
   optionList,
   getSubclassSelectOptions,
   getFeatSlotsWithSelection,
+  getOptionalFeatureSlotsWithSelection,
   getCharacterSpellSlotDefaults,
   defaultDiceResultMessage: DEFAULT_DICE_RESULT_MESSAGE,
   renderDiceStyleOptions,
@@ -2934,11 +3411,40 @@ function updateCharacterWithRequiredSettings(state, patch, options = {}) {
   const defaultSpellSlots = getCharacterSpellSlotDefaults(state.catalogs, nextCharacter);
   syncSpellSlotsWithDefaults(nextPlay, defaultSpellSlots, { preserveUserOverrides: options.preserveUserOverrides !== false });
   const nextProgression = recomputeCharacterProgression(state.catalogs, nextCharacter);
+  const autoGrantedSpells = getAutoGrantedSpellNames(state.catalogs, nextCharacter);
+  const previousAutoSpells = Array.isArray(nextPlay.autoGrantedSpells) ? nextPlay.autoGrantedSpells : [];
+  const previousAutoSet = new Set(previousAutoSpells.map((name) => String(name ?? "").trim().toLowerCase()).filter(Boolean));
+  const manualSpells = (Array.isArray(nextCharacter.spells) ? nextCharacter.spells : []).filter(
+    (name) => !previousAutoSet.has(String(name ?? "").trim().toLowerCase())
+  );
+  const mergedSpellMap = new Map();
+  [...manualSpells, ...autoGrantedSpells].forEach((name) => {
+    const normalized = String(name ?? "").trim();
+    if (!normalized) return;
+    const key = normalized.toLowerCase();
+    if (!mergedSpellMap.has(key)) mergedSpellMap.set(key, normalized);
+  });
+  const nextSpells = [...mergedSpellMap.values()];
+  nextPlay.autoGrantedSpells = autoGrantedSpells;
+  nextPlay.preparedSpells = Object.fromEntries(
+    Object.entries(nextPlay.preparedSpells ?? {}).filter(([name]) =>
+      mergedSpellMap.has(String(name ?? "").trim().toLowerCase())
+    )
+  );
   const autoTrackers = getAutoResourcesFromRules(state.catalogs, nextCharacter, nextProgression.unlockedFeatures, nextCharacter.feats);
   nextPlay.featureUses = syncAutoFeatureUses(nextPlay, autoTrackers);
-  nextPlay.resources = (Array.isArray(nextPlay.resources) ? nextPlay.resources : []).filter(
-    (resource) => !String(resource?.autoId ?? "").startsWith(AUTO_RESOURCE_ID_PREFIX)
-  );
+  const allowedFeatureModeIds = new Set((nextProgression.featureModes ?? []).map((mode) => mode.id));
+  const nextFeatureModes = isRecordObject(nextPlay.featureModes) ? { ...nextPlay.featureModes } : {};
+  Object.keys(nextFeatureModes).forEach((modeId) => {
+    if (!allowedFeatureModeIds.has(modeId)) delete nextFeatureModes[modeId];
+  });
+  (nextProgression.featureModes ?? []).forEach((mode) => {
+    const options = Array.isArray(mode?.optionValues) ? mode.optionValues : [];
+    if (!options.length) return;
+    const current = String(nextFeatureModes[mode.id] ?? "").trim();
+    if (!current || !options.includes(current)) nextFeatureModes[mode.id] = options[0];
+  });
+  nextPlay.featureModes = nextFeatureModes;
   const selectedSubclass = getSelectedSubclassEntry(state.catalogs, nextCharacter);
   const existingSelection = nextCharacter.classSelection?.subclass ?? {};
   const classSelection = {
@@ -2958,6 +3464,8 @@ function updateCharacterWithRequiredSettings(state, patch, options = {}) {
     classSelection,
     progression: nextProgression,
     feats: nextCharacter.feats,
+    optionalFeatures: nextCharacter.optionalFeatures,
+    spells: nextSpells,
     play: nextPlay,
   });
 }
@@ -2968,6 +3476,7 @@ function createLevelUpDraft(character) {
     totalLevel,
     primaryClass: String(character?.class ?? "").trim(),
     multiclass: multiclass.map((entry) => ({ ...entry })),
+    hitPointChoices: {},
   };
 }
 
@@ -2980,7 +3489,25 @@ function sanitizeLevelUpDraft(draft) {
       level: Math.max(1, Math.min(20, toNumber(entry?.level, 1))),
     }))
     .filter((entry) => entry.class);
-  return { totalLevel, primaryClass, multiclass };
+  const hitPointChoicesRaw = draft?.hitPointChoices;
+  const hitPointChoices =
+    hitPointChoicesRaw && typeof hitPointChoicesRaw === "object" && !Array.isArray(hitPointChoicesRaw)
+      ? Object.fromEntries(
+          Object.entries(hitPointChoicesRaw).map(([key, choice]) => {
+            const normalizedKey = String(key ?? "").trim();
+            const method = choice?.method === "roll" ? "roll" : "fixed";
+            const rollValue = Math.floor(toNumber(choice?.rollValue, NaN));
+            return [
+              normalizedKey,
+              {
+                method,
+                rollValue: Number.isFinite(rollValue) && rollValue > 0 ? rollValue : null,
+              },
+            ];
+          })
+        )
+      : {};
+  return { totalLevel, primaryClass, multiclass, hitPointChoices };
 }
 
 function getSaveProficiencyLabelMap(saveProficiencies) {
@@ -3001,13 +3528,41 @@ function getLevelUpPreview(state, draft) {
   const changedSlotLevels = SPELL_SLOT_LEVELS.filter((level) => toNumber(currentSlots[String(level)], 0) !== toNumber(nextSlots[String(level)], 0));
   const currentSaves = getAutomaticSaveProficiencies(state.catalogs, currentCharacter);
   const nextSaves = getAutomaticSaveProficiencies(state.catalogs, nextCharacter);
+  const currentProgression = recomputeCharacterProgression(state.catalogs, currentCharacter);
+  const nextProgression = recomputeCharacterProgression(state.catalogs, nextCharacter);
+  const currentAutoSpells = getAutoGrantedSpellNames(state.catalogs, currentCharacter);
+  const nextAutoSpells = getAutoGrantedSpellNames(state.catalogs, nextCharacter);
+  const currentSpellSet = new Set(currentAutoSpells.map((name) => name.toLowerCase()));
+  const nextSpellSet = new Set(nextAutoSpells.map((name) => name.toLowerCase()));
+  const addedAutoSpells = nextAutoSpells.filter((name) => !currentSpellSet.has(name.toLowerCase()));
+  const removedAutoSpells = currentAutoSpells.filter((name) => !nextSpellSet.has(name.toLowerCase()));
+  const currentFeatureIds = new Set((currentProgression.unlockedFeatures ?? []).map((feature) => feature.id));
+  const nextFeatureIds = new Set((nextProgression.unlockedFeatures ?? []).map((feature) => feature.id));
+  const addedFeatures = (nextProgression.unlockedFeatures ?? []).filter((feature) => !currentFeatureIds.has(feature.id));
+  const removedFeatures = (currentProgression.unlockedFeatures ?? []).filter((feature) => !nextFeatureIds.has(feature.id));
+  const currentEffects = new Map((currentProgression.classTableEffects ?? []).map((effect) => [effect.id, effect]));
+  const nextEffects = new Map((nextProgression.classTableEffects ?? []).map((effect) => [effect.id, effect]));
+  const changedClassTableEffects = [...nextEffects.values()].filter((effect) => {
+    const previous = currentEffects.get(effect.id);
+    if (!previous) return true;
+    return String(previous.value) !== String(effect.value);
+  });
+  const hitPointPlan = buildLevelUpHitPointPlan(state.catalogs, currentCharacter, draft);
   return {
     currentSlots,
     nextSlots,
     changedSlotLevels,
     currentSaves,
     nextSaves,
+    currentProgression,
+    nextProgression,
+    addedFeatures,
+    removedFeatures,
+    addedAutoSpells,
+    removedAutoSpells,
+    changedClassTableEffects,
     classLevels: getCharacterClassLevels(nextCharacter),
+    hitPointPlan,
   };
 }
 
@@ -3022,7 +3577,7 @@ function openLevelUpModal(state) {
         onClick: (done) => {
           const sanitized = sanitizeLevelUpDraft(draft);
           if (!sanitized.primaryClass) {
-            alert("Select a primary class.");
+            alert("Choose a primary class.");
             return;
           }
           const multiclassTotal = sanitized.multiclass.reduce((sum, entry) => sum + entry.level, 0);
@@ -3036,6 +3591,7 @@ function openLevelUpModal(state) {
               class: sanitized.primaryClass,
               level: sanitized.totalLevel,
               multiclass: sanitized.multiclass,
+              hitPointRollOverrides: getLevelUpPreview(state, sanitized).hitPointPlan.nextRollOverrides,
             },
             { preserveUserOverrides: true }
           );
@@ -3048,6 +3604,22 @@ function openLevelUpModal(state) {
 
   const root = document.getElementById("levelup-editor");
   if (!root) return close;
+  let levelInputRenderTimer = null;
+  const clampLevelValue = (value) => Math.max(1, Math.min(20, toNumber(value, 1)));
+  const renderEditorSoon = () => {
+    if (levelInputRenderTimer != null) clearTimeout(levelInputRenderTimer);
+    levelInputRenderTimer = window.setTimeout(() => {
+      levelInputRenderTimer = null;
+      renderEditor();
+    }, 250);
+  };
+  const renderEditorNow = () => {
+    if (levelInputRenderTimer != null) {
+      clearTimeout(levelInputRenderTimer);
+      levelInputRenderTimer = null;
+    }
+    renderEditor();
+  };
 
   const renderEditor = () => {
     root.innerHTML = renderLevelUpBody(state, draft);
@@ -3055,23 +3627,27 @@ function openLevelUpModal(state) {
     if (primaryClassEl) primaryClassEl.value = draft.primaryClass;
 
     document.getElementById("levelup-total-level")?.addEventListener("input", (evt) => {
-      draft.totalLevel = Math.max(1, Math.min(20, toNumber(evt.target.value, 1)));
-      renderEditor();
+      draft.totalLevel = clampLevelValue(evt.target.value);
+      renderEditorSoon();
+    });
+    document.getElementById("levelup-total-level")?.addEventListener("change", (evt) => {
+      draft.totalLevel = clampLevelValue(evt.target.value);
+      renderEditorNow();
     });
     primaryClassEl?.addEventListener("change", (evt) => {
       draft.primaryClass = evt.target.value;
-      renderEditor();
+      renderEditorNow();
     });
     root.querySelector("[data-levelup-add-mc]")?.addEventListener("click", () => {
       draft.multiclass.push({ class: "", level: 1 });
-      renderEditor();
+      renderEditorNow();
     });
     root.querySelectorAll("[data-levelup-mc-remove]").forEach((button) => {
       button.addEventListener("click", () => {
         const idx = toNumber(button.dataset.levelupMcRemove, -1);
         if (idx < 0) return;
         draft.multiclass.splice(idx, 1);
-        renderEditor();
+        renderEditorNow();
       });
     });
     root.querySelectorAll("[data-levelup-mc-class]").forEach((select) => {
@@ -3079,21 +3655,78 @@ function openLevelUpModal(state) {
         const idx = toNumber(select.dataset.levelupMcClass, -1);
         if (idx < 0 || !draft.multiclass[idx]) return;
         draft.multiclass[idx].class = select.value;
-        renderEditor();
+        renderEditorNow();
       });
     });
     root.querySelectorAll("[data-levelup-mc-level]").forEach((input) => {
       input.addEventListener("input", () => {
         const idx = toNumber(input.dataset.levelupMcLevel, -1);
         if (idx < 0 || !draft.multiclass[idx]) return;
-        draft.multiclass[idx].level = Math.max(1, Math.min(20, toNumber(input.value, 1)));
-        renderEditor();
+        draft.multiclass[idx].level = clampLevelValue(input.value);
+        renderEditorSoon();
+      });
+      input.addEventListener("change", () => {
+        const idx = toNumber(input.dataset.levelupMcLevel, -1);
+        if (idx < 0 || !draft.multiclass[idx]) return;
+        draft.multiclass[idx].level = clampLevelValue(input.value);
+        renderEditorNow();
+      });
+    });
+    root.querySelectorAll("[data-levelup-step-target]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const target = String(button.dataset.levelupStepTarget ?? "");
+        const delta = toNumber(button.dataset.stepDelta, 0);
+        if (!delta) return;
+        if (target === "total-level") {
+          draft.totalLevel = clampLevelValue(toNumber(draft.totalLevel, 1) + delta);
+          renderEditorNow();
+          return;
+        }
+        if (target === "mc-level") {
+          const idx = toNumber(button.dataset.levelupStepIndex, -1);
+          if (idx < 0 || !draft.multiclass[idx]) return;
+          draft.multiclass[idx].level = clampLevelValue(toNumber(draft.multiclass[idx].level, 1) + delta);
+          renderEditorNow();
+        }
+      });
+    });
+    root.querySelectorAll("[data-levelup-hp-method]").forEach((input) => {
+      input.addEventListener("change", () => {
+        const key = String(input.dataset.levelupHpKey ?? "").trim();
+        if (!key) return;
+        const method = input.value === "roll" ? "roll" : "fixed";
+        const faces = Math.max(1, toNumber(input.dataset.levelupHpFaces, 8));
+        const existing = draft.hitPointChoices[key] ?? { method: "fixed", rollValue: null };
+        draft.hitPointChoices[key] = {
+          ...existing,
+          method,
+          rollValue: method === "roll" ? existing.rollValue ?? rollDie(faces) : null,
+        };
+        renderEditorNow();
+      });
+    });
+    root.querySelectorAll("[data-levelup-hp-reroll]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const key = String(button.dataset.levelupHpReroll ?? "").trim();
+        if (!key) return;
+        const faces = Math.max(1, toNumber(button.dataset.levelupHpFaces, 8));
+        draft.hitPointChoices[key] = {
+          method: "roll",
+          rollValue: rollDie(faces),
+        };
+        renderEditorNow();
       });
     });
   };
 
   renderEditor();
-  return close;
+  return () => {
+    if (levelInputRenderTimer != null) {
+      clearTimeout(levelInputRenderTimer);
+      levelInputRenderTimer = null;
+    }
+    close();
+  };
 }
 
 function openMulticlassModal(state) {
@@ -3101,7 +3734,7 @@ function openMulticlassModal(state) {
   const close = openModal({
     title: "Multiclass Editor",
     bodyHtml: `
-      <p class="subtitle">Add one secondary class at a time.</p>
+      <p class="subtitle">Add one secondary class at a time to build your multiclass.</p>
       <div class="row">
         <label>Class
           <select id="mc-class">
@@ -3114,7 +3747,7 @@ function openMulticlassModal(state) {
         </label>
       </div>
       <h4>Current</h4>
-      <div>${existing.length ? existing.map((m) => `<span class="pill">${esc(m.class)} ${esc(m.level)}</span>`).join(" ") : "<span class='muted'>No multiclass entries yet.</span>"}</div>
+      <div>${existing.length ? existing.map((m) => `<span class="pill">${esc(m.class)} ${esc(m.level)}</span>`).join(" ") : "<span class='muted'>No secondary classes added yet.</span>"}</div>
     `,
     actions: [
       {

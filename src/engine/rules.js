@@ -7,6 +7,82 @@ function proficiencyBonus(level) {
   return 2 + Math.floor((lvl - 1) / 4);
 }
 
+function getClassKey(className) {
+  return String(className ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z]/g, "");
+}
+
+function toNumber(value, fallback = 0) {
+  const out = Number(value);
+  return Number.isFinite(out) ? out : fallback;
+}
+
+function getCharacterClassLevels(character) {
+  const totalLevel = Math.max(1, Math.min(20, toNumber(character?.level, 1)));
+  const multiclassEntries = Array.isArray(character?.multiclass) ? character.multiclass : [];
+  const cleanedMulticlass = multiclassEntries
+    .map((entry) => ({
+      class: String(entry?.class ?? "").trim(),
+      level: Math.max(1, Math.min(20, toNumber(entry?.level, 1))),
+    }))
+    .filter((entry) => entry.class);
+  const multiclassTotal = cleanedMulticlass.reduce((sum, entry) => sum + entry.level, 0);
+  const primaryLevel = Math.max(1, totalLevel - multiclassTotal);
+  return { totalLevel, primaryLevel, multiclass: cleanedMulticlass };
+}
+
+function getClassHitDieFaces(catalogs, className) {
+  const selectedName = String(className ?? "").trim().toLowerCase();
+  if (!selectedName || !Array.isArray(catalogs?.classes)) return 8;
+  const classEntry = catalogs.classes.find((entry) => String(entry?.name ?? "").trim().toLowerCase() === selectedName);
+  const faces = Math.max(0, toNumber(classEntry?.hd?.faces, 0));
+  return faces > 0 ? faces : 8;
+}
+
+function getFixedHitPointGain(faces) {
+  return Math.max(1, Math.floor(Math.max(1, faces) / 2) + 1);
+}
+
+function getAdditionalHitPointEntries(catalogs, character) {
+  const { primaryLevel, multiclass } = getCharacterClassLevels(character);
+  const primaryClassName = String(character?.class ?? "").trim();
+  const entries = [];
+  const primaryFaces = getClassHitDieFaces(catalogs, primaryClassName);
+  const primaryKey = getClassKey(primaryClassName) || "primary";
+
+  for (let level = 2; level <= primaryLevel; level += 1) {
+    entries.push({
+      key: `${primaryKey}:${level}`,
+      faces: primaryFaces,
+    });
+  }
+
+  multiclass.forEach((entry) => {
+    const className = String(entry.class ?? "").trim();
+    const faces = getClassHitDieFaces(catalogs, className);
+    const classKey = getClassKey(className) || "multiclass";
+    for (let level = 1; level <= entry.level; level += 1) {
+      entries.push({
+        key: `${classKey}:${level}`,
+        faces,
+      });
+    }
+  });
+
+  return entries;
+}
+
+function sanitizeHitPointRollOverrides(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  return Object.fromEntries(
+    Object.entries(raw)
+      .map(([key, value]) => [String(key ?? "").trim(), Math.floor(toNumber(value, NaN))])
+      .filter(([key, value]) => key && Number.isFinite(value) && value > 0)
+  );
+}
+
 function getEquippedInventoryEntries(character) {
   const inventory = Array.isArray(character?.inventory) ? character.inventory : [];
   return inventory.filter((entry) => entry && typeof entry === "object" && !Array.isArray(entry) && Boolean(entry.equipped));
@@ -51,7 +127,7 @@ function getArmorClassFromEquipment(character, dexMod) {
   return 10 + dexMod + shieldBonus;
 }
 
-export function computeDerivedStats(character) {
+export function computeDerivedStats(character, catalogs = null) {
   const abilities = character.abilities ?? {};
   const mods = {
     str: abilityMod(abilities.str),
@@ -62,7 +138,15 @@ export function computeDerivedStats(character) {
     cha: abilityMod(abilities.cha),
   };
   const prof = proficiencyBonus(character.level);
-  const hp = Math.max(1, 8 + mods.con + (Number(character.level || 1) - 1) * (5 + mods.con));
+  const { totalLevel } = getCharacterClassLevels(character);
+  const primaryFaces = getClassHitDieFaces(catalogs, character?.class);
+  const overrides = sanitizeHitPointRollOverrides(character?.hitPointRollOverrides);
+  const additionalBaseHp = getAdditionalHitPointEntries(catalogs, character).reduce((sum, entry) => {
+    const rolled = Math.floor(toNumber(overrides[entry.key], NaN));
+    if (Number.isFinite(rolled) && rolled >= 1 && rolled <= entry.faces) return sum + rolled;
+    return sum + getFixedHitPointGain(entry.faces);
+  }, 0);
+  const hp = Math.max(1, primaryFaces + mods.con + additionalBaseHp + Math.max(0, totalLevel - 1) * mods.con);
   const ac = getArmorClassFromEquipment(character, mods.dex);
 
   return {

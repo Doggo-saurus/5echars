@@ -12,9 +12,11 @@ export function createEvents(deps) {
     getClassCatalogEntry,
     normalizeSourceTag,
     withUpdatedPlay,
+    openModal,
     openSpellModal,
     openItemModal,
     openFeatModal,
+    openOptionalFeatureModal,
     openMulticlassModal,
     openLevelUpModal,
     openSpellDetailsModal,
@@ -39,12 +41,114 @@ export function createEvents(deps) {
     uiState,
     diceStylePresets,
   } = deps;
+  let playManualMenuOutsideClickHandler = null;
+
+  function clearPlayManualMenuOutsideClickHandler() {
+    if (typeof playManualMenuOutsideClickHandler !== "function") return;
+    document.removeEventListener("pointerdown", playManualMenuOutsideClickHandler, true);
+    playManualMenuOutsideClickHandler = null;
+  }
 
   function normalizeItemTypeCode(value) {
     return String(value ?? "")
       .split("|")[0]
       .trim()
       .toUpperCase();
+  }
+
+  function esc(value) {
+    return String(value ?? "")
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll("\"", "&quot;")
+      .replaceAll("'", "&#39;");
+  }
+
+  function getClassKey(className) {
+    return String(className ?? "")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z]/g, "");
+  }
+
+  function normalizeHitDiceSpent(raw) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+    return Object.fromEntries(
+      Object.entries(raw)
+        .map(([key, value]) => [String(key ?? "").trim(), Math.max(0, Math.floor(toNumber(value, 0)))])
+        .filter(([key, value]) => key && value > 0)
+    );
+  }
+
+  function getCharacterClassLevels(character) {
+    const totalLevel = Math.max(1, Math.min(20, toNumber(character?.level, 1)));
+    const multiclassEntries = Array.isArray(character?.multiclass) ? character.multiclass : [];
+    const cleanedMulticlass = multiclassEntries
+      .map((entry) => ({
+        class: String(entry?.class ?? "").trim(),
+        level: Math.max(1, Math.min(20, toNumber(entry?.level, 1))),
+      }))
+      .filter((entry) => entry.class);
+    const multiclassTotal = cleanedMulticlass.reduce((sum, entry) => sum + entry.level, 0);
+    const primaryLevel = Math.max(1, totalLevel - multiclassTotal);
+    return { primaryLevel, multiclass: cleanedMulticlass };
+  }
+
+  function getClassHitDieFaces(catalogs, className) {
+    const selectedName = String(className ?? "").trim().toLowerCase();
+    if (!selectedName || !Array.isArray(catalogs?.classes)) return 8;
+    const classEntry = catalogs.classes.find((entry) => String(entry?.name ?? "").trim().toLowerCase() === selectedName);
+    const faces = Math.max(0, toNumber(classEntry?.hd?.faces, 0));
+    return faces > 0 ? faces : 8;
+  }
+
+  function getHitDicePools(currentState) {
+    const { character, catalogs } = currentState;
+    const { primaryLevel, multiclass } = getCharacterClassLevels(character);
+    const classEntries = [];
+    const primaryClassName = String(character?.class ?? "").trim() || "Class";
+    classEntries.push({ className: primaryClassName, level: primaryLevel, order: 0 });
+    multiclass.forEach((entry, idx) => {
+      classEntries.push({ className: String(entry.class ?? "").trim() || `Class ${idx + 2}`, level: entry.level, order: idx + 1 });
+    });
+    const poolMap = new Map();
+    classEntries.forEach((entry) => {
+      const key = getClassKey(entry.className) || `class${entry.order + 1}`;
+      const existing = poolMap.get(key);
+      const faces = getClassHitDieFaces(catalogs, entry.className);
+      if (existing) {
+        existing.max += entry.level;
+        existing.faces = Math.max(existing.faces, faces);
+        return;
+      }
+      poolMap.set(key, {
+        key,
+        className: entry.className,
+        faces,
+        max: entry.level,
+        order: entry.order,
+      });
+    });
+    return [...poolMap.values()];
+  }
+
+  function refreshShortRestResources(play) {
+    play.deathSavesSuccess = 0;
+    play.deathSavesFail = 0;
+    const featureUses =
+      play.featureUses && typeof play.featureUses === "object" && !Array.isArray(play.featureUses)
+        ? { ...play.featureUses }
+        : {};
+    Object.entries(featureUses).forEach(([key, tracker]) => {
+      if (!tracker || typeof tracker !== "object") return;
+      const recharge = String(tracker.recharge ?? "");
+      if (recharge === "short" || recharge === "shortOrLong") {
+        const max = Math.max(0, toNumber(tracker.max, 0));
+        featureUses[key] = { ...tracker, current: max };
+      }
+    });
+    play.featureUses = featureUses;
   }
 
   function isBodyArmorEntry(entry) {
@@ -96,6 +200,7 @@ export function createEvents(deps) {
   }
 
   function bindBuildEvents(state) {
+    clearPlayManualMenuOutsideClickHandler();
     app.querySelectorAll("[data-step]").forEach((btn) => {
       btn.addEventListener("click", () => store.setStep(Number(btn.dataset.step)));
     });
@@ -335,12 +440,27 @@ export function createEvents(deps) {
         openFeatModal(state, slotId);
       });
     });
+    app.querySelectorAll("[data-open-optional-feature-picker]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const slotId = button.dataset.openOptionalFeaturePicker;
+        if (!slotId) return;
+        openOptionalFeatureModal(state, slotId);
+      });
+    });
     app.querySelectorAll("[data-remove-feat-slot]").forEach((button) => {
       button.addEventListener("click", () => {
         const slotId = button.dataset.removeFeatSlot;
         if (!slotId) return;
         const feats = (state.character.feats ?? []).filter((feat) => feat.slotId !== slotId);
         updateCharacterWithRequiredSettings(state, { feats }, { preserveUserOverrides: true });
+      });
+    });
+    app.querySelectorAll("[data-remove-optional-feature-slot]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const slotId = button.dataset.removeOptionalFeatureSlot;
+        if (!slotId) return;
+        const optionalFeatures = (state.character.optionalFeatures ?? []).filter((feature) => feature.slotId !== slotId);
+        updateCharacterWithRequiredSettings(state, { optionalFeatures }, { preserveUserOverrides: true });
       });
     });
     app.querySelector("#open-multiclass")?.addEventListener("click", () => openMulticlassModal(state));
@@ -434,6 +554,7 @@ export function createEvents(deps) {
   }
 
   function bindPlayEvents(state) {
+    clearPlayManualMenuOutsideClickHandler();
     const LONG_PRESS_CHOOSER_DELAY_MS = 500;
     const longPressRollChooser = (() => {
       let overlayEl = null;
@@ -693,6 +814,25 @@ export function createEvents(deps) {
     app.querySelector("[data-open-class-info]")?.addEventListener("click", () => {
       openClassDetailsModal(state);
     });
+    const manualMenuEl = app.querySelector(".play-manual-menu");
+    if (manualMenuEl) {
+      playManualMenuOutsideClickHandler = (event) => {
+        if (!manualMenuEl.hasAttribute("open")) return;
+        const target = event.target;
+        if (target instanceof Node && manualMenuEl.contains(target)) return;
+        manualMenuEl.removeAttribute("open");
+      };
+      document.addEventListener("pointerdown", playManualMenuOutsideClickHandler, true);
+      manualMenuEl.querySelectorAll(".play-manual-links a").forEach((link) => {
+        link.addEventListener("click", () => {
+          manualMenuEl.removeAttribute("open");
+        });
+      });
+      manualMenuEl.addEventListener("keydown", (event) => {
+        if (event.key !== "Escape") return;
+        manualMenuEl.removeAttribute("open");
+      });
+    }
     app.querySelectorAll("[data-open-feature]").forEach((button) => {
       button.addEventListener("click", () => {
         const featureId = button.dataset.openFeature;
@@ -1018,12 +1158,12 @@ export function createEvents(deps) {
         }
 
         if (spellLevel === 0) {
-          setDiceResult(`Cast ${spell.name}: no dice notation found.`, false);
+          setDiceResult(`Cast ${spell.name}: no roll found in the spell text.`, false);
           return;
         }
 
         const spentText = slotSpent ? "slot spent." : "cast.";
-        setDiceResult(`Cast ${spell.name}: ${spentText} No dice notation found.`, false);
+        setDiceResult(`Cast ${spell.name}: ${spentText} No roll found in the spell text.`, false);
       });
     });
 
@@ -1177,23 +1317,42 @@ export function createEvents(deps) {
       });
     });
 
-    app.querySelector("#add-condition")?.addEventListener("click", () => {
-      const input = app.querySelector("#play-condition-input");
-      const value = input.value.trim();
-      if (!value) return;
-      withUpdatedPlay(state, (play) => {
-        play.conditions = [...(play.conditions ?? []), value];
+    const normalizeConditionName = (value) => String(value ?? "").trim().toLowerCase();
+    app.querySelectorAll("[data-toggle-condition-name]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const conditionName = String(button.dataset.toggleConditionName ?? "").trim();
+        if (!conditionName) return;
+        withUpdatedPlay(state, (play) => {
+          const current = Array.isArray(play.conditions)
+            ? play.conditions.map((entry) => String(entry ?? "").trim()).filter(Boolean)
+            : [];
+          const target = normalizeConditionName(conditionName);
+          const hasCondition = current.some((entry) => normalizeConditionName(entry) === target);
+          if (hasCondition) {
+            play.conditions = current.filter((entry) => normalizeConditionName(entry) !== target);
+            return;
+          }
+          play.conditions = [...current, conditionName];
+        });
       });
     });
 
-    app.querySelectorAll("[data-remove-condition]").forEach((button) => {
+    app.querySelectorAll("[data-remove-condition-name]").forEach((button) => {
       button.addEventListener("click", () => {
-        const idx = toNumber(button.dataset.removeCondition, -1);
+        const conditionName = String(button.dataset.removeConditionName ?? "").trim();
+        if (!conditionName) return;
         withUpdatedPlay(state, (play) => {
-          const next = [...(play.conditions ?? [])];
-          if (idx >= 0) next.splice(idx, 1);
-          play.conditions = next;
+          const current = Array.isArray(play.conditions)
+            ? play.conditions.map((entry) => String(entry ?? "").trim()).filter(Boolean)
+            : [];
+          const target = normalizeConditionName(conditionName);
+          play.conditions = current.filter((entry) => normalizeConditionName(entry) !== target);
         });
+      });
+    });
+    app.querySelector("[data-clear-conditions]")?.addEventListener("click", () => {
+      withUpdatedPlay(state, (play) => {
+        play.conditions = [];
       });
     });
 
@@ -1204,80 +1363,203 @@ export function createEvents(deps) {
       });
     });
 
-    app.querySelector("#add-resource")?.addEventListener("click", () => {
-      withUpdatedPlay(state, (play) => {
-        play.resources = [...(play.resources ?? []), { name: "", current: 0, max: 0 }];
-      });
-    });
-
-    app.querySelectorAll("[data-resource-field]").forEach((input) => {
-      input.addEventListener("input", () => {
-        const [idxStr, field] = input.dataset.resourceField.split(":");
-        const idx = toNumber(idxStr, 0);
+    app.querySelectorAll("[data-feature-mode-id]").forEach((select) => {
+      select.addEventListener("change", () => {
+        const modeId = String(select.dataset.featureModeId ?? "").trim();
+        if (!modeId) return;
+        const value = String(select.value ?? "").trim();
         withUpdatedPlay(state, (play) => {
-          const next = [...(play.resources ?? [])];
-          const prev = next[idx] ?? { name: "", current: 0, max: 0 };
-          const value = field === "name" ? input.value : Math.max(0, toNumber(input.value, 0));
-          next[idx] = { ...prev, [field]: value };
-          play.resources = next;
-        });
-      });
-    });
-
-    app.querySelectorAll("[data-remove-resource]").forEach((button) => {
-      button.addEventListener("click", () => {
-        const idx = toNumber(button.dataset.removeResource, -1);
-        withUpdatedPlay(state, (play) => {
-          const next = [...(play.resources ?? [])];
-          if (idx >= 0) next.splice(idx, 1);
-          play.resources = next;
+          const nextModes =
+            play.featureModes && typeof play.featureModes === "object" && !Array.isArray(play.featureModes)
+              ? { ...play.featureModes }
+              : {};
+          nextModes[modeId] = value;
+          play.featureModes = nextModes;
         });
       });
     });
 
     app.querySelector("#short-rest")?.addEventListener("click", () => {
-      withUpdatedPlay(state, (play) => {
-        play.deathSavesSuccess = 0;
-        play.deathSavesFail = 0;
-        const featureUses =
-          play.featureUses && typeof play.featureUses === "object" && !Array.isArray(play.featureUses)
-            ? { ...play.featureUses }
-            : {};
-        Object.entries(featureUses).forEach(([key, tracker]) => {
-          if (!tracker || typeof tracker !== "object") return;
-          const recharge = String(tracker.recharge ?? "");
-          if (recharge === "short" || recharge === "shortOrLong") {
-            const max = Math.max(0, toNumber(tracker.max, 0));
-            featureUses[key] = { ...tracker, current: max };
-          }
+      const currentState = store.getState();
+      const pools = getHitDicePools(currentState);
+      const spentMap = normalizeHitDiceSpent(currentState.character?.play?.hitDiceSpent);
+      const conMod = toNumber(currentState.derived?.mods?.con, 0);
+      const maxHp = Math.max(1, toNumber(currentState.derived?.hp, 1));
+      const hpCurrentRaw = currentState.character?.play?.hpCurrent;
+      const hasExplicitCurrentHp = hpCurrentRaw != null && String(hpCurrentRaw).trim() !== "";
+      const currentHp = hasExplicitCurrentHp ? Math.max(0, toNumber(hpCurrentRaw, maxHp)) : maxHp;
+      const rowsHtml = pools
+        .map((pool) => {
+          const spent = Math.max(0, toNumber(spentMap[pool.key], 0));
+          const available = Math.max(0, pool.max - spent);
+          return `
+            <div class="short-rest-hitdie-row">
+              <span class="short-rest-hitdie-meta">
+                <strong>${esc(pool.className)}</strong>
+                <span class="muted">d${esc(pool.faces)} | ${esc(available)}/${esc(pool.max)} available</span>
+              </span>
+              <div class="short-rest-hitdie-controls">
+                <button type="button" class="btn secondary short-rest-adjust-btn" data-short-rest-adjust="${esc(pool.key)}" data-short-rest-delta="-1" ${available > 0 ? "" : "disabled"}>-</button>
+                <input
+                  type="number"
+                  min="0"
+                  max="${esc(available)}"
+                  value="0"
+                  readonly
+                  aria-label="Hit dice to spend for ${esc(pool.className)}"
+                  data-short-rest-spend="${esc(pool.key)}"
+                  ${available > 0 ? "" : "disabled"}
+                >
+                <button type="button" class="btn secondary short-rest-adjust-btn" data-short-rest-adjust="${esc(pool.key)}" data-short-rest-delta="1" ${available > 0 ? "" : "disabled"}>+</button>
+              </div>
+            </div>
+          `;
+        })
+        .join("");
+      openModal({
+        title: "Short Rest",
+        bodyHtml: `
+          <div class="short-rest-shell">
+            <p class="muted short-rest-copy">Spend hit dice, then apply short-rest refreshes.</p>
+            <div class="short-rest-stat-row"><span>HP</span><strong>${esc(currentHp)} / ${esc(maxHp)}</strong></div>
+            <p class="muted short-rest-help">Use + and - to choose how many hit dice to spend for each class.</p>
+            <label class="short-rest-option">
+              <input type="checkbox" id="short-rest-average-healing">
+              Use average healing per die (dX/2 + 1 + CON)
+            </label>
+            <div class="short-rest-hitdice-list">
+              ${rowsHtml || "<p class='muted'>No hit dice available.</p>"}
+            </div>
+          </div>
+        `,
+        actions: [
+          { label: "Cancel", secondary: true, onClick: (close) => close() },
+          {
+            label: "Apply Short Rest",
+            onClick: (close) => {
+              const modal = document.querySelector(".modal");
+              const useAverage = Boolean(modal?.querySelector("#short-rest-average-healing")?.checked);
+              const spends = {};
+              let totalSpentDice = 0;
+              pools.forEach((pool) => {
+                const input = modal?.querySelector(`[data-short-rest-spend="${pool.key}"]`);
+                const requested = Math.max(0, Math.floor(toNumber(input?.value, 0)));
+                const spent = Math.max(0, toNumber(spentMap[pool.key], 0));
+                const available = Math.max(0, pool.max - spent);
+                const spendCount = Math.min(available, requested);
+                if (spendCount < 1) return;
+                spends[pool.key] = spendCount;
+                totalSpentDice += spendCount;
+              });
+
+              let totalHealing = 0;
+              Object.entries(spends).forEach(([poolKey, spendCount]) => {
+                const pool = pools.find((entry) => entry.key === poolKey);
+                if (!pool) return;
+                for (let idx = 0; idx < spendCount; idx += 1) {
+                  const roll = useAverage
+                    ? Math.floor(Math.max(1, pool.faces) / 2) + 1
+                    : Math.floor(Math.random() * Math.max(1, pool.faces)) + 1;
+                  totalHealing += Math.max(0, roll + conMod);
+                }
+              });
+
+              const latestState = store.getState();
+              const latestMaxHp = Math.max(1, toNumber(latestState.derived?.hp, 1));
+              const latestCurrentHp = Math.max(0, toNumber(latestState.character?.play?.hpCurrent, latestMaxHp));
+              const healedHp = Math.min(latestMaxHp, latestCurrentHp + totalHealing);
+              withUpdatedPlay(latestState, (play) => {
+                refreshShortRestResources(play);
+                const nextSpentMap = normalizeHitDiceSpent(play.hitDiceSpent);
+                Object.entries(spends).forEach(([poolKey, spendCount]) => {
+                  const previous = Math.max(0, toNumber(nextSpentMap[poolKey], 0));
+                  const total = previous + spendCount;
+                  if (total > 0) nextSpentMap[poolKey] = total;
+                });
+                play.hitDiceSpent = nextSpentMap;
+                if (totalHealing > 0) play.hpCurrent = healedHp;
+              });
+              if (totalSpentDice > 0) {
+                const modeLabel = useAverage ? "average" : "rolled";
+                setDiceResult(`Short Rest: ${modeLabel} ${totalSpentDice} hit dice for ${totalHealing} HP (${latestCurrentHp} -> ${healedHp}).`);
+              } else {
+                setDiceResult("Short Rest applied. No hit dice were spent.");
+              }
+              close();
+            },
+          },
+        ],
+      });
+      const modal = document.querySelector(".modal");
+      modal?.querySelectorAll("[data-short-rest-adjust]").forEach((button) => {
+        button.addEventListener("click", () => {
+          const poolKey = String(button.dataset.shortRestAdjust ?? "").trim();
+          if (!poolKey) return;
+          const delta = Math.floor(toNumber(button.dataset.shortRestDelta, 0));
+          if (!delta) return;
+          const input = modal.querySelector(`[data-short-rest-spend="${poolKey}"]`);
+          if (!(input instanceof HTMLInputElement) || input.disabled) return;
+          const min = Math.max(0, Math.floor(toNumber(input.min, 0)));
+          const max = Math.max(min, Math.floor(toNumber(input.max, min)));
+          const current = Math.floor(toNumber(input.value, 0));
+          const next = Math.min(max, Math.max(min, current + delta));
+          input.value = String(next);
         });
-        play.featureUses = featureUses;
       });
     });
 
     app.querySelector("#long-rest")?.addEventListener("click", () => {
-      withUpdatedPlay(state, (play) => {
-        play.hpCurrent = state.derived.hp;
-        play.hpTemp = 0;
-        play.deathSavesSuccess = 0;
-        play.deathSavesFail = 0;
-        play.spellSlots = Object.fromEntries(
-          Object.entries(play.spellSlots ?? {}).map(([level, slot]) => [level, { ...slot, used: 0 }])
-        );
-        play.resources = (play.resources ?? []).map((resource) => ({
-          ...resource,
-          current: Math.max(0, toNumber(resource.max, 0)),
-        }));
-        const featureUses =
-          play.featureUses && typeof play.featureUses === "object" && !Array.isArray(play.featureUses)
-            ? { ...play.featureUses }
-            : {};
-        Object.entries(featureUses).forEach(([key, tracker]) => {
-          if (!tracker || typeof tracker !== "object") return;
-          const max = Math.max(0, toNumber(tracker.max, 0));
-          featureUses[key] = { ...tracker, current: max };
-        });
-        play.featureUses = featureUses;
+      openModal({
+        title: "Confirm Long Rest",
+        bodyHtml: "<p>Apply a long rest? This restores HP, resets spell slots and features, and recovers spent hit dice.</p>",
+        actions: [
+          { label: "Cancel", secondary: true, onClick: (close) => close() },
+          {
+            label: "Apply Long Rest",
+            onClick: (close) => {
+              const latestState = store.getState();
+              const pools = getHitDicePools(latestState);
+              withUpdatedPlay(latestState, (play) => {
+                play.hpCurrent = latestState.derived.hp;
+                play.hpTemp = 0;
+                play.deathSavesSuccess = 0;
+                play.deathSavesFail = 0;
+                play.spellSlots = Object.fromEntries(
+                  Object.entries(play.spellSlots ?? {}).map(([level, slot]) => [level, { ...slot, used: 0 }])
+                );
+                const featureUses =
+                  play.featureUses && typeof play.featureUses === "object" && !Array.isArray(play.featureUses)
+                    ? { ...play.featureUses }
+                    : {};
+                Object.entries(featureUses).forEach(([key, tracker]) => {
+                  if (!tracker || typeof tracker !== "object") return;
+                  const max = Math.max(0, toNumber(tracker.max, 0));
+                  featureUses[key] = { ...tracker, current: max };
+                });
+                play.featureUses = featureUses;
+
+                const nextSpentMap = normalizeHitDiceSpent(play.hitDiceSpent);
+                const totalHitDice = pools.reduce((sum, pool) => sum + Math.max(0, toNumber(pool.max, 0)), 0);
+                let recoverRemaining = Math.max(1, Math.floor(totalHitDice / 2));
+                const recoverOrder = pools
+                  .map((pool) => ({ key: pool.key, spent: Math.max(0, toNumber(nextSpentMap[pool.key], 0)) }))
+                  .sort((a, b) => b.spent - a.spent);
+                recoverOrder.forEach((entry) => {
+                  if (recoverRemaining < 1) return;
+                  if (entry.spent < 1) return;
+                  const recovered = Math.min(entry.spent, recoverRemaining);
+                  const remaining = entry.spent - recovered;
+                  recoverRemaining -= recovered;
+                  if (remaining > 0) nextSpentMap[entry.key] = remaining;
+                  else delete nextSpentMap[entry.key];
+                });
+                play.hitDiceSpent = nextSpentMap;
+              });
+              setDiceResult("Long Rest applied.");
+              close();
+            },
+          },
+        ],
       });
     });
   }

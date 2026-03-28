@@ -7,6 +7,7 @@ export function createPickers(deps) {
     matchesSearchQuery,
     buildEntityId,
     doesCharacterMeetFeatPrerequisites,
+    doesCharacterMeetOptionalFeaturePrerequisites,
     updateCharacterWithRequiredSettings,
     getSpellByName,
     getSpellLevelLabel,
@@ -46,7 +47,7 @@ export function createPickers(deps) {
             return `<p>${body}</p>`;
           })
           .join("")
-      : "<p class='muted'>No description text available for this spell.</p>";
+      : "<p class='muted'>No description available for this spell.</p>";
 
     openModal({
       title: spell.name,
@@ -141,11 +142,11 @@ export function createPickers(deps) {
     const allSpells = state.catalogs.spells;
     const sourceOptions = [...new Set(allSpells.map((it) => it.source).filter(Boolean))].sort();
     openModal({
-      title: "Spell Picker",
+      title: "Choose Spells",
       bodyHtml: `
       <div class="row">
         <label>Search
-          <input id="spell-search" placeholder="Type spell name...">
+          <input id="spell-search" placeholder="Search spells...">
         </label>
         <label>Level
           <select id="spell-level">
@@ -239,11 +240,11 @@ export function createPickers(deps) {
     const allItems = state.catalogs.items;
     const sourceOptions = [...new Set(allItems.map((it) => it.source).filter(Boolean))].sort();
     const close = openModal({
-      title: "Inventory Picker",
+      title: "Choose Items",
       bodyHtml: `
       <div class="row">
         <label>Search
-          <input id="item-search" placeholder="Type item name...">
+          <input id="item-search" placeholder="Search items...">
         </label>
         <label>Source
           <select id="item-source">
@@ -424,7 +425,7 @@ export function createPickers(deps) {
         <p class="subtitle">Select which base item to apply this variant to.</p>
         <div class="row">
           <label>Search
-            <input id="variant-base-search" placeholder="Type base item name...">
+            <input id="variant-base-search" placeholder="Search base items...">
           </label>
           <label>Source
             <select id="variant-base-source">
@@ -576,7 +577,7 @@ export function createPickers(deps) {
       bodyHtml: `
       <div class="row">
         <label>Search
-          <input id="feat-search" placeholder="Type feat name...">
+          <input id="feat-search" placeholder="Search feats...">
         </label>
         <label>Source
           <select id="feat-source">
@@ -613,7 +614,7 @@ export function createPickers(deps) {
               <div class="option-row">
                 <div>
                   <strong>${esc(feat.name)}</strong>
-                  <div class="muted">${esc(feat.sourceLabel ?? feat.source ?? "UNK")}${meetsPrereq ? "" : " - prerequisites not met"}</div>
+                  <div class="muted">${esc(feat.sourceLabel ?? feat.source ?? "Unknown Source")}${meetsPrereq ? "" : " - prerequisites not met"}</div>
                 </div>
                 <div class="option-row-actions">
                   <button type="button" class="btn secondary" data-pick-feat="${esc(featId)}" ${meetsPrereq ? "" : "disabled"}>
@@ -644,5 +645,115 @@ export function createPickers(deps) {
     renderFeatRows();
   }
 
-  return { openSpellDetailsModal, openSpellModal, openItemModal, openFeatModal };
+  function getOptionalFeatureSlotById(character, slotId) {
+    const slots = Array.isArray(character?.progression?.optionalFeatureSlots) ? character.progression.optionalFeatureSlots : [];
+    return slots.find((slot) => slot.id === slotId) ?? null;
+  }
+
+  function upsertOptionalFeatureForSlot(state, slotId, featureEntry) {
+    const slot = getOptionalFeatureSlotById(state.character, slotId);
+    if (!slot || !featureEntry) return;
+    const featureId = buildEntityId(["optionalfeature", featureEntry.name, featureEntry.source]);
+    const next = (state.character.optionalFeatures ?? []).filter((feature) => feature.slotId !== slotId && feature.id !== featureId);
+    next.push({
+      id: featureId,
+      name: featureEntry.name,
+      source: featureEntry.source,
+      levelGranted: toNumber(slot.level, 0),
+      slotId,
+      className: slot.className,
+      slotType: slot.slotType || "Optional Feature",
+      featureType: slot.featureType || "",
+    });
+    updateCharacterWithRequiredSettings(state, { optionalFeatures: next }, { preserveUserOverrides: true });
+  }
+
+  function doesOptionalFeatureMatchSlot(slot, featureEntry) {
+    const slotType = String(slot?.featureType ?? "").trim();
+    if (!slotType) return true;
+    const featureTypes = Array.isArray(featureEntry?.featureType)
+      ? featureEntry.featureType.map((entry) => String(entry ?? "").trim())
+      : [String(featureEntry?.featureType ?? "").trim()].filter(Boolean);
+    return featureTypes.includes(slotType);
+  }
+
+  function openOptionalFeatureModal(state, slotId) {
+    const slot = getOptionalFeatureSlotById(state.character, slotId);
+    if (!slot) return;
+    const allOptionalFeatures = Array.isArray(state.catalogs.optionalFeatures) ? state.catalogs.optionalFeatures : [];
+    const matchingOptionalFeatures = allOptionalFeatures.filter((feature) => doesOptionalFeatureMatchSlot(slot, feature));
+    const sourceOptions = [...new Set(matchingOptionalFeatures.map((it) => it.source).filter(Boolean))].sort();
+    const close = openModal({
+      title: `Pick ${slot.slotType || "Optional Feature"} (${slot.className} Lv ${slot.level})`,
+      bodyHtml: `
+      <div class="row">
+        <label>Search
+          <input id="optional-feature-search" placeholder="Search features...">
+        </label>
+        <label>Source
+          <select id="optional-feature-source">
+            <option value="">All sources</option>
+            ${sourceOptions.map((src) => `<option value="${esc(src)}">${esc(src)}</option>`).join("")}
+          </select>
+        </label>
+      </div>
+      <div class="option-list" id="optional-feature-list"></div>
+    `,
+      actions: [{ label: "Close", secondary: true, onClick: (done) => done() }],
+    });
+
+    const searchEl = document.getElementById("optional-feature-search");
+    const sourceEl = document.getElementById("optional-feature-source");
+    const listEl = document.getElementById("optional-feature-list");
+    const selectedId = (state.character.optionalFeatures ?? []).find((feature) => feature.slotId === slot.id)?.id ?? "";
+
+    function renderOptionalFeatureRows() {
+      const searchValue = String(searchEl?.value ?? "").trim();
+      const sourceValue = String(sourceEl?.value ?? "").trim();
+      const filtered = matchingOptionalFeatures
+        .filter((feature) => matchesSearchQuery(searchValue, feature.name, feature.sourceLabel, feature.source))
+        .filter((feature) => !sourceValue || feature.source === sourceValue)
+        .slice(0, 250);
+      listEl.innerHTML = filtered.length
+        ? filtered
+            .map((feature) => {
+              const featureId = buildEntityId(["optionalfeature", feature.name, feature.source]);
+              const isSelected = featureId === selectedId;
+              const meetsPrereq = doesCharacterMeetOptionalFeaturePrerequisites(state.character, feature);
+              return `
+              <div class="option-row">
+                <div>
+                  <strong>${esc(feature.name)}</strong>
+                  <div class="muted">${esc(feature.sourceLabel ?? feature.source ?? "Unknown Source")}${meetsPrereq ? "" : " - prerequisites not met"}</div>
+                </div>
+                <div class="option-row-actions">
+                  <button type="button" class="btn secondary" data-pick-optional-feature="${esc(featureId)}" ${meetsPrereq ? "" : "disabled"}>
+                    ${isSelected ? "Selected" : "Pick"}
+                  </button>
+                </div>
+              </div>
+            `;
+            })
+            .join("")
+        : "<p class='muted'>No optional features match this slot.</p>";
+
+      listEl.querySelectorAll("[data-pick-optional-feature]").forEach((button) => {
+        button.addEventListener("click", () => {
+          const featureId = button.dataset.pickOptionalFeature;
+          const feature = filtered.find((entry) => buildEntityId(["optionalfeature", entry.name, entry.source]) === featureId);
+          if (!feature) return;
+          upsertOptionalFeatureForSlot(state, slot.id, feature);
+          close();
+        });
+      });
+    }
+
+    [searchEl, sourceEl].forEach((el) => {
+      el?.addEventListener("input", renderOptionalFeatureRows);
+      el?.addEventListener("change", renderOptionalFeatureRows);
+    });
+    renderOptionalFeatureRows();
+  }
+
+  return { openSpellDetailsModal, openSpellModal, openItemModal, openFeatModal, openOptionalFeatureModal };
 }
