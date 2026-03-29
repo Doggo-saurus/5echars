@@ -252,7 +252,7 @@ export async function flushPendingCharacterSync() {
   for (const entry of queue) {
     try {
       const payload = await saveCharacterToRemote(entry.id, entry.character, {
-        editPasswordAttempt: getCharacterEditPassword(getLocalCharacter(entry.id)) || getCharacterEditPassword(entry.character),
+        editPasswordAttempt: getCharacterEditPassword(entry.character) || getCharacterEditPassword(getLocalCharacter(entry.id)),
       });
       const remoteId = isUuid(payload?.id) ? payload.id : entry.id;
       const remoteCharacter = preserveLocalEditPassword(
@@ -340,11 +340,24 @@ export async function validateCharacterEditPassword(id, editPasswordAttempt) {
   if (!isUuid(parsedId)) {
     throw createNotFoundError("Invalid character id");
   }
-  const payload = await saveCharacterToRemote(parsedId, null, {
-    validateOnly: true,
-    editPasswordAttempt: typeof editPasswordAttempt === "string" ? editPasswordAttempt : "",
+  const attempt = typeof editPasswordAttempt === "string" ? editPasswordAttempt : "";
+  const allowOfflineValidationBypass = () => ({
+    id: parsedId,
+    storage: createOfflineStorageMeta("offline-edit-password-validation-skipped"),
   });
-  return { ...payload, id: parsedId };
+  try {
+    if (isOnline()) {
+      const payload = await saveCharacterToRemote(parsedId, null, {
+        validateOnly: true,
+        editPasswordAttempt: attempt,
+      });
+      return { ...payload, id: parsedId };
+    }
+  } catch (error) {
+    if (!shouldUseOfflineFallback(error)) throw error;
+    return allowOfflineValidationBypass();
+  }
+  return allowOfflineValidationBypass();
 }
 
 export async function saveCharacter(id, character) {
@@ -354,7 +367,7 @@ export async function saveCharacter(id, character) {
   }
   const nextCharacter = normalizeCharacterForId(parsedId, character);
   const localCharacter = getLocalCharacter(parsedId);
-  const editPasswordAttempt = getCharacterEditPassword(localCharacter) || getCharacterEditPassword(nextCharacter);
+  const editPasswordAttempt = getCharacterEditPassword(nextCharacter) || getCharacterEditPassword(localCharacter);
   try {
     if (isOnline()) {
       const payload = await saveCharacterToRemote(parsedId, nextCharacter, {

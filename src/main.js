@@ -1525,10 +1525,13 @@ function updatePersistenceStatusFromPayload(payload) {
 }
 
 function markBrowserOnlyPersistence(error) {
-  const detail =
+  const sanitizedMessage =
     error instanceof Error && error.message
-      ? ` (${error.message})`
+      ? error.message
+          .replaceAll(/edit password/gi, "password")
+          .replaceAll(/invalid password/gi, "Invalid password")
       : "";
+  const detail = sanitizedMessage ? ` (${sanitizedMessage})` : "";
   setPersistenceNotice(
     `Server sync is currently unavailable${detail}. Your changes are saved in this browser for now, but not confirmed on the server.`
   );
@@ -4727,78 +4730,92 @@ function bindOnboardingEvents() {
   });
 }
 
+const EDIT_PASSWORD_PROMPT_INPUT_ID = "build-mode-edit-password-input";
+const EDIT_PASSWORD_PROMPT_STATUS_ID = "build-mode-edit-password-status";
+
+function isInvalidEditPasswordError(error) {
+  return Number(error?.status) === 403 && String(error?.payload?.code ?? "") === "INVALID_EDIT_PASSWORD";
+}
+
+function getEditPasswordValidationErrorMessage(error) {
+  if (isInvalidEditPasswordError(error)) return "Invalid password.";
+  const status = Number(error?.status);
+  if (!Number.isFinite(status) || status <= 0) {
+    return "Could not reach the server to validate the password. Check your connection and try again.";
+  }
+  if (status >= 500) {
+    return "The server could not validate the password right now. Try again in a moment.";
+  }
+  return error instanceof Error ? error.message : "Could not validate password.";
+}
+
+function openInfoModal(title, message) {
+  openModal({
+    title,
+    bodyHtml: `<p class="subtitle">${esc(message)}</p>`,
+    actions: [{ label: "Close", secondary: true, onClick: (done) => done() }],
+  });
+}
+
+function openEditPasswordPromptModal(characterId) {
+  if (document.getElementById(EDIT_PASSWORD_PROMPT_INPUT_ID)) return;
+  let isSubmitting = false;
+  let closeModal = () => {};
+
+  const setStatusMessage = (message) => {
+    const statusEl = document.getElementById(EDIT_PASSWORD_PROMPT_STATUS_ID);
+    if (!statusEl) return;
+    statusEl.textContent = String(message ?? "");
+  };
+
+  const submitPassword = async () => {
+    if (isSubmitting) return;
+    const inputEl = document.getElementById(EDIT_PASSWORD_PROMPT_INPUT_ID);
+    if (!inputEl) return;
+    const enteredPassword = String(inputEl.value ?? "");
+    isSubmitting = true;
+    inputEl.disabled = true;
+    setStatusMessage("");
+    try {
+      await validateCharacterEditPassword(characterId, enteredPassword);
+      store.updateCharacter({ editPassword: enteredPassword });
+      closeModal();
+      store.setMode("build");
+    } catch (error) {
+      setStatusMessage(getEditPasswordValidationErrorMessage(error));
+    } finally {
+      isSubmitting = false;
+      inputEl.disabled = false;
+      inputEl.focus();
+      inputEl.select();
+    }
+  };
+
+  closeModal = openModal({
+    title: "Enter Password",
+    bodyHtml: `
+      <p class="subtitle">This character is protected. Enter the password to continue.</p>
+      <label>Password
+        <input id="${EDIT_PASSWORD_PROMPT_INPUT_ID}" type="password" autocomplete="current-password">
+      </label>
+      <p id="${EDIT_PASSWORD_PROMPT_STATUS_ID}" class="muted" aria-live="polite"></p>
+    `,
+    actions: [
+      { label: "Unlock", onClick: () => void submitPassword() },
+      { label: "Cancel", secondary: true, onClick: (done) => done() },
+    ],
+  });
+
+  const inputEl = document.getElementById(EDIT_PASSWORD_PROMPT_INPUT_ID);
+  inputEl?.focus();
+  inputEl?.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    void submitPassword();
+  });
+}
+
 function bindModeEvents() {
-  const openInfoModal = (title, message) => {
-    openModal({
-      title,
-      bodyHtml: `<p class="subtitle">${esc(message)}</p>`,
-      actions: [{ label: "Close", secondary: true, onClick: (done) => done() }],
-    });
-  };
-
-  const openEditPasswordPromptModal = (characterId) => {
-    const inputId = "build-mode-edit-password-input";
-    const statusId = "build-mode-edit-password-status";
-    let isSubmitting = false;
-    let closeModal = () => {};
-
-    const setStatusMessage = (message) => {
-      const statusEl = document.getElementById(statusId);
-      if (!statusEl) return;
-      statusEl.textContent = String(message ?? "");
-    };
-
-    const submitPassword = async () => {
-      if (isSubmitting) return;
-      const inputEl = document.getElementById(inputId);
-      if (!inputEl) return;
-      const enteredPassword = String(inputEl.value ?? "");
-      isSubmitting = true;
-      inputEl.disabled = true;
-      setStatusMessage("");
-      try {
-        await validateCharacterEditPassword(characterId, enteredPassword);
-        store.updateCharacter({ editPassword: enteredPassword });
-        closeModal();
-        store.setMode("build");
-      } catch (error) {
-        const isInvalidPassword = Number(error?.status) === 403 || String(error?.payload?.code ?? "") === "INVALID_EDIT_PASSWORD";
-        if (isInvalidPassword) {
-          setStatusMessage("Invalid edit password.");
-        } else {
-          setStatusMessage(error instanceof Error ? error.message : "Could not validate edit password.");
-        }
-      } finally {
-        isSubmitting = false;
-        inputEl.disabled = false;
-        inputEl.focus();
-        inputEl.select();
-      }
-    };
-
-    closeModal = openModal({
-      title: "Enter Edit Password",
-      bodyHtml: `
-        <p class="subtitle">This character is protected. Enter the edit password to continue.</p>
-        <label>Password
-          <input id="${inputId}" type="password" autocomplete="current-password">
-        </label>
-        <p id="${statusId}" class="muted" aria-live="polite"></p>
-      `,
-      actions: [
-        { label: "Unlock", onClick: () => void submitPassword() },
-        { label: "Cancel", secondary: true, onClick: (done) => done() },
-      ],
-    });
-
-    const inputEl = document.getElementById(inputId);
-    inputEl?.focus();
-    inputEl?.addEventListener("keydown", (event) => {
-      if (event.key !== "Enter") return;
-      event.preventDefault();
-      void submitPassword();
-    });
-  };
 
   app.querySelectorAll("[data-mode]").forEach((button) => {
     button.addEventListener("click", async () => {
@@ -4825,12 +4842,11 @@ function bindModeEvents() {
         store.updateCharacter({ editPassword: "" });
         store.setMode("build");
       } catch (error) {
-        const isInvalidPassword = Number(error?.status) === 403 || String(error?.payload?.code ?? "") === "INVALID_EDIT_PASSWORD";
-        if (isInvalidPassword) {
+        if (isInvalidEditPasswordError(error)) {
           openEditPasswordPromptModal(characterId);
           return;
         }
-        openInfoModal("Edit Password Check Failed", error instanceof Error ? error.message : "Could not validate edit password.");
+        openInfoModal("Password Check Failed", getEditPasswordValidationErrorMessage(error));
       }
     });
   });
@@ -4907,6 +4923,11 @@ const persistence = createPersistence({
   withSyncMeta,
   getCharacterFromApiPayload,
   updatePersistenceStatusFromPayload,
+  onEditPasswordRequired: (characterId) => {
+    if (store.getState().mode !== "build") return false;
+    openEditPasswordPromptModal(characterId);
+    return true;
+  },
   markBrowserOnlyPersistence,
   applyRemoteCharacterPayload,
   isRemoteSameOrNewer,

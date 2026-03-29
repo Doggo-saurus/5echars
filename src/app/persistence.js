@@ -22,7 +22,25 @@ export function createPersistence(deps) {
     appState,
     defaultSourcePreset,
     withCharacterChangeLog,
+    onEditPasswordRequired,
   } = deps;
+
+  const isInvalidEditPasswordError = (error) =>
+    Number(error?.status) === 403 && String(error?.payload?.code ?? "") === "INVALID_EDIT_PASSWORD";
+
+  const handleSyncError = (error, characterId = null) => {
+    if (isInvalidEditPasswordError(error)) {
+      let handledByPasswordUi = false;
+      if (typeof onEditPasswordRequired === "function" && isUuid(characterId)) {
+        handledByPasswordUi = onEditPasswordRequired(characterId, error) === true;
+      }
+      if (!handledByPasswordUi) {
+        markBrowserOnlyPersistence(error);
+      }
+      return;
+    }
+    markBrowserOnlyPersistence(error);
+  };
 
   async function flushPendingSaves() {
     if (typeof flushPendingCharacterSync !== "function") return { flushed: 0, pending: 0 };
@@ -56,7 +74,7 @@ export function createPersistence(deps) {
         );
         updatePersistenceStatusFromPayload(synced);
       } catch (syncError) {
-        markBrowserOnlyPersistence(syncError);
+        handleSyncError(syncError, characterId);
       }
       return;
     }
@@ -74,7 +92,7 @@ export function createPersistence(deps) {
         );
         updatePersistenceStatusFromPayload(synced);
       } catch (error) {
-        markBrowserOnlyPersistence(error);
+        handleSyncError(error, characterId);
       }
     }
   }
@@ -122,7 +140,7 @@ export function createPersistence(deps) {
           await flushPendingSaves();
         } catch (error) {
           console.error("Remote character save failed", error);
-          markBrowserOnlyPersistence(error);
+          handleSyncError(error, characterId);
         }
       }, 700);
   }
