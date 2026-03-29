@@ -10,7 +10,8 @@ export function createRenderers(deps) {
     spellSlotLevels,
     sourcePresets,
     sourcePresetLabels,
-    getAllowedSources,
+    getCharacterAllowedSources,
+    sourceLabels,
     optionList,
     getSubclassSelectOptions,
     getFeatSlotsWithSelection,
@@ -18,6 +19,7 @@ export function createRenderers(deps) {
     getCharacterSpellSlotDefaults,
     getSpellSlotValues,
     getSpellByName,
+    getSpellCombatContext,
     getSpellLevelLabel,
     spellSchoolLabels,
     getRuleDescriptionLines,
@@ -842,9 +844,14 @@ export function createRenderers(deps) {
         const body = rows
           .sort((a, b) => String(a?.name ?? "").localeCompare(String(b?.name ?? "")))
           .map(({ name, spell, isPrepared, stateClass, hasSlotsAvailable, canTogglePrepared, isCantrip }) => {
+            const spellCombat = getSpellCombatContext(state, spell);
             const school = spell?.school ? spellSchoolLabels[spell.school] ?? spell.school : "";
             const source = spell?.sourceLabel ?? spell?.source ?? "";
-            const meta = [school, source].filter(Boolean).join(" - ");
+            const saveMeta =
+              !spellCombat.hasSpellAttack && spellCombat.saveDc != null && spellCombat.saveText
+                ? `DC ${spellCombat.saveDc} ${spellCombat.saveText}`
+                : "";
+            const meta = [school, source, saveMeta].filter(Boolean).join(" - ");
             const knownTag = usesPreparedSpells ? (isPrepared ? "Prepared" : "Unprepared") : "Known";
             const slotTag = toNumber(spell?.level, 0) > 0 && isPrepared ? (hasSlotsAvailable ? "Slots Available" : "No Slots Left") : "";
             const knownAndSlotTag = slotTag ? `${knownTag} · ${slotTag}` : knownTag;
@@ -853,6 +860,13 @@ export function createRenderers(deps) {
               : !isPrepared && !canTogglePrepared
                 ? "Preparation limit reached"
                 : "Toggle prepared";
+            const spellAttackButtonHtml =
+              spellCombat.hasSpellAttack && spellCombat.attackBonus != null
+                ? `<button type="button" class="btn secondary spell-cast-btn" data-spell-attack-roll="${esc(name)}">To Hit ${esc(
+                    signed(spellCombat.attackBonus)
+                  )}</button>`
+                : "";
+            const castLabel = spellCombat.hasSpellAttack ? "Damage" : "Cast";
             return `
             <div class="spell-row ${stateClass}">
               ${
@@ -874,7 +888,8 @@ export function createRenderers(deps) {
               <button type="button" class="spell-name-btn" data-spell-open="${esc(name)}">${esc(name)}</button>
               <span class="spell-known-tag muted">${knownAndSlotTag}</span>
               <span class="spell-meta muted">${esc(meta || "")}</span>
-              <button type="button" class="btn secondary spell-cast-btn" data-spell-cast="${esc(name)}">Cast</button>
+              ${spellAttackButtonHtml}
+              <button type="button" class="btn secondary spell-cast-btn" data-spell-cast="${esc(name)}">${castLabel}</button>
             </div>
           `;
           })
@@ -1066,6 +1081,21 @@ export function createRenderers(deps) {
     const selectedOptionalFeatures = Array.isArray(character?.optionalFeatures) ? character.optionalFeatures : [];
     const classTableEffects = Array.isArray(character?.progression?.classTableEffects) ? character.progression.classTableEffects : [];
     const featureModes = Array.isArray(character?.progression?.featureModes) ? character.progression.featureModes : [];
+    const attacksPerAttackActionFromFeatures = unlockedFeatures.reduce((maxAttacks, feature) => {
+      const featureName = String(feature?.name ?? "").trim();
+      if (!featureName || !featureName.toLowerCase().startsWith("extra attack")) return maxAttacks;
+      const extraAttackCount = toNumber(featureName.match(/\((\d+)\)/)?.[1], NaN);
+      const attacksFromFeature = Number.isFinite(extraAttackCount) && extraAttackCount >= 1 ? extraAttackCount + 1 : 2;
+      return Math.max(maxAttacks, attacksFromFeature);
+    }, 1);
+    const attacksPerAttackActionFromTable = classTableEffects.reduce((maxAttacks, effect) => {
+      const label = String(effect?.label ?? "").trim().toLowerCase();
+      if (!label || !label.includes("attack")) return maxAttacks;
+      const numericValue = toNumber(String(effect?.value ?? "").match(/\d+/)?.[0], NaN);
+      if (!Number.isFinite(numericValue) || numericValue <= 0) return maxAttacks;
+      return Math.max(maxAttacks, numericValue);
+    }, 1);
+    const attacksPerAttackAction = Math.max(1, attacksPerAttackActionFromFeatures, attacksPerAttackActionFromTable);
     const selectedFeatSlotIds = new Set(
       selectedFeats
         .map((feat) => String(feat?.slotId ?? "").trim())
@@ -1224,6 +1254,10 @@ export function createRenderers(deps) {
 
     const selectedSpells = Array.isArray(character?.spells) ? character.spells.filter(Boolean) : [];
     const hasSelectedSpells = selectedSpells.length > 0;
+    const visibleSpellSlotLevels = spellSlotLevels.filter((level) => {
+      const values = getSpellSlotValues(play, defaultSpellSlots, level);
+      return toNumber(values.max, 0) > 0;
+    });
     const spellStatus = hasSelectedSpells ? latestSpellCastStatus() : { isError: false, message: "" };
 
     return `
@@ -1254,6 +1288,15 @@ export function createRenderers(deps) {
             <div class="pill">AC ${derived.ac}</div>
             <div class="pill">Proficiency +${derived.proficiencyBonus}</div>
             <div class="pill">Passive Perception ${derived.passivePerception}</div>
+            <button
+              type="button"
+              class="pill pill-btn"
+              data-toggle-inspiration
+              aria-pressed="${play.inspiration ? "true" : "false"}"
+              title="Toggle inspiration"
+            >
+              Inspiration ${play.inspiration ? "On" : "Off"}
+            </button>
             <button type="button" class="pill pill-btn" data-roll-initiative title="Roll initiative">
               Initiative ${initiativeBonus >= 0 ? "+" : ""}${initiativeBonus}
             </button>
@@ -1350,7 +1393,12 @@ export function createRenderers(deps) {
 
         <article class="card">
           <div class="attack-title-row">
-            <h3 class="title">Attacks & Actions</h3>
+            <h3 class="title attack-title-heading">
+              Attacks & Actions
+              <span class="attack-action-indicator" title="Attacks you can make when you take the Attack action">
+                ${esc(`${attacksPerAttackAction}/Attack action`)}
+              </span>
+            </h3>
             <button type="button" class="btn secondary attack-mode-btn" data-attack-mode-toggle>
               ${attackMode === "edit" ? "View" : "Edit"}
             </button>
@@ -1367,7 +1415,9 @@ export function createRenderers(deps) {
         <article class="card">
           <h3 class="title">Spells & Slots</h3>
           <div class="play-list spell-slot-grid">
-            ${spellSlotLevels.map((level) => getSpellSlotRow(play, defaultSpellSlots, level)).join("")}
+            ${visibleSpellSlotLevels.length
+              ? visibleSpellSlotLevels.map((level) => getSpellSlotRow(play, defaultSpellSlots, level)).join("")
+              : "<p class='muted'>No spell slots available yet.</p>"}
           </div>
           <h4>Prepared/Known Spells</h4>
           <p class="muted spell-prep-help">Toggle P to mark prepared. Click a spell name to view details and roll from its description.</p>
@@ -1381,27 +1431,38 @@ export function createRenderers(deps) {
         }
 
         <article class="card">
-          <h3 class="title">Features & Feats</h3>
+          <h3 class="title">Features</h3>
           <h4>Class/Subclass Features</h4>
           ${featureListHtml ? `<ul class="class-feature-list">${featureListHtml}</ul>` : "<p class='muted'>No unlocked class features.</p>"}
           <h4>Feature Modes</h4>
           <div class="play-list">${featureModesHtml}</div>
-          <h4>Feats</h4>
-          <div>${featListHtml}</div>
-          <h4>Optional Features</h4>
-          <div>${optionalFeatureListHtml}</div>
           <h4>Class Table Effects</h4>
           <div>${classTableEffectsHtml}</div>
         </article>
 
         <article class="card">
-          <h3 class="title">Inventory & Conditions</h3>
-          <h4>Inventory</h4>
-          <div class="toolbar">
+          <h3 class="title">Feats</h3>
+          <h4>Feats</h4>
+          <div>${featListHtml}</div>
+          <h4>Optional Features</h4>
+          <div>${optionalFeatureListHtml}</div>
+        </article>
+
+        <article class="card">
+          <div class="inventory-head">
+            <h3 class="title">Inventory</h3>
             <button class="btn secondary" id="play-open-items">Add Item</button>
           </div>
           <div class="inventory-list">${renderInventoryRowsImpl(character)}</div>
-          <h4>Conditions</h4>
+          <label>Combat Notes
+            <textarea id="play-notes" rows="4" style="width:100%; background:#0b1220; color:#e5e7eb; border:1px solid rgba(255,255,255,0.2); border-radius:10px; padding:0.6rem;">${esc(
+              play.notes ?? ""
+            )}</textarea>
+          </label>
+        </article>
+
+        <article class="card">
+          <h3 class="title">Conditions</h3>
           <div class="condition-panel">
             <div class="condition-panel-head">
               <span class="condition-count-pill">${activeKnownCount}/${catalogConditionNames.length || 0} active</span>
@@ -1414,11 +1475,6 @@ export function createRenderers(deps) {
             </div>
             ${extraConditionsHtml}
           </div>
-          <label>Combat Notes
-            <textarea id="play-notes" rows="4" style="width:100%; background:#0b1220; color:#e5e7eb; border:1px solid rgba(255,255,255,0.2); border-radius:10px; padding:0.6rem;">${esc(
-              play.notes ?? ""
-            )}</textarea>
-          </label>
         </article>
 
         <article class="card">
@@ -1437,6 +1493,10 @@ export function createRenderers(deps) {
   function renderBuildEditorImpl(state) {
     const { character, stepIndex, catalogs } = state;
     if (stepIndex === 0) {
+      const effectiveSources = getCharacterAllowedSources(character);
+      const sourceText = effectiveSources
+        .map((source) => sourceLabels?.[source] ?? source)
+        .join(", ");
       return `
       <h2 class="title">Source Preset</h2>
       <p class="subtitle">Choose which books and options this character can use.</p>
@@ -1447,7 +1507,10 @@ export function createRenderers(deps) {
             .join("")}
         </select>
       </label>
-      <p class="muted">Allowed sources: ${getAllowedSources(character.sourcePreset).join(", ")}</p>
+      <div class="toolbar">
+        <button type="button" class="btn secondary" id="source-customize">Customize</button>
+      </div>
+      <p class="muted">Allowed sources: ${esc(sourceText)}</p>
     `;
     }
     if (stepIndex === 1) {

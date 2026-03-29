@@ -60,6 +60,16 @@ function dedupeByNameAndSource(items) {
   });
 }
 
+function isNpcRace(item) {
+  const traitTags = Array.isArray(item?.traitTags) ? item.traitTags : [];
+  return traitTags.some((tag) => String(tag ?? "").trim().toLowerCase() === "npc race");
+}
+
+function filterNpcRaces(items) {
+  if (!Array.isArray(items)) return [];
+  return items.filter((item) => !isNpcRace(item));
+}
+
 function mapMagicVariantsToItems(variants) {
   if (!Array.isArray(variants)) return [];
   return variants
@@ -116,6 +126,78 @@ function getFallbackCatalogs(allowedSources) {
   };
 }
 
+function collectSourceKeys(items) {
+  if (!Array.isArray(items)) return [];
+  return items
+    .map((item) => String(item?.source ?? "").trim())
+    .filter(Boolean);
+}
+
+function getBookSourceLabelMap(books) {
+  const map = new Map();
+  (Array.isArray(books) ? books : []).forEach((book) => {
+    const sourceKey = String(book?.id ?? book?.source ?? "").trim();
+    const label = String(book?.name ?? "").trim();
+    if (!sourceKey || !label || map.has(sourceKey)) return;
+    map.set(sourceKey, label);
+  });
+  return map;
+}
+
+function buildSourceEntries(sourceSet, bookLabels) {
+  return [...sourceSet]
+    .map((sourceKey) => ({
+      key: sourceKey,
+      label: SOURCE_LABELS[sourceKey] ?? bookLabels.get(sourceKey) ?? sourceKey,
+    }))
+    .sort((a, b) => String(a.label).localeCompare(String(b.label)));
+}
+
+export async function loadAvailableSourceEntries() {
+  try {
+    const [classData, races, backgrounds, feats, optionalFeatures, spells, items, baseItems, magicVariants, conditions, books] = await Promise.all([
+      loadClassDataFromIndex(),
+      loadSingleFile("races.json", "race"),
+      loadSingleFile("backgrounds.json", "background"),
+      loadSingleFile("feats.json", "feat"),
+      loadSingleFile("optionalfeatures.json", "optionalfeature"),
+      loadFromIndex("spells", "spell"),
+      loadSingleFile("items.json", "item"),
+      loadSingleFile("items-base.json", "baseitem"),
+      loadSingleFile("magicvariants.json", "magicvariant"),
+      loadSingleFile("conditionsdiseases.json", "condition"),
+      loadSingleFile("books.json", "book").catch(() => []),
+    ]);
+    const playableRaces = filterNpcRaces(races);
+    const variantItems = mapMagicVariantsToItems(magicVariants);
+    const allItems = dedupeByNameAndSource([...items, ...baseItems, ...variantItems]);
+    const sourceSet = new Set([
+      ...collectSourceKeys(classData.classes),
+      ...collectSourceKeys(classData.subclasses),
+      ...collectSourceKeys(classData.classFeatures),
+      ...collectSourceKeys(classData.subclassFeatures),
+      ...collectSourceKeys(playableRaces),
+      ...collectSourceKeys(backgrounds),
+      ...collectSourceKeys(feats),
+      ...collectSourceKeys(optionalFeatures),
+      ...collectSourceKeys(spells),
+      ...collectSourceKeys(allItems),
+      ...collectSourceKeys(conditions),
+      ...Object.keys(SOURCE_LABELS),
+    ]);
+    const bookLabels = getBookSourceLabelMap(books);
+    return buildSourceEntries(sourceSet, bookLabels);
+  } catch {
+    const sourceSet = new Set(Object.keys(SOURCE_LABELS));
+    return buildSourceEntries(sourceSet, new Map());
+  }
+}
+
+export async function loadAvailableSources() {
+  const entries = await loadAvailableSourceEntries();
+  return entries.map((entry) => entry.key);
+}
+
 export async function loadCatalogs(allowedSources) {
   try {
     const [classData, races, backgrounds, feats, optionalFeatures, spells, items, baseItems, magicVariants, spellSourceLookup, conditions] = await Promise.all([
@@ -131,6 +213,7 @@ export async function loadCatalogs(allowedSources) {
       fetchJson(`${DATA_ROOT}/generated/gendata-spell-source-lookup.json`).catch(() => ({})),
       loadSingleFile("conditionsdiseases.json", "condition"),
     ]);
+    const playableRaces = filterNpcRaces(races);
     const variantItems = mapMagicVariantsToItems(magicVariants);
     const allItems = dedupeByNameAndSource([...items, ...baseItems, ...variantItems]);
     const mappedSpells = mapNamed(filterBySources(spells, allowedSources)).map((spell) => {
@@ -149,7 +232,7 @@ export async function loadCatalogs(allowedSources) {
       subclasses: mapNamed(filterBySources(classData.subclasses, allowedSources)),
       classFeatures: mapNamed(filterBySources(classData.classFeatures, allowedSources)),
       subclassFeatures: mapNamed(filterBySources(classData.subclassFeatures, allowedSources)),
-      races: mapNamed(filterBySources(races, allowedSources)),
+      races: mapNamed(filterBySources(playableRaces, allowedSources)),
       backgrounds: mapNamed(filterBySources(backgrounds, allowedSources)),
       feats: mapNamed(filterBySources(feats, allowedSources)),
       optionalFeatures: mapNamed(filterBySources(optionalFeatures, allowedSources)),

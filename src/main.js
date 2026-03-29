@@ -1,10 +1,11 @@
 import {
   DEFAULT_SOURCE_PRESET,
+  SOURCE_LABELS,
   SOURCE_PRESETS,
   SOURCE_PRESET_LABELS,
   getAllowedSources,
 } from "./config/sources.js";
-import { loadCatalogs } from "./data-loader.js";
+import { loadAvailableSourceEntries, loadAvailableSources, loadCatalogs } from "./data-loader.js";
 import { STEPS, createInitialCharacter, createStore } from "./state/character-store.js";
 import { loadAppState, saveAppState } from "./state/persistence.js";
 import { createCharacter, getCharacter, saveCharacter } from "./character-api.js";
@@ -14,7 +15,7 @@ import { openModal } from "./ui/modals/modal.js";
 import { createEvents } from "./ui/events.js";
 import { createPickers } from "./ui/pickers.js";
 import { createRenderers } from "./ui/renderers.js";
-import { getHitPointBreakdown } from "./engine/rules.js";
+import { getCharacterFightingStyleSet, getHitPointBreakdown } from "./engine/rules.js";
 import {
   esc,
   matchesSearchQuery,
@@ -1718,18 +1719,33 @@ function getFeatSlotsForClass(classEntry, classLevel) {
   if (!classEntry || classLevel <= 0) return [];
   const slots = [];
 
+  const normalizeFeatCategoryList = (value) => {
+    if (Array.isArray(value)) return value.map((entry) => String(entry ?? "").trim()).filter(Boolean);
+    const single = String(value ?? "").trim();
+    return single ? [single] : [];
+  };
+
   const featProgression = Array.isArray(classEntry.featProgression) ? classEntry.featProgression : [];
   featProgression.forEach((progressionEntry, progressionIndex) => {
     const progression = progressionEntry?.progression;
     if (!progression || typeof progression !== "object") return;
     const slotType = progressionEntry?.name ? cleanSpellInlineTags(progressionEntry.name) : "Feat";
+    const featCategories = normalizeFeatCategoryList(progressionEntry?.category);
     Object.entries(progression).forEach(([levelRaw, countRaw]) => {
       const level = toNumber(levelRaw, NaN);
       const count = Math.max(0, toNumber(countRaw, 0));
       if (!Number.isFinite(level) || level > classLevel || count <= 0) return;
       for (let idx = 0; idx < count; idx += 1) {
         const id = buildEntityId(["feat-slot", classEntry.name, classEntry.source, slotType, level, progressionIndex, idx]);
-        slots.push({ id, className: classEntry.name, classSource: normalizeSourceTag(classEntry.source), level, count: 1, slotType });
+        slots.push({
+          id,
+          className: classEntry.name,
+          classSource: normalizeSourceTag(classEntry.source),
+          level,
+          count: 1,
+          slotType,
+          featCategories,
+        });
       }
     });
   });
@@ -1750,6 +1766,54 @@ function getFeatSlotsForClass(classEntry, classLevel) {
       level: parsed.level,
       count: 1,
       slotType: "Ability Score Improvement",
+      featCategories: [],
+    });
+  });
+  return slots;
+}
+
+function getFeatSlotsForSubclass(subclassEntry, classLevel) {
+  if (!subclassEntry || classLevel <= 0) return [];
+  const normalizeFeatCategoryList = (value) => {
+    if (Array.isArray(value)) return value.map((entry) => String(entry ?? "").trim()).filter(Boolean);
+    const single = String(value ?? "").trim();
+    return single ? [single] : [];
+  };
+  const slots = [];
+  const featProgression = Array.isArray(subclassEntry?.featProgression) ? subclassEntry.featProgression : [];
+  featProgression.forEach((progressionEntry, progressionIndex) => {
+    const progression = progressionEntry?.progression;
+    if (!progression || typeof progression !== "object") return;
+    const slotType = progressionEntry?.name ? cleanSpellInlineTags(progressionEntry.name) : "Feat";
+    const featCategories = normalizeFeatCategoryList(progressionEntry?.category);
+    Object.entries(progression).forEach(([levelRaw, countRaw]) => {
+      const level = toNumber(levelRaw, NaN);
+      const count = Math.max(0, toNumber(countRaw, 0));
+      if (!Number.isFinite(level) || level > classLevel || count <= 0) return;
+      for (let idx = 0; idx < count; idx += 1) {
+        const id = buildEntityId([
+          "feat-slot",
+          "subclass",
+          subclassEntry.className,
+          subclassEntry.classSource,
+          subclassEntry.name,
+          subclassEntry.source,
+          slotType,
+          level,
+          progressionIndex,
+          idx,
+        ]);
+        slots.push({
+          id,
+          className: String(subclassEntry?.className ?? "").trim(),
+          classSource: normalizeSourceTag(subclassEntry?.classSource),
+          subclassName: String(subclassEntry?.name ?? "").trim(),
+          level,
+          count: 1,
+          slotType,
+          featCategories,
+        });
+      }
     });
   });
   return slots;
@@ -1757,9 +1821,15 @@ function getFeatSlotsForClass(classEntry, classLevel) {
 
 function getFeatSlots(catalogs, character) {
   const tracks = getClassLevelTracks(character);
+  const selectedPrimarySubclass = getSelectedSubclassEntry(catalogs, character);
   const slots = tracks.flatMap((track) => {
     const classEntry = getClassCatalogEntry(catalogs, track.className);
-    return getFeatSlotsForClass(classEntry, track.level);
+    const classSlots = getFeatSlotsForClass(classEntry, track.level);
+    if (!track.isPrimary || !selectedPrimarySubclass) return classSlots;
+    const subclassClassName = String(selectedPrimarySubclass?.className ?? "").trim().toLowerCase();
+    const trackClassName = String(track?.className ?? "").trim().toLowerCase();
+    if (!subclassClassName || subclassClassName !== trackClassName) return classSlots;
+    return [...classSlots, ...getFeatSlotsForSubclass(selectedPrimarySubclass, track.level)];
   });
   return slots.sort((a, b) => {
     const levelDelta = a.level - b.level;
@@ -1819,12 +1889,57 @@ function getOptionalFeatureSlotsForClass(classEntry, classLevel) {
   return slots;
 }
 
+function getOptionalFeatureSlotsForSubclass(subclassEntry, classLevel) {
+  if (!subclassEntry || classLevel <= 0) return [];
+  const slots = [];
+  const groups = Array.isArray(subclassEntry?.optionalfeatureProgression) ? subclassEntry.optionalfeatureProgression : [];
+  groups.forEach((group, groupIndex) => {
+    const count = getProgressionCountAtLevel(group?.progression, classLevel);
+    if (count <= 0) return;
+    const featureTypes = normalizeOptionalFeatureTypeList(group?.featureType);
+    const featureType = featureTypes[0] || "";
+    const slotType = cleanSpellInlineTags(group?.name || "Optional Feature");
+    for (let idx = 0; idx < count; idx += 1) {
+      const id = buildEntityId([
+        "optional-slot",
+        "subclass",
+        subclassEntry.className,
+        subclassEntry.classSource,
+        subclassEntry.name,
+        subclassEntry.source,
+        slotType,
+        featureType,
+        classLevel,
+        groupIndex,
+        idx,
+      ]);
+      slots.push({
+        id,
+        className: String(subclassEntry?.className ?? "").trim(),
+        classSource: normalizeSourceTag(subclassEntry?.classSource),
+        subclassName: String(subclassEntry?.name ?? "").trim(),
+        level: classLevel,
+        count: 1,
+        slotType,
+        featureType,
+      });
+    }
+  });
+  return slots;
+}
+
 function getOptionalFeatureSlots(catalogs, character) {
   const tracks = getClassLevelTracks(character);
+  const selectedPrimarySubclass = getSelectedSubclassEntry(catalogs, character);
   return tracks
     .flatMap((track) => {
       const classEntry = getClassCatalogEntry(catalogs, track.className);
-      return getOptionalFeatureSlotsForClass(classEntry, track.level);
+      const classSlots = getOptionalFeatureSlotsForClass(classEntry, track.level);
+      if (!track.isPrimary || !selectedPrimarySubclass) return classSlots;
+      const subclassClassName = String(selectedPrimarySubclass?.className ?? "").trim().toLowerCase();
+      const trackClassName = String(track?.className ?? "").trim().toLowerCase();
+      if (!subclassClassName || subclassClassName !== trackClassName) return classSlots;
+      return [...classSlots, ...getOptionalFeatureSlotsForSubclass(selectedPrimarySubclass, track.level)];
     })
     .sort((a, b) => {
       const levelDelta = a.level - b.level;
@@ -3265,6 +3380,83 @@ function getSpellPrimaryDiceNotation(spell) {
   return "";
 }
 
+function getCharacterAllowedSources(character) {
+  const sourcePreset = character?.sourcePreset ?? DEFAULT_SOURCE_PRESET;
+  const presetSources = getAllowedSources(sourcePreset);
+  const customSources = Array.isArray(character?.customSources)
+    ? character.customSources.map((entry) => String(entry ?? "").trim()).filter(Boolean)
+    : [];
+  return [...new Set([...presetSources, ...customSources])];
+}
+
+function getSpellSaveAbilityKeys(spell, descriptionText = "") {
+  const keys = [];
+  const addKey = (value) => {
+    const key = normalizeAbilityKey(value);
+    if (!key || keys.includes(key)) return;
+    keys.push(key);
+  };
+
+  const savingThrowList = Array.isArray(spell?.savingThrow) ? spell.savingThrow : [];
+  savingThrowList.forEach((entry) => addKey(entry));
+
+  if (!keys.length && spell?.save && typeof spell.save === "object") {
+    Object.keys(spell.save).forEach((entry) => addKey(entry));
+  }
+
+  if (!keys.length && descriptionText) {
+    const matches = [...descriptionText.matchAll(/\b(strength|dexterity|constitution|intelligence|wisdom|charisma)\s+saving\s+throw\b/gi)];
+    matches.forEach((match) => addKey(match[1]));
+  }
+
+  return keys;
+}
+
+function getSpellCombatContext(state, spell) {
+  if (!spell || typeof spell !== "object") {
+    return {
+      hasSpellAttack: false,
+      attackLabel: "Spell Attack",
+      attackBonus: null,
+      hasSave: false,
+      saveDc: null,
+      saveText: "",
+    };
+  }
+
+  const lines = getSpellDescriptionLines(spell);
+  const descriptionText = lines.join(" ").toLowerCase();
+  const hasMeleeSpellAttack = /melee spell attack/.test(descriptionText);
+  const hasRangedSpellAttack = /ranged spell attack/.test(descriptionText);
+  const hasGenericSpellAttack = /spell attack/.test(descriptionText);
+  const hasSpellAttack = hasMeleeSpellAttack || hasRangedSpellAttack || hasGenericSpellAttack;
+  const attackLabel = hasMeleeSpellAttack ? "Melee Spell Attack" : hasRangedSpellAttack ? "Ranged Spell Attack" : "Spell Attack";
+
+  const saveAbilityKeys = getSpellSaveAbilityKeys(spell, descriptionText);
+  const hasSave = saveAbilityKeys.length > 0 || /\bsaving throw\b/.test(descriptionText);
+
+  const spellcastingAbility = getClassSpellcastingAbility(state?.catalogs, state?.character);
+  const spellcastingMod = spellcastingAbility ? toNumber(state?.derived?.mods?.[spellcastingAbility], 0) : 0;
+  const proficiencyBonus = toNumber(state?.derived?.proficiencyBonus, 0);
+  const hasSpellcastingAbility = Boolean(spellcastingAbility);
+  const attackBonus = hasSpellAttack && hasSpellcastingAbility ? spellcastingMod + proficiencyBonus : null;
+  const saveDc = hasSave && hasSpellcastingAbility ? 8 + proficiencyBonus + spellcastingMod : null;
+  const saveText = saveAbilityKeys.length
+    ? `${saveAbilityKeys.map((key) => ABILITY_LABELS[key] ?? key.toUpperCase()).join("/")} save`
+    : hasSave
+      ? "save"
+      : "";
+
+  return {
+    hasSpellAttack,
+    attackLabel,
+    attackBonus,
+    hasSave,
+    saveDc,
+    saveText,
+  };
+}
+
 function renderTextWithInlineDiceButtons(text) {
   const source = String(text ?? "");
   DICE_NOTATION_REGEX.lastIndex = 0;
@@ -3651,6 +3843,10 @@ function getAutoAttacks(state) {
   const character = state?.character ?? {};
   const equippedWeapons = getInventoryObjectEntries(character).filter((entry) => Boolean(entry?.equipped) && isInventoryWeapon(entry));
   if (!equippedWeapons.length) return [];
+  const fightingStyles = getCharacterFightingStyleSet(character, state?.catalogs);
+  const hasArcheryStyle = fightingStyles.has("archery");
+  const hasDuelingStyle = fightingStyles.has("dueling");
+  const equippedWeaponCount = equippedWeapons.length;
 
   const profTokens = getCharacterWeaponProficiencyTokens(state?.catalogs, character);
   return equippedWeapons
@@ -3658,14 +3854,20 @@ function getAutoAttacks(state) {
       const name = getInventoryItemName(entry);
       if (!name) return null;
       const ability = getWeaponAttackAbility(entry, state?.derived);
+      const properties = getInventoryWeaponProperties(entry);
+      const isRanged = isRangedWeaponEntry(entry);
+      const isMelee = !isRanged;
+      const isTwoHanded = properties.includes("2H");
       const proficient = isWeaponProficient(entry, profTokens);
       const proficiencyBonus = proficient ? toNumber(state?.derived?.proficiencyBonus, 0) : 0;
       const nameBonus = getWeaponNameBonus(entry);
       const attackBonus = parseItemWeaponBonus(entry?.weaponAttackBonus, nameBonus);
       const damageBonus = parseItemWeaponBonus(entry?.weaponDamageBonus, nameBonus);
-      const toHit = signed(ability.mod + proficiencyBonus + attackBonus);
+      const styleAttackBonus = hasArcheryStyle && isRanged ? 2 : 0;
+      const styleDamageBonus = hasDuelingStyle && isMelee && !isTwoHanded && equippedWeaponCount === 1 ? 2 : 0;
+      const toHit = signed(ability.mod + proficiencyBonus + attackBonus + styleAttackBonus);
       const rawDamageDice = String(entry?.damageDice ?? entry?.dmg1 ?? "").trim();
-      const baseDamage = rawDamageDice ? formatDamageNotation(rawDamageDice, ability.mod + damageBonus) : "";
+      const baseDamage = rawDamageDice ? formatDamageNotation(rawDamageDice, ability.mod + damageBonus + styleDamageBonus) : "";
       const damageType = normalizeDamageTypeLabel(entry?.damageType ?? entry?.dmgType);
       const damage = baseDamage && damageType ? `${baseDamage} ${damageType}` : baseDamage;
       return {
@@ -3764,8 +3966,7 @@ function openClassDetailsModal(state) {
 }
 
 async function loadCatalogsForCharacter(character) {
-  const sourcePreset = character?.sourcePreset ?? DEFAULT_SOURCE_PRESET;
-  const catalogs = await loadCatalogs(getAllowedSources(sourcePreset));
+  const catalogs = await loadCatalogs(getCharacterAllowedSources(character));
   store.setCatalogs(catalogs);
   const nextState = store.getState();
   updateCharacterWithRequiredSettings(nextState, {}, { preserveUserOverrides: true });
@@ -4013,6 +4214,10 @@ const events = createEvents({
   SKILLS,
   DEFAULT_SOURCE_PRESET,
   getAllowedSources,
+  getCharacterAllowedSources,
+  sourceLabels: SOURCE_LABELS,
+  loadAvailableSourceEntries,
+  loadAvailableSources,
   loadCatalogs,
   updateCharacterWithRequiredSettings,
   getClassCatalogEntry,
@@ -4039,6 +4244,7 @@ const events = createEvents({
   countPreparedSpells,
   getPreparedSpellLimit,
   getSpellByName,
+  getSpellCombatContext,
   setDiceResult,
   setSpellCastStatus,
   getSpellSlotValues,
@@ -4063,7 +4269,8 @@ const renderers = createRenderers({
   spellSlotLevels: SPELL_SLOT_LEVELS,
   sourcePresets: SOURCE_PRESETS,
   sourcePresetLabels: SOURCE_PRESET_LABELS,
-  getAllowedSources,
+  getCharacterAllowedSources,
+  sourceLabels: SOURCE_LABELS,
   optionList,
   getSubclassSelectOptions,
   getFeatSlotsWithSelection,
@@ -4079,6 +4286,7 @@ const renderers = createRenderers({
   }),
   getSpellSlotValues,
   getSpellByName,
+  getSpellCombatContext,
   getSpellLevelLabel,
   spellSchoolLabels: SPELL_SCHOOL_LABELS,
   getRuleDescriptionLines,

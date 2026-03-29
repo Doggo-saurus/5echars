@@ -7,6 +7,10 @@ export function createEvents(deps) {
     SKILLS,
     DEFAULT_SOURCE_PRESET,
     getAllowedSources,
+    getCharacterAllowedSources,
+    sourceLabels,
+    loadAvailableSourceEntries,
+    loadAvailableSources,
     loadCatalogs,
     updateCharacterWithRequiredSettings,
     getClassCatalogEntry,
@@ -33,6 +37,7 @@ export function createEvents(deps) {
     countPreparedSpells,
     getPreparedSpellLimit,
     getSpellByName,
+    getSpellCombatContext,
     setDiceResult,
     setSpellCastStatus,
     getSpellSlotValues,
@@ -307,11 +312,77 @@ export function createEvents(deps) {
       sourcePreset.addEventListener("change", async (evt) => {
         const preset = evt.target.value || DEFAULT_SOURCE_PRESET;
         store.updateCharacter({ sourcePreset: preset });
-        const catalogs = await loadCatalogs(getAllowedSources(preset));
+        const nextCharacter = store.getState().character;
+        const catalogs = await loadCatalogs(getCharacterAllowedSources(nextCharacter));
         store.setCatalogs(catalogs);
         updateCharacterWithRequiredSettings(store.getState(), {}, { preserveUserOverrides: true });
       });
     }
+
+    app.querySelector("#source-customize")?.addEventListener("click", () => {
+      const currentState = store.getState();
+      const currentCharacter = currentState.character;
+      const presetSources = new Set(getAllowedSources(currentCharacter?.sourcePreset ?? DEFAULT_SOURCE_PRESET));
+      const selectedCustomSources = new Set(
+        Array.isArray(currentCharacter?.customSources)
+          ? currentCharacter.customSources.map((entry) => String(entry ?? "").trim()).filter(Boolean)
+          : []
+      );
+      const renderCustomizeModal = async () => {
+        const availableSourceEntries = typeof loadAvailableSourceEntries === "function"
+          ? await loadAvailableSourceEntries()
+          : (await loadAvailableSources()).map((sourceKey) => ({ key: sourceKey, label: sourceLabels?.[sourceKey] ?? sourceKey }));
+        const sourceEntries = availableSourceEntries.map((entry) => [entry.key, entry.label]);
+        openModal({
+          title: "Customize Sources",
+          bodyHtml: `
+          <p class="muted">Preset sources stay enabled. Toggle extra books for this character.</p>
+          <div class="option-list">
+            ${sourceEntries
+              .map(([sourceKey, sourceLabel]) => {
+                const fromPreset = presetSources.has(sourceKey);
+                const isChecked = fromPreset || selectedCustomSources.has(sourceKey);
+                return `
+                <label class="option-row">
+                  <div>
+                    <strong>${esc(sourceLabel)}</strong>
+                    <div class="muted">${esc(sourceKey)}${fromPreset ? " - from preset" : ""}</div>
+                  </div>
+                  <div class="option-row-actions">
+                    <input
+                      type="checkbox"
+                      data-source-custom-toggle="${esc(sourceKey)}"
+                      ${isChecked ? "checked" : ""}
+                      ${fromPreset ? "disabled" : ""}
+                      aria-label="Enable ${esc(sourceLabel)}"
+                    >
+                  </div>
+                </label>
+              `;
+              })
+              .join("")}
+          </div>
+        `,
+          actions: [{ label: "Close", secondary: true, onClick: (done) => done() }],
+        });
+
+        document.querySelectorAll("[data-source-custom-toggle]").forEach((checkbox) => {
+          checkbox.addEventListener("change", async () => {
+            const sourceKey = String(checkbox.dataset.sourceCustomToggle ?? "").trim();
+            if (!sourceKey) return;
+            if (checkbox.checked) selectedCustomSources.add(sourceKey);
+            else selectedCustomSources.delete(sourceKey);
+
+            store.updateCharacter({ customSources: [...selectedCustomSources] });
+            const nextCharacter = store.getState().character;
+            const catalogs = await loadCatalogs(getCharacterAllowedSources(nextCharacter));
+            store.setCatalogs(catalogs);
+            updateCharacterWithRequiredSettings(store.getState(), {}, { preserveUserOverrides: true });
+          });
+        });
+      };
+      renderCustomizeModal();
+    });
 
     [["#name", "name"], ["#notes", "notes"]].forEach(([sel, field]) => {
       const el = app.querySelector(sel);
@@ -1240,6 +1311,12 @@ export function createEvents(deps) {
       );
     }
 
+    app.querySelector("[data-toggle-inspiration]")?.addEventListener("click", () => {
+      withUpdatedPlay(state, (play) => {
+        play.inspiration = !Boolean(play.inspiration);
+      });
+    });
+
     app.querySelectorAll("[data-spell-prepared-btn]").forEach((button) => {
       button.addEventListener("click", () => {
         const spellName = button.dataset.spellPreparedBtn;
@@ -1269,6 +1346,38 @@ export function createEvents(deps) {
         if (!spellName) return;
         openSpellDetailsModal(state, spellName);
       });
+    });
+
+    app.querySelectorAll("[data-spell-attack-roll]").forEach((button) => {
+      const getContext = () => {
+        const spellName = button.dataset.spellAttackRoll;
+        if (!spellName) return null;
+        const spell = getSpellByName(state, spellName);
+        if (!spell) {
+          setDiceResult(`Spell attack unavailable: ${spellName}`, true);
+          return null;
+        }
+        const combat = getSpellCombatContext(state, spell);
+        if (!combat.hasSpellAttack || combat.attackBonus == null) {
+          setDiceResult(`${spell.name}: no spell attack roll found.`, true);
+          return null;
+        }
+        return { spell, combat };
+      };
+
+      bindClickAndLongPress(
+        button,
+        () => {
+          const context = getContext();
+          if (!context) return;
+          rollVisualD20(`${context.spell.name} to hit`, context.combat.attackBonus);
+        },
+        (rollMode) => {
+          const context = getContext();
+          if (!context) return;
+          rollVisualD20(`${context.spell.name} to hit`, context.combat.attackBonus, rollMode);
+        }
+      );
     });
 
     app.querySelectorAll("[data-spell-cast]").forEach((button) => {
@@ -1319,12 +1428,25 @@ export function createEvents(deps) {
           return;
         }
 
+        const spellCombat = getSpellCombatContext(state, spell);
+        const spentText = slotSpent ? "slot spent." : "cast.";
+
+        if (spellCombat.saveDc != null && spellCombat.saveText) {
+          setDiceResult(`Cast ${spell.name}: ${spentText} ${spellCombat.saveText.toUpperCase()} DC ${spellCombat.saveDc}.`, false);
+          return;
+        }
+
+        if (spellCombat.hasSpellAttack && spellCombat.attackBonus != null) {
+          const attackBonusText = spellCombat.attackBonus >= 0 ? `+${spellCombat.attackBonus}` : String(spellCombat.attackBonus);
+          setDiceResult(`Cast ${spell.name}: ${spentText} Use To Hit ${attackBonusText} for the spell attack roll.`, false);
+          return;
+        }
+
         if (spellLevel === 0) {
           setDiceResult(`Cast ${spell.name}: no roll found in the spell text.`, false);
           return;
         }
 
-        const spentText = slotSpent ? "slot spent." : "cast.";
         setDiceResult(`Cast ${spell.name}: ${spentText} No roll found in the spell text.`, false);
       });
     });

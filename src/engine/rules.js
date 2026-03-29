@@ -90,6 +90,78 @@ function normalizeFeatName(value) {
     .replace(/\s+/g, " ");
 }
 
+function normalizeCategoryList(value) {
+  if (Array.isArray(value)) {
+    return value
+      .map((entry) => String(entry ?? "").trim().toUpperCase())
+      .filter(Boolean);
+  }
+  const single = String(value ?? "").trim().toUpperCase();
+  return single ? [single] : [];
+}
+
+function normalizeOptionalFeatureTypeList(value) {
+  if (Array.isArray(value)) {
+    return value
+      .map((entry) => String(entry ?? "").trim().toUpperCase())
+      .filter(Boolean);
+  }
+  const single = String(value ?? "").trim().toUpperCase();
+  return single ? [single] : [];
+}
+
+function findFeatCatalogEntry(catalogs, feat) {
+  const feats = Array.isArray(catalogs?.feats) ? catalogs.feats : [];
+  const normalizedName = normalizeFeatName(feat?.name);
+  const normalizedSource = String(feat?.source ?? "").trim().toUpperCase();
+  return (
+    feats.find((entry) => {
+      if (normalizeFeatName(entry?.name) !== normalizedName) return false;
+      if (!normalizedSource) return true;
+      return String(entry?.source ?? "").trim().toUpperCase() === normalizedSource;
+    }) ?? null
+  );
+}
+
+function findOptionalFeatureCatalogEntry(catalogs, optionalFeature) {
+  const entries = Array.isArray(catalogs?.optionalFeatures) ? catalogs.optionalFeatures : [];
+  const normalizedName = normalizeFeatName(optionalFeature?.name);
+  const normalizedSource = String(optionalFeature?.source ?? "").trim().toUpperCase();
+  return (
+    entries.find((entry) => {
+      if (normalizeFeatName(entry?.name) !== normalizedName) return false;
+      if (!normalizedSource) return true;
+      return String(entry?.source ?? "").trim().toUpperCase() === normalizedSource;
+    }) ?? null
+  );
+}
+
+export function getCharacterFightingStyleSet(character, catalogs = null) {
+  const styleNames = new Set();
+  const addStyleName = (name) => {
+    const normalized = normalizeFeatName(name);
+    if (normalized) styleNames.add(normalized);
+  };
+
+  const feats = Array.isArray(character?.feats) ? character.feats : [];
+  feats.forEach((feat) => {
+    const detail = findFeatCatalogEntry(catalogs, feat);
+    const categories = normalizeCategoryList(detail?.category);
+    if (!categories.some((category) => category.startsWith("FS"))) return;
+    addStyleName(detail?.name ?? feat?.name);
+  });
+
+  const optionalFeatures = Array.isArray(character?.optionalFeatures) ? character.optionalFeatures : [];
+  optionalFeatures.forEach((feature) => {
+    const detail = findOptionalFeatureCatalogEntry(catalogs, feature);
+    const featureTypes = normalizeOptionalFeatureTypeList(detail?.featureType);
+    if (!featureTypes.some((category) => category.startsWith("FS:"))) return;
+    addStyleName(detail?.name ?? feature?.name);
+  });
+
+  return styleNames;
+}
+
 function getFeatHitPointBonus(character, totalLevel) {
   const feats = Array.isArray(character?.feats) ? character.feats : [];
   const featNames = new Set(feats.map((feat) => normalizeFeatName(feat?.name)).filter(Boolean));
@@ -136,12 +208,13 @@ function normalizeItemTypeCode(value) {
     .toUpperCase();
 }
 
-function getArmorClassFromEquipment(character, dexMod) {
+function getArmorClassFromEquipment(character, dexMod, fightingStyles = new Set()) {
   const equippedItems = getEquippedInventoryEntries(character);
   if (!equippedItems.length) return 10 + dexMod;
 
   let bestArmorAc = null;
   let shieldBonus = 0;
+  let isWearingArmor = false;
 
   equippedItems.forEach((entry) => {
     const typeCode = normalizeItemTypeCode(entry.itemType ?? entry.type);
@@ -157,6 +230,7 @@ function getArmorClassFromEquipment(character, dexMod) {
 
     if (!isArmor || !Number.isFinite(parsedAc) || parsedAc <= 0) return;
 
+    isWearingArmor = true;
     let dexContribution = dexMod;
     if (typeCode === "MA") dexContribution = Math.min(2, dexMod);
     if (typeCode === "HA") dexContribution = 0;
@@ -164,8 +238,9 @@ function getArmorClassFromEquipment(character, dexMod) {
     if (bestArmorAc == null || total > bestArmorAc) bestArmorAc = total;
   });
 
-  if (bestArmorAc != null) return bestArmorAc + shieldBonus;
-  return 10 + dexMod + shieldBonus;
+  const defenseBonus = isWearingArmor && fightingStyles.has("defense") ? 1 : 0;
+  if (bestArmorAc != null) return bestArmorAc + shieldBonus + defenseBonus;
+  return 10 + dexMod + shieldBonus + defenseBonus;
 }
 
 export function computeDerivedStats(character, catalogs = null) {
@@ -180,7 +255,8 @@ export function computeDerivedStats(character, catalogs = null) {
   };
   const prof = proficiencyBonus(character.level);
   const hp = getHitPointBreakdown(catalogs, character).total;
-  const ac = getArmorClassFromEquipment(character, mods.dex);
+  const fightingStyles = getCharacterFightingStyleSet(character, catalogs);
+  const ac = getArmorClassFromEquipment(character, mods.dex, fightingStyles);
 
   return {
     mods,

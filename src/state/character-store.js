@@ -66,6 +66,7 @@ function getDefaultPlayState() {
     attacks: [],
     featureUses: {},
     hitDiceSpent: {},
+    inspiration: false,
     conditions: [],
     notes: "",
     deathSavesSuccess: 0,
@@ -256,6 +257,7 @@ function normalizeCharacter(character) {
       character.play?.autoAbilityBonuses && typeof character.play.autoAbilityBonuses === "object"
         ? { ...character.play.autoAbilityBonuses }
         : {},
+    inspiration: Boolean(character.play?.inspiration),
     autoChoiceSelections:
       normalizedAutoChoiceSelections,
   };
@@ -270,6 +272,9 @@ function normalizeCharacter(character) {
         ? { ...base.abilities, ...character.abilityBase }
         : { ...base.abilities, ...(character.abilities ?? {}) },
     inventory: Array.isArray(character.inventory) ? character.inventory.map((entry) => normalizeInventoryEntry(entry)).filter(Boolean) : [],
+    customSources: Array.isArray(character.customSources)
+      ? [...new Set(character.customSources.map((entry) => String(entry ?? "").trim()).filter(Boolean))]
+      : [],
     spells: Array.isArray(character.spells) ? character.spells : [],
     multiclass: Array.isArray(character.multiclass) ? character.multiclass : [],
     feats: Array.isArray(character.feats) ? character.feats.map((feat) => normalizeFeatEntry(feat)).filter(Boolean) : [],
@@ -306,9 +311,14 @@ function normalizeCharacter(character) {
                   .map((slot) => ({
                     id: typeof slot?.id === "string" ? slot.id : "",
                     className: typeof slot?.className === "string" ? slot.className : "",
+                    classSource: typeof slot?.classSource === "string" ? slot.classSource : "",
+                    subclassName: typeof slot?.subclassName === "string" ? slot.subclassName : "",
                     level: toNumber(slot?.level, 0),
                     count: Math.max(1, toNumber(slot?.count, 1)),
                     slotType: typeof slot?.slotType === "string" && slot.slotType ? slot.slotType : "feat",
+                    featCategories: Array.isArray(slot?.featCategories)
+                      ? slot.featCategories.map((entry) => String(entry ?? "").trim()).filter(Boolean)
+                      : [],
                   }))
                   .filter((slot) => slot.id && slot.className && slot.level > 0)
               : [],
@@ -324,6 +334,7 @@ function normalizeCharacter(character) {
                     id: typeof slot?.id === "string" ? slot.id : "",
                     className: typeof slot?.className === "string" ? slot.className : "",
                     classSource: typeof slot?.classSource === "string" ? slot.classSource : "",
+                    subclassName: typeof slot?.subclassName === "string" ? slot.subclassName : "",
                     level: toNumber(slot?.level, 0),
                     count: Math.max(1, toNumber(slot?.count, 1)),
                     slotType: typeof slot?.slotType === "string" ? slot.slotType : "Optional Feature",
@@ -374,6 +385,7 @@ export function createInitialCharacter() {
     name: "",
     level: 1,
     sourcePreset: DEFAULT_SOURCE_PRESET,
+    customSources: [],
     race: "",
     background: "",
     class: "",

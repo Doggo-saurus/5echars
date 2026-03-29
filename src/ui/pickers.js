@@ -569,6 +569,24 @@ export function createPickers(deps) {
     return slots.find((slot) => slot.id === slotId) ?? null;
   }
 
+  function normalizeFeatCategoryList(value) {
+    if (Array.isArray(value)) {
+      return value
+        .map((entry) => String(entry ?? "").trim().toUpperCase())
+        .filter(Boolean);
+    }
+    const single = String(value ?? "").trim().toUpperCase();
+    return single ? [single] : [];
+  }
+
+  function doesFeatMatchSlot(slot, featEntry) {
+    const slotCategories = normalizeFeatCategoryList(slot?.featCategories);
+    if (!slotCategories.length) return true;
+    const featCategories = normalizeFeatCategoryList(featEntry?.category);
+    if (!featCategories.length) return false;
+    return slotCategories.some((category) => featCategories.includes(category));
+  }
+
   function upsertFeatForSlot(state, slotId, featEntry) {
     const slot = getFeatSlotById(state.character, slotId);
     if (!slot || !featEntry) return;
@@ -618,6 +636,7 @@ export function createPickers(deps) {
       const searchValue = String(searchEl?.value ?? "").trim();
       const sourceValue = String(sourceEl?.value ?? "").trim();
       const filtered = allFeats
+        .filter((feat) => doesFeatMatchSlot(slot, feat))
         .filter((feat) => matchesSearchQuery(searchValue, feat.name, feat.sourceLabel, feat.source))
         .filter((feat) => !sourceValue || feat.source === sourceValue)
         .slice(0, 250);
