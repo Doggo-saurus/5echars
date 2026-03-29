@@ -2,17 +2,33 @@
 set -euo pipefail
 
 REPO_URL="${1:-}"
-PIN_REF="${2:-main}"
+PIN_REF="main"
+ALLOW_EVERYTHING_FLAG="--i-am-legally-allowed-to-use-everything"
+ALLOW_EVERYTHING="false"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 TARGET_DIR="${PROJECT_ROOT}/data/catalog-src"
 
 if [ -z "${REPO_URL}" ]; then
   echo "Please provide a link to GitHub for your favourite 5e tools."
-  echo "Usage: bash ./scripts/vendor-catalog-data.sh <repo-url> [ref]"
+  echo "Usage: bash ./scripts/vendor-catalog-data.sh <repo-url> [ref] [--i-am-legally-allowed-to-use-everything]"
   echo "Example: bash ./scripts/vendor-catalog-data.sh https://github.com/example/source-data.git v1.0.0"
+  echo "Default: SRD-only import"
   exit 1
 fi
+
+shift
+for arg in "$@"; do
+  if [ "${arg}" = "${ALLOW_EVERYTHING_FLAG}" ]; then
+    ALLOW_EVERYTHING="true"
+  elif [ "${PIN_REF}" = "main" ]; then
+    PIN_REF="${arg}"
+  else
+    echo "Unexpected argument: ${arg}"
+    echo "Usage: bash ./scripts/vendor-catalog-data.sh <repo-url> [ref] [--i-am-legally-allowed-to-use-everything]"
+    exit 1
+  fi
+done
 
 mkdir -p "${PROJECT_ROOT}/data"
 
@@ -41,6 +57,13 @@ git -C "${TARGET_DIR}" sparse-checkout set \
   "data/generated/gendata-spell-source-lookup.json"
 
 git -C "${TARGET_DIR}" read-tree -mu HEAD
+
+if [ "${ALLOW_EVERYTHING}" = "false" ]; then
+  echo "Filtering vendored data to SRD content"
+  node "${SCRIPT_DIR}/filter-srd-catalog-data.mjs" "${TARGET_DIR}/data"
+else
+  echo "Keeping full vendored content (SRD filter disabled by explicit flag)"
+fi
 
 echo "Vendored catalog data at:"
 git -C "${TARGET_DIR}" rev-parse HEAD

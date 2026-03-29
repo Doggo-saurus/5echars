@@ -12,10 +12,18 @@ Run the vendor script:
 bash ./scripts/vendor-catalog-data.sh <repo-url>
 ```
 
+By default, the import is filtered to SRD-tagged content only.
+
 Optionally pin to a tag/branch:
 
 ```bash
 bash ./scripts/vendor-catalog-data.sh <repo-url> v2.25.4
+```
+
+To import the full dataset (no SRD filter), pass the explicit legal opt-in flag:
+
+```bash
+bash ./scripts/vendor-catalog-data.sh <repo-url> v2.25.4 --i-am-legally-allowed-to-use-everything
 ```
 
 ## Run locally (Node service)
