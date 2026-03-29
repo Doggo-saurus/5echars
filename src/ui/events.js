@@ -1103,8 +1103,6 @@ export function createEvents(deps) {
 
     const hpCurrentEl = app.querySelector("#play-hp-current");
     const hpTempEl = app.querySelector("#play-hp-temp");
-    const speedEl = app.querySelector("#play-speed");
-    const initiativeEl = app.querySelector("#play-initiative-bonus");
     const dsSuccessEl = app.querySelector("#play-ds-success");
     const dsFailEl = app.querySelector("#play-ds-fail");
 
@@ -1122,12 +1120,6 @@ export function createEvents(deps) {
     });
     bindNumberInput(hpTempEl, (play, value) => {
       play.hpTemp = Math.max(0, value);
-    });
-    bindNumberInput(speedEl, (play, value) => {
-      play.speed = Math.max(0, value);
-    });
-    bindNumberInput(initiativeEl, (play, value) => {
-      play.initiativeBonus = value;
     });
     bindNumberInput(dsSuccessEl, (play, value) => {
       play.deathSavesSuccess = Math.max(0, Math.min(3, value));
@@ -1167,16 +1159,6 @@ export function createEvents(deps) {
 
           if (target === "hp-temp") {
             play.hpTemp = Math.max(0, toNumber(play.hpTemp, 0) + delta);
-            return;
-          }
-
-          if (target === "speed") {
-            play.speed = Math.max(0, toNumber(play.speed, 30) + delta);
-            return;
-          }
-
-          if (target === "initiative-bonus") {
-            play.initiativeBonus = toNumber(play.initiativeBonus, 0) + delta;
             return;
           }
 
@@ -1288,12 +1270,27 @@ export function createEvents(deps) {
       bindClickAndLongPress(
         initiativeButton,
         () => {
-          const bonus = toNumber(state.character.play?.initiativeBonus, 0);
+          const bonus = toNumber(state.derived?.mods?.dex, 0);
           rollVisualD20("Initiative", bonus);
         },
         (rollMode) => {
-          const bonus = toNumber(state.character.play?.initiativeBonus, 0);
+          const bonus = toNumber(state.derived?.mods?.dex, 0);
           rollVisualD20("Initiative", bonus, rollMode);
+        }
+      );
+    }
+
+    const proficiencyButton = app.querySelector("[data-roll-proficiency]");
+    if (proficiencyButton) {
+      bindClickAndLongPress(
+        proficiencyButton,
+        () => {
+          const bonus = toNumber(state.derived?.proficiencyBonus, 0);
+          rollVisualD20("Proficiency", bonus);
+        },
+        (rollMode) => {
+          const bonus = toNumber(state.derived?.proficiencyBonus, 0);
+          rollVisualD20("Proficiency", bonus, rollMode);
         }
       );
     }

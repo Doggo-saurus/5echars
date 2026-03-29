@@ -53,6 +53,38 @@ export function createRenderers(deps) {
     return parsed.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
   }
 
+  function formatCharacterLogTimestamp(isoTimestamp) {
+    if (typeof isoTimestamp !== "string" || !isoTimestamp) {
+      return { datetime: "", label: "", title: "" };
+    }
+    const parsed = new Date(isoTimestamp);
+    if (Number.isNaN(parsed.getTime())) {
+      return { datetime: "", label: "", title: "" };
+    }
+    const timeLabel = formatCharacterLogTime(isoTimestamp);
+    const dateLabel = parsed.toLocaleDateString([], { month: "short", day: "numeric" });
+    const title = parsed.toLocaleString([], {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+    return {
+      datetime: parsed.toISOString(),
+      label: `${timeLabel} · ${dateLabel}`,
+      title,
+    };
+  }
+
+  function getCharacterLogToneClass(sectionKey) {
+    const normalized = String(sectionKey ?? "").trim().toLowerCase();
+    if (normalized === "dice") return "character-log-entry-tone-dice";
+    if (normalized === "play") return "character-log-entry-tone-play";
+    return "character-log-entry-tone-character";
+  }
+
   function renderCharacterLogSummaryParts(summaryParts) {
     const parts = Array.isArray(summaryParts) && summaryParts.length
       ? summaryParts
@@ -911,8 +943,15 @@ export function createRenderers(deps) {
     const hpTotal = derived.hp;
     const hpCurrent = play.hpCurrent == null ? hpTotal : play.hpCurrent;
     const hpTemp = toNumber(play.hpTemp, 0);
-    const speed = toNumber(play.speed, 30);
-    const initiativeBonus = toNumber(play.initiativeBonus, 0);
+    const initiativeBonus = toNumber(derived?.mods?.dex, 0);
+    const raceEntry = findCatalogEntryByName(state.catalogs?.races, character?.race);
+    const speedRaw = raceEntry?.speed;
+    const speed =
+      Number.isFinite(toNumber(speedRaw, Number.NaN))
+        ? Math.max(0, Math.floor(toNumber(speedRaw, 30)))
+        : speedRaw && typeof speedRaw === "object" && !Array.isArray(speedRaw) && Number.isFinite(toNumber(speedRaw.walk, Number.NaN))
+          ? Math.max(0, Math.floor(toNumber(speedRaw.walk, 30)))
+          : 30;
     const normalizeConditionName = (value) => String(value ?? "").trim().toLowerCase();
     const catalogConditionsRaw = Array.isArray(state.catalogs?.conditions) ? state.catalogs.conditions : [];
     const catalogConditionEntries = catalogConditionsRaw
@@ -1284,21 +1323,24 @@ export function createRenderers(deps) {
         <article class="card core-stats-card">
           <h3 class="title">Core Stats</h3>
           <div class="summary-grid">
-            <div class="pill">HP ${hpCurrent}/${hpTotal}</div>
-            <div class="pill">AC ${derived.ac}</div>
-            <div class="pill">Proficiency +${derived.proficiencyBonus}</div>
-            <div class="pill">Passive Perception ${derived.passivePerception}</div>
+            <div class="pill core-stat-pill"><span class="core-stat-name">HP</span><span class="core-stat-value">${hpCurrent}/${hpTotal}</span></div>
+            <div class="pill core-stat-pill"><span class="core-stat-name">AC</span><span class="core-stat-value">${derived.ac}</span></div>
+            <button type="button" class="pill pill-btn core-stat-pill" data-roll-proficiency title="Roll proficiency check">
+              <span class="core-stat-name">Proficiency</span><span class="core-stat-value">+${derived.proficiencyBonus}</span>
+            </button>
+            <div class="pill core-stat-pill"><span class="core-stat-name">Passive Perception</span><span class="core-stat-value">${derived.passivePerception}</span></div>
+            <div class="pill core-stat-pill"><span class="core-stat-name">Speed</span><span class="core-stat-value">${speed}</span></div>
             <button
               type="button"
-              class="pill pill-btn inspiration-pill ${play.inspiration ? "is-active" : ""}"
+              class="pill pill-btn core-stat-pill inspiration-pill ${play.inspiration ? "is-active" : ""}"
               data-toggle-inspiration
               aria-pressed="${play.inspiration ? "true" : "false"}"
               title="Toggle inspiration"
             >
-              Inspiration ${play.inspiration ? "Yes" : "No"}
+              <span class="core-stat-name">Inspiration</span><span class="core-stat-value">${play.inspiration ? "Yes" : "No"}</span>
             </button>
-            <button type="button" class="pill pill-btn" data-roll-initiative title="Roll initiative">
-              Initiative ${initiativeBonus >= 0 ? "+" : ""}${initiativeBonus}
+            <button type="button" class="pill pill-btn core-stat-pill" data-roll-initiative title="Roll initiative">
+              <span class="core-stat-name">Initiative</span><span class="core-stat-value">${initiativeBonus >= 0 ? "+" : ""}${initiativeBonus}</span>
             </button>
           </div>
           <div class="play-inline-row hp-pair-row">
@@ -1330,26 +1372,6 @@ export function createRenderers(deps) {
                 <button type="button" class="btn secondary hp-quick-btn" data-hp-delta="-1" data-hp-delta-target="temp">-1</button>
                 <button type="button" class="btn secondary hp-quick-btn" data-hp-delta="1" data-hp-delta-target="temp">1</button>
                 <button type="button" class="btn secondary hp-quick-btn" data-hp-delta="5" data-hp-delta-target="temp">5</button>
-              </div>
-            </label>
-          </div>
-          <div class="play-inline-row hp-pair-row">
-            <label class="inline-field hp-control">Speed
-              <div class="num-input-wrap">
-                <input id="play-speed" type="number" min="0" value="${esc(speed)}">
-                <div class="num-stepper">
-                  <button type="button" class="num-step-btn" data-step-target="speed" data-step-delta="1">+</button>
-                  <button type="button" class="num-step-btn" data-step-target="speed" data-step-delta="-1">-</button>
-                </div>
-              </div>
-            </label>
-            <label class="inline-field hp-control hp-control-right">Initiative Bonus
-              <div class="num-input-wrap">
-                <input id="play-initiative-bonus" type="number" value="${esc(initiativeBonus)}">
-                <div class="num-stepper">
-                  <button type="button" class="num-step-btn" data-step-target="initiative-bonus" data-step-delta="1">+</button>
-                  <button type="button" class="num-step-btn" data-step-target="initiative-bonus" data-step-delta="-1">-</button>
-                </div>
               </div>
             </label>
           </div>
@@ -2133,16 +2155,20 @@ export function createRenderers(deps) {
     const characterLogEntries = Array.isArray(getCharacterChangeLog?.()) ? getCharacterChangeLog() : [];
     const characterLogHtml = characterLogEntries.length
       ? characterLogEntries
-          .map((entry) => `
-            <article class="character-log-entry">
+          .map((entry) => {
+            const timestamp = formatCharacterLogTimestamp(entry?.at ?? "");
+            const toneClass = getCharacterLogToneClass(entry?.sectionKey);
+            return `
+            <article class="character-log-entry ${toneClass}">
               <div class="character-log-meta">
                 <span class="character-log-section">${esc(entry?.sectionLabel ?? "Character")}</span>
-                <time class="character-log-time">${esc(formatCharacterLogTime(entry?.at ?? ""))}</time>
+                <time class="character-log-time" datetime="${esc(timestamp.datetime)}" title="${esc(timestamp.title)}">${esc(timestamp.label)}</time>
               </div>
               <div class="character-log-summary">${renderCharacterLogSummaryParts(entry?.summaryParts)}</div>
               ${renderCharacterLogDetails(entry?.details)}
             </article>
-          `)
+          `;
+          })
           .join("")
       : `<span class="character-log-empty">No character changes yet.</span>`;
     return `
@@ -2169,7 +2195,16 @@ export function createRenderers(deps) {
                   <span class="play-character-log-icon" aria-hidden="true">📜</span>
                 </summary>
                 <div class="play-character-log-panel">
-                  ${characterLogHtml}
+                  <div class="character-log-panel-head">
+                    <div>
+                      <strong>Character Log</strong>
+                      <p>Recent rolls and sheet updates</p>
+                    </div>
+                    <span class="character-log-count">${esc(characterLogEntries.length)}</span>
+                  </div>
+                  <div class="character-log-list">
+                    ${characterLogHtml}
+                  </div>
                 </div>
               </details>
             </div>
