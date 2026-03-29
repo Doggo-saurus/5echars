@@ -1,10 +1,18 @@
 export function openModal({ title, bodyHtml, actions }) {
+  const escapeHtml = (value) =>
+    String(value ?? "")
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#39;");
   const root = document.getElementById("modal-root");
   const backdrop = document.createElement("div");
   backdrop.className = "modal-backdrop";
+  const safeTitle = escapeHtml(title);
   backdrop.innerHTML = `
-    <div class="modal card" role="dialog" aria-modal="true" aria-label="${title}">
-      <h3 class="title">${title}</h3>
+    <div class="modal card" role="dialog" aria-modal="true" aria-label="${safeTitle}">
+      <h3 class="title">${safeTitle}</h3>
       <div class="modal-body">${bodyHtml}</div>
       <div class="toolbar" id="modal-actions"></div>
     </div>

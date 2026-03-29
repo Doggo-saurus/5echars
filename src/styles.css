@@ -935,6 +935,15 @@ body.play-mode #dice-overlay {
   width: 100%;
 }
 
+.ability-rules-note {
+  margin: 0.45rem 0 0.25rem;
+  font-size: 0.86rem;
+}
+
+.ability-rules-note.is-warning {
+  color: #fecaca;
+}
+
 .inventory-list {
   display: grid;
   gap: 0.45rem;
@@ -2018,6 +2027,55 @@ body.play-mode #dice-overlay {
 .ability-save-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   column-gap: 0.75rem;
+}
+
+.play-trait-shell {
+  margin-top: 0.65rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+  padding-top: 0.65rem;
+  display: grid;
+  gap: 0.6rem;
+}
+
+.play-trait-group h4 {
+  margin: 0 0 0.35rem;
+  font-size: 0.82rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(229, 231, 235, 0.82);
+}
+
+.play-trait-chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.play-trait-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 999px;
+  padding: 0.24rem 0.5rem;
+  font-size: 0.79rem;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.play-trait-chip-meta {
+  display: inline-flex;
+  align-items: center;
+  color: rgba(229, 231, 235, 0.62);
+  font-size: 0.74rem;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.play-trait-empty {
+  margin: 0;
+  font-size: 0.82rem;
 }
 
 .edit-save-grid {

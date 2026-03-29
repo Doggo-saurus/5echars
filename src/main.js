@@ -1442,10 +1442,8 @@ function renderPersistenceNotice() {
   return `<p class="muted persistence-warning">${esc(persistenceNoticeMessage)}</p>`;
 }
 
-function getClassCatalogEntry(catalogs, className) {
-  const selectedName = String(className ?? "").trim().toLowerCase();
-  if (!selectedName || !Array.isArray(catalogs?.classes)) return null;
-  return catalogs.classes.find((entry) => String(entry?.name ?? "").trim().toLowerCase() === selectedName) ?? null;
+function getClassCatalogEntry(catalogs, className, classSource = "", preferredSources = []) {
+  return findCatalogEntryByNameWithSelectedSourcePreference(catalogs?.classes, className, classSource, preferredSources);
 }
 
 function getClassHitDieFaces(catalogs, className) {
@@ -1550,11 +1548,17 @@ function getPrimarySubclassSelection(character) {
   };
 }
 
-function getSubclassCatalogEntries(catalogs, className, classSource = "") {
+function getSubclassCatalogEntries(catalogs, className, classSource = "", preferredSources = []) {
   if (!Array.isArray(catalogs?.subclasses)) return [];
   const normalizedClass = String(className ?? "").trim().toLowerCase();
   if (!normalizedClass) return [];
   const normalizedClassSource = normalizeSourceTag(classSource);
+  const sourceOrder = new Map(
+    (Array.isArray(preferredSources) ? preferredSources : [])
+      .map((source, index) => [normalizeSourceTag(source), index])
+      .filter(([source]) => source)
+  );
+  const unknownSourceOrder = sourceOrder.size + 1000;
   return catalogs.subclasses
     .filter((entry) => String(entry?.className ?? "").trim().toLowerCase() === normalizedClass)
     .filter((entry) => {
@@ -1562,7 +1566,16 @@ function getSubclassCatalogEntries(catalogs, className, classSource = "") {
       const entryClassSource = normalizeSourceTag(entry?.classSource);
       return !entryClassSource || entryClassSource === normalizedClassSource;
     })
-    .sort((a, b) => String(a?.name ?? "").localeCompare(String(b?.name ?? "")));
+    .sort((a, b) => {
+      const nameDelta = String(a?.name ?? "").localeCompare(String(b?.name ?? ""));
+      if (nameDelta !== 0) return nameDelta;
+      const aSource = normalizeSourceTag(a?.source);
+      const bSource = normalizeSourceTag(b?.source);
+      const aOrder = sourceOrder.get(aSource) ?? unknownSourceOrder;
+      const bOrder = sourceOrder.get(bSource) ?? unknownSourceOrder;
+      if (aOrder !== bOrder) return aOrder - bOrder;
+      return aSource.localeCompare(bSource);
+    });
 }
 
 function getSelectedSubclassEntry(catalogs, character) {
@@ -1570,17 +1583,30 @@ function getSelectedSubclassEntry(catalogs, character) {
   if (!selected?.name) return null;
   const classEntry = getClassCatalogEntry(catalogs, character?.class);
   const classSource = normalizeSourceTag(classEntry?.source);
-  const candidates = getSubclassCatalogEntries(catalogs, character?.class, classSource);
+  const sourceOrder = getPreferredSourceOrder(character);
+  const candidates = getSubclassCatalogEntries(catalogs, character?.class, classSource, sourceOrder);
   const selectedName = selected.name.toLowerCase();
   const selectedSource = normalizeSourceTag(selected.source);
-  return (
-    candidates.find((entry) => {
-      const nameMatch = String(entry?.name ?? "").trim().toLowerCase() === selectedName;
-      if (!nameMatch) return false;
-      if (!selectedSource) return true;
-      return normalizeSourceTag(entry?.source) === selectedSource;
-    }) ?? null
-  );
+  const nameMatches = candidates.filter((entry) => String(entry?.name ?? "").trim().toLowerCase() === selectedName);
+  if (!nameMatches.length) return null;
+
+  if (selectedSource) {
+    const sourceMatch = nameMatches.find((entry) => normalizeSourceTag(entry?.source) === selectedSource);
+    if (sourceMatch) return sourceMatch;
+  }
+
+  const preferredSource = normalizeSourceTag(selected.classSource || classSource);
+  if (preferredSource) {
+    const preferredSourceMatch = nameMatches.find((entry) => normalizeSourceTag(entry?.source) === preferredSource);
+    if (preferredSourceMatch) return preferredSourceMatch;
+  }
+
+  for (const source of sourceOrder) {
+    const sourceMatch = nameMatches.find((entry) => normalizeSourceTag(entry?.source) === normalizeSourceTag(source));
+    if (sourceMatch) return sourceMatch;
+  }
+
+  return nameMatches[0] ?? null;
 }
 
 function getClassLevelTracks(character) {
@@ -2473,6 +2499,57 @@ function openFeatDetailsModal(state, featId) {
   });
 }
 
+function openSpeciesTraitDetailsModal(state, traitName) {
+  const selectedTraitName = String(traitName ?? "").trim();
+  if (!selectedTraitName) return;
+  const sourceOrder = getPreferredSourceOrder(state.character);
+  const raceEntry = findCatalogEntryByNameWithSelectedSourcePreference(
+    state.catalogs?.races,
+    state.character?.race,
+    state.character?.raceSource,
+    sourceOrder
+  );
+  if (!raceEntry) return;
+  const ignoredTraitNames = new Set(["age", "alignment", "size", "language", "languages", "creature type"]);
+  const traitEntry = (Array.isArray(raceEntry?.entries) ? raceEntry.entries : []).find((entry) => {
+    if (!entry || typeof entry !== "object") return false;
+    const name = String(entry?.name ?? "").trim();
+    if (!name) return false;
+    if (ignoredTraitNames.has(name.toLowerCase())) return false;
+    return name.toLowerCase() === selectedTraitName.toLowerCase();
+  });
+  const lines = getRuleDescriptionLines(traitEntry);
+  const bodyHtml = lines.length
+    ? lines
+        .map((line) => {
+          const body = renderTextWithInlineDiceButtons(line);
+          return `<p>${body}</p>`;
+        })
+        .join("")
+    : "<p class='muted'>No description is available for this trait.</p>";
+  const raceName = String(raceEntry?.name ?? state.character?.race ?? "").trim();
+  const close = openModal({
+    title: selectedTraitName,
+    bodyHtml: `
+      <div class="spell-meta-grid">
+        <div><strong>Type:</strong> Species Trait</div>
+        ${raceName ? `<div><strong>Species:</strong> ${esc(raceName)}</div>` : ""}
+        <div><strong>Source:</strong> ${esc(raceEntry?.sourceLabel ?? raceEntry?.source ?? "")}</div>
+      </div>
+      <div class="spell-description">${bodyHtml}</div>
+    `,
+    actions: [{ label: "Close", secondary: true, onClick: (done) => done() }],
+  });
+  document.querySelectorAll("[data-spell-roll]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const notation = button.dataset.spellRoll;
+      if (!notation) return;
+      close();
+      rollVisualNotation(selectedTraitName, notation);
+    });
+  });
+}
+
 function getClassSaveProficiencies(catalogs, className) {
   const classEntry = getClassCatalogEntry(catalogs, className);
   const profs = classEntry?.proficiency;
@@ -2493,6 +2570,45 @@ function findCatalogEntryByName(entries, selectedName) {
   const normalized = String(selectedName ?? "").trim().toLowerCase();
   if (!normalized) return null;
   return entries.find((entry) => String(entry?.name ?? "").trim().toLowerCase() === normalized) ?? null;
+}
+
+function getPreferredSourceOrder(character) {
+  const allowedSources = getCharacterAllowedSources(character).map((source) => normalizeSourceTag(source)).filter(Boolean);
+  const sourcePreset = String(character?.sourcePreset ?? "").trim();
+  const preferred = [...allowedSources];
+  const hasPhb = preferred.includes("PHB");
+  const hasXphb = preferred.includes("XPHB");
+  if (!hasPhb || !hasXphb) return preferred;
+  const xphbFirst = sourcePreset === "set2024";
+  const ordered = preferred.filter((source) => source !== "PHB" && source !== "XPHB");
+  if (xphbFirst) return ["XPHB", "PHB", ...ordered];
+  return ["PHB", "XPHB", ...ordered];
+}
+
+function findCatalogEntryByNameWithSourcePreference(entries, selectedName, preferredSources = []) {
+  const matches = findCatalogEntriesByName(entries, selectedName);
+  if (!matches.length) return null;
+  if (matches.length === 1) return matches[0];
+  const sourceOrder = (Array.isArray(preferredSources) ? preferredSources : [])
+    .map((entry) => normalizeSourceTag(entry))
+    .filter(Boolean);
+  for (const source of sourceOrder) {
+    const match = matches.find((entry) => normalizeSourceTag(entry?.source) === source);
+    if (match) return match;
+  }
+  return matches[0];
+}
+
+function findCatalogEntryByNameWithSelectedSourcePreference(entries, selectedName, selectedSource = "", preferredSources = []) {
+  const matches = findCatalogEntriesByName(entries, selectedName);
+  if (!matches.length) return null;
+  if (matches.length === 1) return matches[0];
+  const normalizedSource = normalizeSourceTag(selectedSource);
+  if (normalizedSource) {
+    const selectedMatch = matches.find((entry) => normalizeSourceTag(entry?.source) === normalizedSource);
+    if (selectedMatch) return selectedMatch;
+  }
+  return findCatalogEntryByNameWithSourcePreference(matches, selectedName, preferredSources);
 }
 
 function findCatalogEntriesByName(entries, selectedName) {
@@ -2623,7 +2739,11 @@ function getAutoChoiceSelectedValues(play, sourceKey, choiceId, from, count) {
   return normalizedByOrder.slice(0, Math.max(0, Math.min(from.length, count)));
 }
 
-function getStoredAutoChoiceSelectedValues(play, sourceKey, choiceId, from, count) {
+function getStoredAutoChoiceSelectedValues(play, sourceKey, choiceId, from, count, options = {}) {
+  const shouldAllowDuplicates =
+    options?.allowDuplicates === true
+    || (options?.allowDuplicates == null && String(sourceKey ?? "").startsWith("asi:"));
+  const preserveStoredOrder = Boolean(options?.preserveStoredOrder) || shouldAllowDuplicates;
   const selectionMap = getAutoChoiceSelectionMap(play, sourceKey);
   const storedRaw = selectionMap[choiceId];
   const fromByToken = new Map(
@@ -2634,11 +2754,22 @@ function getStoredAutoChoiceSelectedValues(play, sourceKey, choiceId, from, coun
   const stored = (Array.isArray(storedRaw) ? storedRaw : [])
     .map((entry) => normalizeChoiceToken(entry))
     .filter((token) => fromByToken.has(token));
-  if (String(sourceKey ?? "").startsWith("asi:")) {
-    return stored
+  if (preserveStoredOrder) {
+    if (!stored.length) return from.slice(0, Math.max(0, Math.min(from.length, count)));
+    const ordered = stored
       .map((token) => fromByToken.get(token))
-      .filter(Boolean)
-      .slice(0, Math.max(0, Math.min(from.length, count)));
+      .filter(Boolean);
+    if (shouldAllowDuplicates) {
+      return ordered.slice(0, Math.max(0, count));
+    }
+    const seen = new Set();
+    const uniqueOrdered = ordered.filter((entry) => {
+      const token = normalizeChoiceToken(entry);
+      if (!token || seen.has(token)) return false;
+      seen.add(token);
+      return true;
+    });
+    return uniqueOrdered.slice(0, Math.max(0, count));
   }
   const uniqueStored = stored.filter((token, index) => stored.indexOf(token) === index);
   const normalizedByOrder = from.filter((entry) => uniqueStored.includes(normalizeChoiceToken(entry)));
@@ -2662,7 +2793,10 @@ function applyAbilityChoiceBonuses(choice, bonuses, context) {
   const countFromChoice = Math.max(0, toNumber(choice.count ?? weighted?.count, 0));
   const count = Math.max(1, Math.min(from.length, countFromChoice || countFromWeights || 1));
   const choiceId = `a:${context.optionIndex}:choose:${context.choiceIndex}`;
-  const selected = getAutoChoiceSelectedValues(context.play, context.sourceKey, choiceId, from, count);
+  const selected = getStoredAutoChoiceSelectedValues(context.play, context.sourceKey, choiceId, from, count, {
+    allowDuplicates: false,
+    preserveStoredOrder: weightValues.length > 1,
+  });
   selected.forEach((ability, index) => {
     const amount = Math.max(1, toNumber(weightValues[index], fallbackAmount));
     bonuses[ability] = Math.max(0, toNumber(bonuses[ability], 0) + amount);
@@ -2699,8 +2833,19 @@ function getAbilityBonusesFromEntity(entry, sourceKey, play) {
 }
 
 function getAutomaticAbilityBonuses(catalogs, character, play) {
-  const raceEntry = findCatalogEntryByName(catalogs?.races, character?.race);
-  const backgroundEntry = findCatalogEntryByName(catalogs?.backgrounds, character?.background);
+  const sourceOrder = getPreferredSourceOrder(character);
+  const raceEntry = findCatalogEntryByNameWithSelectedSourcePreference(
+    catalogs?.races,
+    character?.race,
+    character?.raceSource,
+    sourceOrder
+  );
+  const backgroundEntry = findCatalogEntryByNameWithSelectedSourcePreference(
+    catalogs?.backgrounds,
+    character?.background,
+    character?.backgroundSource,
+    sourceOrder
+  );
   const raceBonuses = getAbilityBonusesFromEntity(raceEntry, "race", play);
   const backgroundBonuses = getAbilityBonusesFromEntity(backgroundEntry, "background", play);
   const featSlots = Array.isArray(character?.progression?.featSlots) ? character.progression.featSlots : [];
@@ -2865,8 +3010,19 @@ function collectSkillProficienciesFromClassEntry(classEntry, play, sourceKey = "
 
 function getAutomaticSaveProficiencies(catalogs, character) {
   const auto = { ...getClassSaveProficiencies(catalogs, character?.class) };
-  const raceEntry = findCatalogEntryByName(catalogs?.races, character?.race);
-  const backgroundEntry = findCatalogEntryByName(catalogs?.backgrounds, character?.background);
+  const sourceOrder = getPreferredSourceOrder(character);
+  const raceEntry = findCatalogEntryByNameWithSelectedSourcePreference(
+    catalogs?.races,
+    character?.race,
+    character?.raceSource,
+    sourceOrder
+  );
+  const backgroundEntry = findCatalogEntryByNameWithSelectedSourcePreference(
+    catalogs?.backgrounds,
+    character?.background,
+    character?.backgroundSource,
+    sourceOrder
+  );
   [raceEntry, backgroundEntry].forEach((entry) => {
     const saveOptions = Array.isArray(entry?.saveProficiencies) ? entry.saveProficiencies : [];
     const selected = saveOptions.find((option) => isRecordObject(option)) ?? null;
@@ -2884,9 +3040,20 @@ function getAutomaticSaveProficiencies(catalogs, character) {
 }
 
 function getAutomaticSkillProficiencies(catalogs, character, play) {
-  const classEntry = getClassCatalogEntry(catalogs, character?.class);
-  const raceEntry = findCatalogEntryByName(catalogs?.races, character?.race);
-  const backgroundEntry = findCatalogEntryByName(catalogs?.backgrounds, character?.background);
+  const sourceOrder = getPreferredSourceOrder(character);
+  const classEntry = getClassCatalogEntry(catalogs, character?.class, character?.classSource, sourceOrder);
+  const raceEntry = findCatalogEntryByNameWithSelectedSourcePreference(
+    catalogs?.races,
+    character?.race,
+    character?.raceSource,
+    sourceOrder
+  );
+  const backgroundEntry = findCatalogEntryByNameWithSelectedSourcePreference(
+    catalogs?.backgrounds,
+    character?.background,
+    character?.backgroundSource,
+    sourceOrder
+  );
   const activeSkills = new Set();
   if (classEntry) {
     const className = String(classEntry?.name ?? character?.class ?? "").trim().toLowerCase();
@@ -2919,11 +3086,326 @@ function getAutomaticSkillProficiencyModes(catalogs, character, play) {
   return modes;
 }
 
-function optionList(options, selected) {
-  return options
+function formatSourceSummaryLabel(value) {
+  const token = String(value ?? "").trim();
+  if (!token) return "";
+  return cleanSpellInlineTags(token)
+    .toLowerCase()
+    .replace(/(^|[\s(/-])([a-z])/g, (match, prefix, letter) => `${prefix}${letter.toUpperCase()}`)
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizeSummaryLabel(value) {
+  return formatSourceSummaryLabel(value).toLowerCase();
+}
+
+function createSummaryCollector() {
+  const byLabel = new Map();
+  const add = (label, source = "") => {
+    const normalized = normalizeSummaryLabel(label);
+    if (!normalized) return;
+    if (!byLabel.has(normalized)) byLabel.set(normalized, { label: formatSourceSummaryLabel(label), sourceSet: new Set() });
+    if (source) byLabel.get(normalized).sourceSet.add(formatSourceSummaryLabel(source));
+  };
+  const list = () =>
+    [...byLabel.values()]
+      .map((entry) => ({
+        label: entry.label,
+        sources: [...entry.sourceSet].filter(Boolean).sort((a, b) => a.localeCompare(b)),
+      }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  return { add, list };
+}
+
+function formatToolCategoryLabel(key, count = 1) {
+  const normalized = String(key ?? "").trim().toLowerCase();
+  const total = Math.max(1, toNumber(count, 1));
+  if (normalized === "any") return total > 1 ? `Any tools (${total})` : "Any tool";
+  if (normalized === "anytool") return total > 1 ? `Any tools (${total})` : "Any tool";
+  if (normalized === "anyartisantool") return total > 1 ? `Any artisan's tools (${total})` : "Any artisan's tool";
+  if (normalized === "anymusicalinstrument") return total > 1 ? `Any musical instruments (${total})` : "Any musical instrument";
+  if (normalized === "anygamingset") return total > 1 ? `Any gaming sets (${total})` : "Any gaming set";
+  const cleaned = formatSourceSummaryLabel(key);
+  if (!cleaned) return "";
+  return total > 1 ? `${cleaned} (${total})` : cleaned;
+}
+
+function normalizeToolTypeCode(value) {
+  return String(value ?? "")
+    .split("|")[0]
+    .trim()
+    .toUpperCase();
+}
+
+function isMundaneToolCatalogItem(entry) {
+  if (!isRecordObject(entry)) return false;
+  const rarity = String(entry?.rarity ?? "").trim().toLowerCase();
+  const hasAttunement = String(entry?.reqAttune ?? "").trim().length > 0;
+  const isMundaneRarity = !rarity || rarity === "none" || rarity === "unknown";
+  return isMundaneRarity && !hasAttunement;
+}
+
+function getToolPoolsFromCatalogs(catalogs) {
+  const items = Array.isArray(catalogs?.items) ? catalogs.items : [];
+  const normalizeToolName = (value) => formatSourceSummaryLabel(value).toLowerCase();
+  const dedupeByName = (list) =>
+    list.filter((entry, index, arr) => arr.findIndex((other) => normalizeToolName(other) === normalizeToolName(entry)) === index);
+  const allTools = dedupeByName(
+    items
+      .filter((entry) => ["AT", "INS", "GS", "T"].includes(normalizeToolTypeCode(entry?.type ?? entry?.itemType)))
+      .filter((entry) => isMundaneToolCatalogItem(entry))
+      .map((entry) => formatSourceSummaryLabel(entry?.name))
+      .filter(Boolean)
+      .sort((a, b) => a.localeCompare(b))
+  );
+  const artisansTools = dedupeByName(
+    items
+      .filter((entry) => normalizeToolTypeCode(entry?.type ?? entry?.itemType) === "AT")
+      .filter((entry) => isMundaneToolCatalogItem(entry))
+      .map((entry) => formatSourceSummaryLabel(entry?.name))
+      .filter(Boolean)
+      .sort((a, b) => a.localeCompare(b))
+  );
+  const musicalInstruments = dedupeByName(
+    items
+      .filter((entry) => normalizeToolTypeCode(entry?.type ?? entry?.itemType) === "INS")
+      .filter((entry) => isMundaneToolCatalogItem(entry))
+      .map((entry) => formatSourceSummaryLabel(entry?.name))
+      .filter(Boolean)
+      .sort((a, b) => a.localeCompare(b))
+  );
+  const gamingSets = dedupeByName(
+    items
+      .filter((entry) => normalizeToolTypeCode(entry?.type ?? entry?.itemType) === "GS")
+      .filter((entry) => isMundaneToolCatalogItem(entry))
+      .map((entry) => formatSourceSummaryLabel(entry?.name))
+      .filter(Boolean)
+      .sort((a, b) => a.localeCompare(b))
+  );
+  return { allTools, artisansTools, musicalInstruments, gamingSets };
+}
+
+function getToolPoolForCategory(categoryKey, pools) {
+  const normalized = String(categoryKey ?? "").trim().toLowerCase();
+  if (normalized === "any" || normalized === "anytool") return pools.allTools;
+  if (normalized === "anyartisantool") return pools.artisansTools;
+  if (normalized === "anymusicalinstrument") return pools.musicalInstruments;
+  if (normalized === "anygamingset") return pools.gamingSets;
+  return [];
+}
+
+function addToolProficienciesFromStructuredSpec(collector, spec, sourceLabel = "", options = {}) {
+  if (!Array.isArray(spec)) return;
+  const sourceKey = String(options?.sourceKey ?? "").trim();
+  const play = options?.play;
+  const pools = options?.pools ?? getToolPoolsFromCatalogs(options?.catalogs);
+  spec.forEach((entry, optionIndex) => {
+    if (typeof entry === "string") {
+      const label = formatSourceSummaryLabel(entry);
+      if (label) collector.add(label, sourceLabel);
+      return;
+    }
+    if (!isRecordObject(entry)) return;
+    Object.entries(entry).forEach(([key, value]) => {
+      if (key === "choose" && isRecordObject(value)) {
+        const from = (Array.isArray(value.from) ? value.from : [])
+          .map((item) => formatSourceSummaryLabel(item))
+          .filter(Boolean);
+        const count = Math.max(1, toNumber(value.count, 1));
+        if (sourceKey && from.length) {
+          const choiceId = `t:${optionIndex}:choose`;
+          const selected = getStoredAutoChoiceSelectedValues(play, sourceKey, choiceId, from, count, {
+            allowDuplicates: false,
+            preserveStoredOrder: false,
+          });
+          if (selected.length) {
+            selected.forEach((selectedTool) => collector.add(selectedTool, sourceLabel));
+            return;
+          }
+        }
+        if (from.length) {
+          collector.add(`Choose ${count} tool${count > 1 ? "s" : ""}: ${from.join(", ")}`, sourceLabel);
+        }
+        return;
+      }
+      if (value === true) {
+        collector.add(formatToolCategoryLabel(key, 1), sourceLabel);
+        return;
+      }
+      if (Number.isFinite(toNumber(value, NaN)) && toNumber(value, 0) > 0) {
+        const count = Math.max(1, toNumber(value, 1));
+        const pool = getToolPoolForCategory(key, pools);
+        if (sourceKey && pool.length) {
+          const choiceId = `t:${optionIndex}:${String(key ?? "").trim().toLowerCase()}`;
+          const selected = getStoredAutoChoiceSelectedValues(play, sourceKey, choiceId, pool, count, {
+            allowDuplicates: false,
+            preserveStoredOrder: false,
+          });
+          if (selected.length) {
+            selected.forEach((selectedTool) => collector.add(selectedTool, sourceLabel));
+            return;
+          }
+        }
+        collector.add(formatToolCategoryLabel(key, count), sourceLabel);
+      }
+    });
+  });
+}
+
+function formatDefenseTypeLabel(value) {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (!normalized) return "";
+  const words = normalized.split(/[^a-z0-9]+/).filter(Boolean);
+  if (!words.length) return "";
+  return words
+    .map((word) => (word.length <= 2 ? word.toUpperCase() : word[0].toUpperCase() + word.slice(1)))
+    .join(" ");
+}
+
+function addDefenseEntries(collector, entries, sourceLabel = "", options = {}) {
+  const singular = String(options?.singular ?? "type").trim();
+  if (!Array.isArray(entries)) return;
+  entries.forEach((entry) => {
+    if (typeof entry === "string") {
+      const label = formatDefenseTypeLabel(entry);
+      if (label) collector.add(label, sourceLabel);
+      return;
+    }
+    if (!isRecordObject(entry)) return;
+    const choose = isRecordObject(entry.choose) ? entry.choose : null;
+    if (!choose) return;
+    const from = (Array.isArray(choose.from) ? choose.from : [])
+      .map((item) => formatDefenseTypeLabel(item))
+      .filter(Boolean);
+    const count = Math.max(1, toNumber(choose.count, 1));
+    if (!from.length) return;
+    collector.add(`Choose ${count} ${singular}${count > 1 ? "s" : ""}: ${from.join(", ")}`, sourceLabel);
+  });
+}
+
+function getCharacterToolAndDefenseSummary(catalogs, character) {
+  const sourceOrder = getPreferredSourceOrder(character);
+  const raceEntry = findCatalogEntryByNameWithSelectedSourcePreference(
+    catalogs?.races,
+    character?.race,
+    character?.raceSource,
+    sourceOrder
+  );
+  const backgroundEntry = findCatalogEntryByNameWithSelectedSourcePreference(
+    catalogs?.backgrounds,
+    character?.background,
+    character?.backgroundSource,
+    sourceOrder
+  );
+  const classEntry = getClassCatalogEntry(catalogs, character?.class, character?.classSource, sourceOrder);
+  const toolCollector = createSummaryCollector();
+  const resistanceCollector = createSummaryCollector();
+  const immunityCollector = createSummaryCollector();
+  const conditionImmunityCollector = createSummaryCollector();
+  const vulnerabilityCollector = createSummaryCollector();
+  const toolPools = getToolPoolsFromCatalogs(catalogs);
+
+  addToolProficienciesFromStructuredSpec(toolCollector, raceEntry?.toolProficiencies, "Race", {
+    sourceKey: "race",
+    play: character?.play,
+    pools: toolPools,
+  });
+  addToolProficienciesFromStructuredSpec(toolCollector, backgroundEntry?.toolProficiencies, "Background", {
+    sourceKey: "background",
+    play: character?.play,
+    pools: toolPools,
+  });
+  const classSourceKey = `class:${String(classEntry?.name ?? character?.class ?? "").trim().toLowerCase() || "primary"}`;
+  addToolProficienciesFromStructuredSpec(toolCollector, classEntry?.startingProficiencies?.toolProficiencies, "Class", {
+    sourceKey: classSourceKey,
+    play: character?.play,
+    pools: toolPools,
+  });
+  if (Array.isArray(classEntry?.startingProficiencies?.tools)) {
+    classEntry.startingProficiencies.tools.forEach((tool) => toolCollector.add(tool, "Class"));
+  }
+
+  const multiclassEntries = Array.isArray(character?.multiclass) ? character.multiclass : [];
+  multiclassEntries.forEach((entry) => {
+    const className = String(entry?.class ?? "").trim();
+    if (!className) return;
+    const classCatalogEntry = getClassCatalogEntry(catalogs, className, "", sourceOrder);
+    const tools = classCatalogEntry?.multiclassing?.proficienciesGained?.tools;
+    if (!Array.isArray(tools)) return;
+    tools.forEach((tool) => toolCollector.add(tool, "Multiclass"));
+    const multiclassSourceKey = `multiclass:${className.toLowerCase() || "class"}`;
+    addToolProficienciesFromStructuredSpec(
+      toolCollector,
+      classCatalogEntry?.multiclassing?.proficienciesGained?.toolProficiencies,
+      "Multiclass",
+      {
+        sourceKey: multiclassSourceKey,
+        play: character?.play,
+        pools: toolPools,
+      }
+    );
+  });
+
+  const feats = Array.isArray(character?.feats) ? character.feats : [];
+  feats.forEach((feat) => {
+    const featEntry = findCatalogEntryByNameWithSelectedSourcePreference(catalogs?.feats, feat?.name, feat?.source, sourceOrder);
+    if (!featEntry) return;
+    addToolProficienciesFromStructuredSpec(toolCollector, featEntry?.toolProficiencies, "Feat", { pools: toolPools });
+    addDefenseEntries(resistanceCollector, featEntry?.resist, "Feat", { singular: "resistance" });
+    addDefenseEntries(immunityCollector, featEntry?.immune, "Feat", { singular: "immunity" });
+    addDefenseEntries(conditionImmunityCollector, featEntry?.conditionImmune, "Feat", { singular: "condition immunity" });
+    addDefenseEntries(vulnerabilityCollector, featEntry?.vulnerable, "Feat", { singular: "vulnerability" });
+  });
+
+  const optionalFeatures = Array.isArray(character?.optionalFeatures) ? character.optionalFeatures : [];
+  optionalFeatures.forEach((feature) => {
+    const entry = findCatalogEntryByNameWithSelectedSourcePreference(
+      catalogs?.optionalFeatures,
+      feature?.name,
+      feature?.source,
+      sourceOrder
+    );
+    if (!entry) return;
+    addToolProficienciesFromStructuredSpec(toolCollector, entry?.toolProficiencies, "Optional Feature", { pools: toolPools });
+    addDefenseEntries(resistanceCollector, entry?.resist, "Optional Feature", { singular: "resistance" });
+    addDefenseEntries(immunityCollector, entry?.immune, "Optional Feature", { singular: "immunity" });
+    addDefenseEntries(conditionImmunityCollector, entry?.conditionImmune, "Optional Feature", { singular: "condition immunity" });
+    addDefenseEntries(vulnerabilityCollector, entry?.vulnerable, "Optional Feature", { singular: "vulnerability" });
+  });
+
+  addDefenseEntries(resistanceCollector, raceEntry?.resist, "Race", { singular: "resistance" });
+  addDefenseEntries(immunityCollector, raceEntry?.immune, "Race", { singular: "immunity" });
+  addDefenseEntries(conditionImmunityCollector, raceEntry?.conditionImmune, "Race", { singular: "condition immunity" });
+  addDefenseEntries(vulnerabilityCollector, raceEntry?.vulnerable, "Race", { singular: "vulnerability" });
+
+  return {
+    tools: toolCollector.list(),
+    resistances: resistanceCollector.list(),
+    immunities: immunityCollector.list(),
+    conditionImmunities: conditionImmunityCollector.list(),
+    vulnerabilities: vulnerabilityCollector.list(),
+  };
+}
+
+function optionList(options, selected, config = {}) {
+  const includeSourceInValue = Boolean(config?.includeSourceInValue);
+  const selectedSource = normalizeSourceTag(config?.selectedSource);
+  const entries = Array.isArray(options) ? options : [];
+  const selectedName = String(selected ?? "").trim().toLowerCase();
+  const selectedIndex = entries.findIndex((entry) => {
+    const entryName = String(entry?.name ?? "").trim().toLowerCase();
+    if (!selectedName || entryName !== selectedName) return false;
+    if (!selectedSource) return true;
+    return normalizeSourceTag(entry?.source) === selectedSource;
+  });
+  return entries
     .map(
-      (opt) =>
-        `<option value="${esc(opt.name)}" ${selected === opt.name ? "selected" : ""}>${esc(opt.name)} (${esc(
+      (opt, index) =>
+        `<option value="${esc(includeSourceInValue ? `${String(opt?.name ?? "")}|${String(opt?.source ?? "")}` : opt.name)}" ${
+          index === selectedIndex ? "selected" : ""
+        }>${esc(opt.name)} (${esc(
           opt.sourceLabel ?? opt.source ?? "Unknown Source"
         )})</option>`
     )
@@ -2931,19 +3413,28 @@ function optionList(options, selected) {
 }
 
 function getSubclassSelectOptions(state) {
-  const classEntry = getClassCatalogEntry(state.catalogs, state.character.class);
+  const sourceOrder = getPreferredSourceOrder(state.character);
+  const classEntry = getClassCatalogEntry(state.catalogs, state.character.class, state.character?.classSource, sourceOrder);
   const selected = getPrimarySubclassSelection(state.character);
   const classSource = normalizeSourceTag(classEntry?.source);
-  const options = getSubclassCatalogEntries(state.catalogs, state.character.class, classSource);
+  const options = getSubclassCatalogEntries(state.catalogs, state.character.class, classSource, sourceOrder);
   return options.map((entry) => {
     const isSelected =
       selected &&
       String(selected.name ?? "").trim().toLowerCase() === String(entry?.name ?? "").trim().toLowerCase() &&
       (!selected.source || normalizeSourceTag(selected.source) === normalizeSourceTag(entry?.source));
+    const subclassSource = normalizeSourceTag(entry?.source);
+    const subclassSourceLabel = entry?.sourceLabel ?? SOURCE_LABELS[subclassSource] ?? entry?.source ?? "";
+    const subclassClassSource = normalizeSourceTag(entry?.classSource);
+    const subclassClassSourceLabel = SOURCE_LABELS[subclassClassSource] ?? entry?.classSource ?? "";
+    const sourceLabel =
+      subclassClassSource && subclassClassSource !== subclassSource && subclassClassSourceLabel
+        ? `${subclassSourceLabel} | Class: ${subclassClassSourceLabel}`
+        : subclassSourceLabel;
     return {
       name: String(entry?.name ?? ""),
       source: String(entry?.source ?? ""),
-      sourceLabel: entry?.sourceLabel ?? entry?.source ?? "",
+      sourceLabel,
       isSelected,
     };
   });
@@ -3211,13 +3702,16 @@ function getCharacterSpellSlotDefaults(catalogs, character) {
   const defaults = getEmptySpellSlotDefaults();
   const primaryClassName = String(character?.class ?? "").trim();
   if (!primaryClassName) return defaults;
+  const sourceOrder = getPreferredSourceOrder(character);
+  const primaryClassEntry = getClassCatalogEntry(catalogs, primaryClassName, character?.classSource, sourceOrder);
+  const resolvedPrimaryClassName = String(primaryClassEntry?.name ?? primaryClassName).trim();
 
   const { primaryLevel, multiclass } = getCharacterClassLevels(character);
   if (!multiclass.length) {
-    return getClassSpellSlotDefaults(catalogs, primaryClassName, primaryLevel);
+    return getClassSpellSlotDefaults(catalogs, resolvedPrimaryClassName, primaryLevel);
   }
 
-  const casterLevel = getClassCasterContribution(catalogs, primaryClassName, primaryLevel)
+  const casterLevel = getClassCasterContribution(catalogs, resolvedPrimaryClassName, primaryLevel)
     + multiclass.reduce((sum, entry) => sum + getClassCasterContribution(catalogs, entry.class, entry.level), 0);
   return getFullCasterSpellSlotsByLevel(catalogs, casterLevel);
 }
@@ -4238,6 +4732,7 @@ const events = createEvents({
   openClassDetailsModal,
   openFeatureDetailsModal,
   openFeatDetailsModal,
+  openSpeciesTraitDetailsModal,
   applyDiceStyle,
   rerollLastRoll,
   openCustomRollModal,
@@ -4294,6 +4789,7 @@ const renderers = createRenderers({
   getPreparedSpellLimit,
   countPreparedSpells,
   getSaveProficiencyLabelMap,
+  getCharacterToolAndDefenseSummary,
   getLevelUpPreview,
   getClassCasterContribution,
   renderCharacterHistorySelector,
@@ -4357,6 +4853,28 @@ function syncSpellSlotsWithDefaults(play, defaults, options = {}) {
 
 function updateCharacterWithRequiredSettings(state, patch, options = {}) {
   let nextCharacter = { ...state.character, ...patch };
+  const sourceOrder = getPreferredSourceOrder(nextCharacter);
+  const resolvedRace = findCatalogEntryByNameWithSelectedSourcePreference(
+    state.catalogs?.races,
+    nextCharacter?.race,
+    nextCharacter?.raceSource,
+    sourceOrder
+  );
+  const resolvedBackground = findCatalogEntryByNameWithSelectedSourcePreference(
+    state.catalogs?.backgrounds,
+    nextCharacter?.background,
+    nextCharacter?.backgroundSource,
+    sourceOrder
+  );
+  const resolvedClass = findCatalogEntryByNameWithSelectedSourcePreference(
+    state.catalogs?.classes,
+    nextCharacter?.class,
+    nextCharacter?.classSource,
+    sourceOrder
+  );
+  nextCharacter.raceSource = resolvedRace ? normalizeSourceTag(resolvedRace?.source) : "";
+  nextCharacter.backgroundSource = resolvedBackground ? normalizeSourceTag(resolvedBackground?.source) : "";
+  nextCharacter.classSource = resolvedClass ? normalizeSourceTag(resolvedClass?.source) : "";
   nextCharacter = {
     ...nextCharacter,
     ...resolveImportedCharacterSelections(state.catalogs, nextCharacter),
@@ -4472,18 +4990,22 @@ function updateCharacterWithRequiredSettings(state, patch, options = {}) {
   });
   nextPlay.featureModes = nextFeatureModes;
   const selectedSubclass = getSelectedSubclassEntry(state.catalogs, nextCharacter);
-  const existingSelection = nextCharacter.classSelection?.subclass ?? {};
+  const classEntry = getClassCatalogEntry(state.catalogs, nextCharacter.class, nextCharacter?.classSource, sourceOrder);
+  const classSource = normalizeSourceTag(classEntry?.source);
   const classSelection = {
     subclass: {
-      name: selectedSubclass?.name ?? String(existingSelection.name ?? nextCharacter.subclass ?? "").trim(),
-      source: selectedSubclass?.source ?? normalizeSourceTag(existingSelection.source),
-      className: selectedSubclass?.className ?? String(existingSelection.className ?? nextCharacter.class ?? "").trim(),
-      classSource: selectedSubclass?.classSource ?? normalizeSourceTag(existingSelection.classSource),
+      name: selectedSubclass?.name ?? "",
+      source: selectedSubclass?.source ?? "",
+      className: selectedSubclass?.className ?? String(nextCharacter.class ?? "").trim(),
+      classSource: selectedSubclass?.classSource ?? classSource,
     },
   };
   const subclassName = classSelection.subclass.name || "";
   store.updateCharacter({
     ...patch,
+    raceSource: nextCharacter.raceSource,
+    backgroundSource: nextCharacter.backgroundSource,
+    classSource: nextCharacter.classSource,
     abilities: nextAbilities,
     abilityBase: baseAbilities,
     subclass: subclassName,

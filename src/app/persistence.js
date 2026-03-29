@@ -128,8 +128,9 @@ export function createPersistence(deps) {
     if (!appState.showOnboardingHome) {
       if (persistedState?.mode === "play") store.setMode("play");
       if (Number.isFinite(persistedState?.stepIndex)) store.setStep(persistedState.stepIndex);
-      const sourcePreset = persistedState?.character?.sourcePreset ?? defaultSourcePreset;
-      await loadCatalogsForCharacter({ sourcePreset });
+      const persistedCharacter = persistedState?.character;
+      const sourcePreset = persistedCharacter?.sourcePreset ?? defaultSourcePreset;
+      await loadCatalogsForCharacter(persistedCharacter ?? { sourcePreset });
       return;
     }
 

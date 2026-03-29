@@ -50,10 +50,40 @@ function mapNamed(items) {
     }));
 }
 
+function sortCatalogItemsByNameAndSourcePriority(items, allowedSources) {
+  const sourceOrder = new Map(
+    (Array.isArray(allowedSources) ? allowedSources : [])
+      .map((source, index) => [String(source ?? "").trim().toUpperCase(), index])
+      .filter(([source]) => source)
+  );
+  const unknownSourceOrder = sourceOrder.size + 1000;
+  return [...items].sort((a, b) => {
+    const nameDelta = String(a?.name ?? "").localeCompare(String(b?.name ?? ""));
+    if (nameDelta !== 0) return nameDelta;
+    const aSource = String(a?.source ?? "").trim().toUpperCase();
+    const bSource = String(b?.source ?? "").trim().toUpperCase();
+    const aOrder = sourceOrder.get(aSource) ?? unknownSourceOrder;
+    const bOrder = sourceOrder.get(bSource) ?? unknownSourceOrder;
+    if (aOrder !== bOrder) return aOrder - bOrder;
+    return aSource.localeCompare(bSource);
+  });
+}
+
 function dedupeByNameAndSource(items) {
   const seen = new Set();
   return items.filter((it) => {
     const key = `${it.name ?? ""}__${it.source ?? ""}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function dedupeByName(items) {
+  const seen = new Set();
+  return items.filter((it) => {
+    const key = String(it?.name ?? "").trim().toLowerCase();
+    if (!key) return false;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
@@ -230,19 +260,30 @@ export async function loadCatalogs(allowedSources) {
         spellSourceEntry,
       };
     });
-    const mappedConditions = mapNamed(filterBySources(conditions, allowedSources));
+    const mappedConditions = dedupeByName(
+      sortCatalogItemsByNameAndSourcePriority(mapNamed(filterBySources(conditions, allowedSources)), allowedSources)
+    );
 
     return {
-      classes: mapNamed(filterBySources(classData.classes, allowedSources)),
-      subclasses: mapNamed(filterBySources(classData.subclasses, allowedSources)),
+      classes: sortCatalogItemsByNameAndSourcePriority(
+        mapNamed(filterBySources(classData.classes, allowedSources)),
+        allowedSources
+      ),
+      subclasses: sortCatalogItemsByNameAndSourcePriority(
+        mapNamed(filterBySources(classData.subclasses, allowedSources)),
+        allowedSources
+      ),
       classFeatures: mapNamed(filterBySources(classData.classFeatures, allowedSources)),
       subclassFeatures: mapNamed(filterBySources(classData.subclassFeatures, allowedSources)),
-      races: mapNamed(filterBySources(playableRaces, allowedSources)),
-      backgrounds: mapNamed(filterBySources(backgrounds, allowedSources)),
-      feats: mapNamed(filterBySources(feats, allowedSources)),
-      optionalFeatures: mapNamed(filterBySources(optionalFeatures, allowedSources)),
+      races: sortCatalogItemsByNameAndSourcePriority(mapNamed(filterBySources(playableRaces, allowedSources)), allowedSources),
+      backgrounds: sortCatalogItemsByNameAndSourcePriority(mapNamed(filterBySources(backgrounds, allowedSources)), allowedSources),
+      feats: sortCatalogItemsByNameAndSourcePriority(mapNamed(filterBySources(feats, allowedSources)), allowedSources),
+      optionalFeatures: sortCatalogItemsByNameAndSourcePriority(
+        mapNamed(filterBySources(optionalFeatures, allowedSources)),
+        allowedSources
+      ),
       spells: mappedSpells,
-      items: mapNamed(filterBySources(allItems, allowedSources)),
+      items: sortCatalogItemsByNameAndSourcePriority(mapNamed(filterBySources(allItems, allowedSources)), allowedSources),
       conditions: mappedConditions.length ? mappedConditions : getDefaultConditionsCatalog(),
     };
   } catch {

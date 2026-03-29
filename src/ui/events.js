@@ -31,6 +31,7 @@ export function createEvents(deps) {
     openClassDetailsModal,
     openFeatureDetailsModal,
     openFeatDetailsModal,
+    openSpeciesTraitDetailsModal,
     applyDiceStyle,
     rerollLastRoll,
     openCustomRollModal,
@@ -99,6 +100,16 @@ export function createEvents(deps) {
       .trim()
       .toLowerCase()
       .replace(/[^a-z0-9]/g, "");
+  }
+
+  function parseSourceAwareSelection(value) {
+    const raw = String(value ?? "");
+    if (!raw) return { name: "", source: "" };
+    const [nameRaw = "", sourceRaw = ""] = raw.split("|");
+    return {
+      name: nameRaw.trim(),
+      source: normalizeSourceTag(sourceRaw),
+    };
   }
 
   function normalizeSkillProficiencyMode(value) {
@@ -395,9 +406,11 @@ export function createEvents(deps) {
       const el = app.querySelector(sel);
       if (!el) return;
       const handler = () => {
+        const selected = parseSourceAwareSelection(el.value);
+        const sourceField = field === "race" ? "raceSource" : "backgroundSource";
         updateCharacterWithRequiredSettings(
           state,
-          { [field]: el.value },
+          { [field]: selected.name, [sourceField]: selected.source },
           { preserveUserOverrides: true }
         );
       };
@@ -448,10 +461,12 @@ export function createEvents(deps) {
     const classEl = app.querySelector("#class");
     if (classEl) {
       classEl.addEventListener("change", () => {
+        const selected = parseSourceAwareSelection(classEl.value);
         updateCharacterWithRequiredSettings(
           state,
           {
-            class: classEl.value || "",
+            class: selected.name,
+            classSource: selected.source,
             subclass: "",
             classSelection: {
               subclass: { name: "", source: "", className: "", classSource: "" },
@@ -512,6 +527,7 @@ export function createEvents(deps) {
         const choiceId = String(input.dataset.autoChoiceId ?? "").trim();
         if (!sourceKey || !choiceId) return;
         const maxCount = Math.max(1, toNumber(input.dataset.autoChoiceMax, 1));
+        const allowDuplicates = String(input.dataset.autoChoiceAllowDuplicates ?? "true").trim().toLowerCase() !== "false";
         const nextPlay =
           state.character.play && typeof state.character.play === "object" && !Array.isArray(state.character.play)
             ? structuredClone(state.character.play)
@@ -524,7 +540,7 @@ export function createEvents(deps) {
           selections[sourceKey] && typeof selections[sourceKey] === "object" && !Array.isArray(selections[sourceKey])
             ? { ...selections[sourceKey] }
             : {};
-        const nextValues = Array.from(app.querySelectorAll("[data-asi-choice-select]"))
+        let nextValues = Array.from(app.querySelectorAll("[data-asi-choice-select]"))
           .filter((selectEl) => {
             const selectSource = String(selectEl.dataset.autoChoiceSource ?? "").trim();
             const selectChoiceId = String(selectEl.dataset.autoChoiceId ?? "").trim();
@@ -533,6 +549,15 @@ export function createEvents(deps) {
           .map((selectEl) => String(selectEl.value ?? "").trim())
           .filter(Boolean)
           .slice(0, maxCount);
+        if (!allowDuplicates) {
+          const seen = new Set();
+          nextValues = nextValues.filter((value) => {
+            const token = normalizeChoiceToken(value);
+            if (!token || seen.has(token)) return false;
+            seen.add(token);
+            return true;
+          });
+        }
         sourceSelections[choiceId] = nextValues;
         selections[sourceKey] = sourceSelections;
         nextPlay.autoChoiceSelections = selections;
@@ -1074,6 +1099,13 @@ export function createEvents(deps) {
         const featId = button.dataset.openFeat;
         if (!featId) return;
         openFeatDetailsModal(state, featId);
+      });
+    });
+    app.querySelectorAll("[data-open-species-trait]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const traitName = button.dataset.openSpeciesTrait;
+        if (!traitName) return;
+        openSpeciesTraitDetailsModal(state, traitName);
       });
     });
     app.querySelectorAll("[data-feature-use-delta]").forEach((button) => {

@@ -275,6 +275,12 @@ function normalizeCharacter(character) {
     customSources: Array.isArray(character.customSources)
       ? [...new Set(character.customSources.map((entry) => String(entry ?? "").trim()).filter(Boolean))]
       : [],
+    race: typeof character.race === "string" ? character.race : "",
+    raceSource: typeof character.raceSource === "string" ? character.raceSource : "",
+    background: typeof character.background === "string" ? character.background : "",
+    backgroundSource: typeof character.backgroundSource === "string" ? character.backgroundSource : "",
+    class: typeof character.class === "string" ? character.class : "",
+    classSource: typeof character.classSource === "string" ? character.classSource : "",
     spells: Array.isArray(character.spells) ? character.spells : [],
     multiclass: Array.isArray(character.multiclass) ? character.multiclass : [],
     feats: Array.isArray(character.feats) ? character.feats.map((feat) => normalizeFeatEntry(feat)).filter(Boolean) : [],
@@ -387,8 +393,11 @@ export function createInitialCharacter() {
     sourcePreset: DEFAULT_SOURCE_PRESET,
     customSources: [],
     race: "",
+    raceSource: "",
     background: "",
+    backgroundSource: "",
     class: "",
+    classSource: "",
     subclass: "",
     abilities: {
       str: 10,

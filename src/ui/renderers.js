@@ -27,6 +27,7 @@ export function createRenderers(deps) {
     getPreparedSpellLimit,
     countPreparedSpells,
     getSaveProficiencyLabelMap,
+    getCharacterToolAndDefenseSummary,
     getLevelUpPreview,
     getClassCasterContribution,
     defaultDiceResultMessage,
@@ -311,6 +312,73 @@ export function createRenderers(deps) {
     return entries.find((entry) => String(entry?.name ?? "").trim().toLowerCase() === normalized) ?? null;
   }
 
+  function normalizeSourceTag(value) {
+    return String(value ?? "").trim().toUpperCase();
+  }
+
+  function getPreferredSourceOrder(character) {
+    const allowedSources = getCharacterAllowedSources(character).map((source) => normalizeSourceTag(source)).filter(Boolean);
+    const sourcePreset = String(character?.sourcePreset ?? "").trim();
+    const preferred = [...allowedSources];
+    const hasPhb = preferred.includes("PHB");
+    const hasXphb = preferred.includes("XPHB");
+    if (!hasPhb || !hasXphb) return preferred;
+    const xphbFirst = sourcePreset === "set2024";
+    const ordered = preferred.filter((source) => source !== "PHB" && source !== "XPHB");
+    if (xphbFirst) return ["XPHB", "PHB", ...ordered];
+    return ["PHB", "XPHB", ...ordered];
+  }
+
+  function findCatalogEntryByNameWithSourcePreference(entries, selectedName, preferredSources = []) {
+    if (!Array.isArray(entries)) return null;
+    const normalized = String(selectedName ?? "").trim().toLowerCase();
+    if (!normalized) return null;
+    const matches = entries.filter((entry) => String(entry?.name ?? "").trim().toLowerCase() === normalized);
+    if (!matches.length) return null;
+    if (matches.length === 1) return matches[0];
+    const sourceOrder = (Array.isArray(preferredSources) ? preferredSources : [])
+      .map((source) => normalizeSourceTag(source))
+      .filter(Boolean);
+    for (const source of sourceOrder) {
+      const match = matches.find((entry) => normalizeSourceTag(entry?.source) === source);
+      if (match) return match;
+    }
+    return matches[0];
+  }
+
+  function findCatalogEntryByNameWithSelectedSourcePreference(entries, selectedName, selectedSource = "", preferredSources = []) {
+    if (!Array.isArray(entries)) return null;
+    const normalized = String(selectedName ?? "").trim().toLowerCase();
+    if (!normalized) return null;
+    const matches = entries.filter((entry) => String(entry?.name ?? "").trim().toLowerCase() === normalized);
+    if (!matches.length) return null;
+    if (matches.length === 1) return matches[0];
+    const normalizedSource = normalizeSourceTag(selectedSource);
+    if (normalizedSource) {
+      const selectedMatch = matches.find((entry) => normalizeSourceTag(entry?.source) === normalizedSource);
+      if (selectedMatch) return selectedMatch;
+    }
+    return findCatalogEntryByNameWithSourcePreference(matches, selectedName, preferredSources);
+  }
+
+  function getSpeciesTraitRows(raceEntry) {
+    if (!raceEntry || typeof raceEntry !== "object") return [];
+    const ignoredTraitNames = new Set(["age", "alignment", "size", "language", "languages", "creature type"]);
+    const entries = Array.isArray(raceEntry?.entries) ? raceEntry.entries : [];
+    return entries
+      .map((entry) => {
+        if (!entry || typeof entry !== "object") return null;
+        const name = String(entry?.name ?? "").trim();
+        if (!name) return null;
+        if (ignoredTraitNames.has(name.toLowerCase())) return null;
+        return {
+          id: `species:${normalizeSourceTag(raceEntry?.source)}:${name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`,
+          name,
+        };
+      })
+      .filter(Boolean);
+  }
+
   function normalizeAbilityKey(value) {
     const key = String(value ?? "").trim().toLowerCase();
     return saveAbilities.includes(key) ? key : "";
@@ -369,6 +437,7 @@ export function createRenderers(deps) {
 
   function getStoredChoiceValuesOnly(character, sourceKey, choiceId, from, count, options = {}) {
     const allowDuplicates = Boolean(options?.allowDuplicates);
+    const preserveStoredOrder = Boolean(options?.preserveStoredOrder);
     const selectionMap = getAutoChoiceSelectionMap(character, sourceKey);
     const storedRaw = selectionMap[choiceId];
     const fromByToken = new Map(
@@ -379,11 +448,22 @@ export function createRenderers(deps) {
     const stored = (Array.isArray(storedRaw) ? storedRaw : [])
       .map((entry) => normalizeChoiceToken(entry))
       .filter((token) => fromByToken.has(token));
-    if (allowDuplicates) {
-      return stored
+    if (allowDuplicates || preserveStoredOrder) {
+      if (!stored.length) return from.slice(0, Math.max(0, Math.min(from.length, count)));
+      const ordered = stored
         .map((token) => fromByToken.get(token))
-        .filter(Boolean)
-        .slice(0, Math.max(0, Math.min(from.length, count)));
+        .filter(Boolean);
+      if (allowDuplicates) {
+        return ordered.slice(0, Math.max(0, count));
+      }
+      const seen = new Set();
+      const uniqueOrdered = ordered.filter((entry) => {
+        const token = normalizeChoiceToken(entry);
+        if (!token || seen.has(token)) return false;
+        seen.add(token);
+        return true;
+      });
+      return uniqueOrdered.slice(0, Math.max(0, count));
     }
     const uniqueStored = stored.filter((token, index) => stored.indexOf(token) === index);
     const normalizedByOrder = from.filter((entry) => uniqueStored.includes(normalizeChoiceToken(entry)));
@@ -405,7 +485,10 @@ export function createRenderers(deps) {
     const fallbackAmount = Math.max(1, toNumber(choice.amount ?? weighted?.amount, 1));
     const count = Math.max(1, Math.min(from.length, toNumber(choice.count ?? weighted?.count, weightValues.length || 1)));
     const choiceId = `a:${context.optionIndex ?? 0}:choose:${context.choiceIndex ?? 0}`;
-    const selected = getSelectedChoiceValues(context.character, context.sourceKey, choiceId, from, count);
+    const selected = getStoredChoiceValuesOnly(context.character, context.sourceKey, choiceId, from, count, {
+      allowDuplicates: false,
+      preserveStoredOrder: weightValues.length > 1,
+    });
     for (let idx = 0; idx < selected.length; idx += 1) {
       const ability = selected[idx];
       if (!ability) continue;
@@ -414,7 +497,7 @@ export function createRenderers(deps) {
     }
   }
 
-  function getAbilityBonusesSummary(entry, sourceKey, character) {
+  function getAbilityBonusesMap(entry, sourceKey, character) {
     const bonuses = saveAbilities.reduce((acc, ability) => {
       acc[ability] = 0;
       return acc;
@@ -422,7 +505,7 @@ export function createRenderers(deps) {
     const abilityOptions = Array.isArray(entry?.ability) ? entry.ability : [];
     const optionIndex = abilityOptions.findIndex((option) => option && typeof option === "object");
     const selected = optionIndex >= 0 ? abilityOptions[optionIndex] : null;
-    if (!selected) return "";
+    if (!selected) return bonuses;
     let abilityChoiceIndex = 0;
     Object.entries(selected).forEach(([key, value]) => {
       const ability = normalizeAbilityKey(key);
@@ -440,10 +523,19 @@ export function createRenderers(deps) {
         applyAbilityChoiceBonuses(value, bonuses, { character, sourceKey, optionIndex, choiceIndex: abilityChoiceIndex });
       }
     });
+    return bonuses;
+  }
+
+  function getAbilityBonusesSummary(entry, sourceKey, character) {
+    const bonuses = getAbilityBonusesMap(entry, sourceKey, character);
     return saveAbilities
       .filter((ability) => toNumber(bonuses[ability], 0) > 0)
       .map((ability) => `${abilityLabels[ability] ?? ability.toUpperCase()} +${toNumber(bonuses[ability], 0)}`)
       .join(", ");
+  }
+
+  function getAbilityBonusTotal(map) {
+    return saveAbilities.reduce((sum, ability) => sum + Math.max(0, toNumber(map?.[ability], 0)), 0);
   }
 
   function getSkillProficiencySummary(entry, sourceKey, character) {
@@ -522,7 +614,9 @@ export function createRenderers(deps) {
     `;
   }
 
-  function renderChoiceSelects(sourceKey, choiceId, count, options, selectedValues, labelFn) {
+  function renderChoiceSelects(sourceKey, choiceId, count, options, selectedValues, labelFn, config = {}) {
+    const pointLabels = Array.isArray(config?.pointLabels) ? config.pointLabels : [];
+    const allowDuplicates = config?.allowDuplicates !== false;
     return `
       <div class="auto-choice-group">
         <p class="muted auto-choice-label">Spend ${count} points</p>
@@ -532,12 +626,13 @@ export function createRenderers(deps) {
             const selectedToken = normalizeChoiceToken(selected);
             return `
               <label class="auto-choice-select">
-                <span class="muted">Point ${index + 1}</span>
+                <span class="muted">${esc(pointLabels[index] ?? `Point ${index + 1}`)}</span>
                 <select
                   data-asi-choice-select="1"
                   data-auto-choice-source="${esc(sourceKey)}"
                   data-auto-choice-id="${esc(choiceId)}"
                   data-auto-choice-max="${esc(count)}"
+                  data-auto-choice-allow-duplicates="${allowDuplicates ? "true" : "false"}"
                 >
                   <option value="">(none)</option>
                   ${options
@@ -557,8 +652,91 @@ export function createRenderers(deps) {
     `;
   }
 
-  function renderAutoChoiceEditorsForEntity(entry, sourceKey, character) {
+  function normalizeToolTypeCode(value) {
+    return String(value ?? "")
+      .split("|")[0]
+      .trim()
+      .toUpperCase();
+  }
+
+  function isMundaneToolCatalogItem(entry) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return false;
+    const rarity = String(entry?.rarity ?? "").trim().toLowerCase();
+    const hasAttunement = String(entry?.reqAttune ?? "").trim().length > 0;
+    const isMundaneRarity = !rarity || rarity === "none" || rarity === "unknown";
+    return isMundaneRarity && !hasAttunement;
+  }
+
+  function getToolPools(catalogs) {
+    const items = Array.isArray(catalogs?.items) ? catalogs.items : [];
+    const dedupeByName = (list) =>
+      list.filter((entry, index, arr) => arr.findIndex((other) => normalizeChoiceToken(other) === normalizeChoiceToken(entry)) === index);
+    const allTools = dedupeByName(
+      items
+        .filter((entry) => ["AT", "INS", "GS", "T"].includes(normalizeToolTypeCode(entry?.type ?? entry?.itemType)))
+        .filter((entry) => isMundaneToolCatalogItem(entry))
+        .map((entry) => String(entry?.name ?? "").trim())
+        .filter(Boolean)
+        .sort((a, b) => a.localeCompare(b))
+    );
+    const artisans = dedupeByName(
+      items
+        .filter((entry) => normalizeToolTypeCode(entry?.type ?? entry?.itemType) === "AT")
+        .filter((entry) => isMundaneToolCatalogItem(entry))
+        .map((entry) => String(entry?.name ?? "").trim())
+        .filter(Boolean)
+        .sort((a, b) => a.localeCompare(b))
+    );
+    const instruments = dedupeByName(
+      items
+        .filter((entry) => normalizeToolTypeCode(entry?.type ?? entry?.itemType) === "INS")
+        .filter((entry) => isMundaneToolCatalogItem(entry))
+        .map((entry) => String(entry?.name ?? "").trim())
+        .filter(Boolean)
+        .sort((a, b) => a.localeCompare(b))
+    );
+    const gamingSets = dedupeByName(
+      items
+        .filter((entry) => normalizeToolTypeCode(entry?.type ?? entry?.itemType) === "GS")
+        .filter((entry) => isMundaneToolCatalogItem(entry))
+        .map((entry) => String(entry?.name ?? "").trim())
+        .filter(Boolean)
+        .sort((a, b) => a.localeCompare(b))
+    );
+    return { allTools, artisans, instruments, gamingSets };
+  }
+
+  function getToolPoolForCategoryKey(key, pools) {
+    const normalized = String(key ?? "").trim().toLowerCase();
+    if (normalized === "any" || normalized === "anytool") return pools.allTools;
+    if (normalized === "anyartisantool") return pools.artisans;
+    if (normalized === "anymusicalinstrument") return pools.instruments;
+    if (normalized === "anygamingset") return pools.gamingSets;
+    return [];
+  }
+
+  function getToolCategoryTitle(key, count = 1) {
+    const normalized = String(key ?? "").trim().toLowerCase();
+    const qty = Math.max(1, toNumber(count, 1));
+    if (normalized === "any" || normalized === "anytool") return `Any tool${qty > 1 ? "s" : ""}`;
+    if (normalized === "anyartisantool") return `Any artisan's tool${qty > 1 ? "s" : ""}`;
+    if (normalized === "anymusicalinstrument") return `Any musical instrument${qty > 1 ? "s" : ""}`;
+    if (normalized === "anygamingset") return `Any gaming set${qty > 1 ? "s" : ""}`;
+    return String(key ?? "").trim();
+  }
+
+  function getAutoChoiceSourceLabel(sourceKey) {
+    const normalized = String(sourceKey ?? "").trim().toLowerCase();
+    if (normalized === "race") return "Race";
+    if (normalized === "background") return "Background";
+    if (normalized.startsWith("class:")) return "Class";
+    if (normalized.startsWith("multiclass:")) return "Multiclass";
+    return "Source";
+  }
+
+  function renderAutoChoiceEditorsForEntity(entry, sourceKey, character, catalogs) {
     const blocks = [];
+    const sourceLabel = getAutoChoiceSourceLabel(sourceKey);
     const abilityOptions = Array.isArray(entry?.ability) ? entry.ability : [];
     const abilityOptionIndex = abilityOptions.findIndex((option) => option && typeof option === "object");
     const abilityOption = abilityOptionIndex >= 0 ? abilityOptions[abilityOptionIndex] : null;
@@ -578,13 +756,35 @@ export function createRenderers(deps) {
           : [];
         const count = Math.max(1, Math.min(from.length, toNumber(choice.count ?? weighted?.count, weightValues.length || 1)));
         const choiceId = `a:${abilityOptionIndex}:choose:${choiceIndex}`;
-        const selected = getSelectedChoiceValues(character, sourceKey, choiceId, from, count);
-        blocks.push(`
-          <div class="auto-choice-card">
-            <p class="muted"><strong>${esc(sourceKey === "race" ? "Race" : "Background")} ability choice</strong></p>
-            ${renderChoiceCheckboxes(sourceKey, choiceId, count, from, selected, (ability) => abilityLabels[ability] ?? ability.toUpperCase())}
-          </div>
-        `);
+        const weightedPointLabels = weightValues.length > 1 ? weightValues.map((amount, index) => `Bonus ${signed(amount)} (${index + 1})`) : [];
+        if (weightedPointLabels.length) {
+          const selected = getStoredChoiceValuesOnly(character, sourceKey, choiceId, from, count, {
+            allowDuplicates: false,
+            preserveStoredOrder: true,
+          });
+          blocks.push(`
+            <div class="auto-choice-card">
+              <p class="muted"><strong>${esc(sourceLabel)} ability choice</strong></p>
+              ${renderChoiceSelects(
+                sourceKey,
+                choiceId,
+                count,
+                from,
+                selected,
+                (ability) => abilityLabels[ability] ?? ability.toUpperCase(),
+                { pointLabels: weightedPointLabels, allowDuplicates: false }
+              )}
+            </div>
+          `);
+        } else {
+          const selected = getSelectedChoiceValues(character, sourceKey, choiceId, from, count);
+          blocks.push(`
+            <div class="auto-choice-card">
+              <p class="muted"><strong>${esc(sourceLabel)} ability choice</strong></p>
+              ${renderChoiceCheckboxes(sourceKey, choiceId, count, from, selected, (ability) => abilityLabels[ability] ?? ability.toUpperCase())}
+            </div>
+          `);
+        }
       });
     }
 
@@ -606,7 +806,7 @@ export function createRenderers(deps) {
         selected.forEach((skillKey) => taken.add(skillKey));
         blocks.push(`
           <div class="auto-choice-card">
-            <p class="muted"><strong>${esc(sourceKey === "race" ? "Race" : "Background")} skill choice</strong></p>
+            <p class="muted"><strong>${esc(sourceLabel)} skill choice</strong></p>
             ${renderChoiceCheckboxes(sourceKey, choiceId, anyCount, pool, selected, (skillKey) => skills.find((skill) => skill.key === skillKey)?.label ?? skillKey)}
           </div>
         `);
@@ -623,7 +823,7 @@ export function createRenderers(deps) {
           const selected = getSelectedChoiceValues(character, sourceKey, choiceId, from, count);
           blocks.push(`
             <div class="auto-choice-card">
-              <p class="muted"><strong>${esc(sourceKey === "race" ? "Race" : "Background")} skill choice</strong></p>
+              <p class="muted"><strong>${esc(sourceLabel)} skill choice</strong></p>
               ${renderChoiceCheckboxes(
                 sourceKey,
                 choiceId,
@@ -637,6 +837,48 @@ export function createRenderers(deps) {
         }
       }
     }
+
+    const toolOptions = Array.isArray(entry?.toolProficiencies) ? entry.toolProficiencies : [];
+    const toolPools = getToolPools(catalogs);
+    toolOptions.forEach((toolOption, optionIndex) => {
+      if (!toolOption || typeof toolOption !== "object") return;
+      const choose = toolOption.choose && typeof toolOption.choose === "object" ? toolOption.choose : null;
+      if (choose) {
+        const from = (Array.isArray(choose.from) ? choose.from : [])
+          .map((entryValue) => String(entryValue ?? "").trim())
+          .filter(Boolean)
+          .filter((toolName, index, list) => list.findIndex((entryName) => normalizeChoiceToken(entryName) === normalizeChoiceToken(toolName)) === index);
+        const count = Math.max(1, Math.min(from.length, toNumber(choose.count, 1)));
+        if (from.length && count > 0) {
+          const choiceId = `t:${optionIndex}:choose`;
+          const selected = getSelectedChoiceValues(character, sourceKey, choiceId, from, count);
+          blocks.push(`
+            <div class="auto-choice-card">
+              <p class="muted"><strong>${esc(sourceLabel)} tool choice</strong></p>
+              ${renderChoiceCheckboxes(sourceKey, choiceId, count, from, selected, (toolName) => toolName)}
+            </div>
+          `);
+        }
+      }
+      Object.entries(toolOption).forEach(([key, value]) => {
+        if (key === "choose") return;
+        if (!(Number.isFinite(toNumber(value, NaN)) && toNumber(value, 0) > 0)) return;
+        const count = Math.max(1, toNumber(value, 1));
+        const pool = getToolPoolForCategoryKey(key, toolPools);
+        if (!pool.length) return;
+        const choiceId = `t:${optionIndex}:${String(key ?? "").trim().toLowerCase()}`;
+        const selected = getSelectedChoiceValues(character, sourceKey, choiceId, pool, count);
+        blocks.push(`
+          <div class="auto-choice-card">
+            <p class="muted"><strong>${esc(sourceLabel)} tool choice</strong> - ${esc(
+              getToolCategoryTitle(key, count)
+            )}</p>
+            ${renderChoiceCheckboxes(sourceKey, choiceId, count, pool, selected, (toolName) => toolName)}
+          </div>
+        `);
+      });
+    });
+
     return blocks.join("");
   }
 
@@ -681,8 +923,19 @@ export function createRenderers(deps) {
       if (!current.includes(label)) current.push(label);
       map[skillKey] = current;
     };
-    const raceEntry = findCatalogEntryByName(catalogs?.races, character?.race);
-    const backgroundEntry = findCatalogEntryByName(catalogs?.backgrounds, character?.background);
+    const sourceOrder = getPreferredSourceOrder(character);
+    const raceEntry = findCatalogEntryByNameWithSelectedSourcePreference(
+      catalogs?.races,
+      character?.race,
+      character?.raceSource,
+      sourceOrder
+    );
+    const backgroundEntry = findCatalogEntryByNameWithSelectedSourcePreference(
+      catalogs?.backgrounds,
+      character?.background,
+      character?.backgroundSource,
+      sourceOrder
+    );
     collectEntitySkillSelections(raceEntry, "race", character).forEach((skillKey) => addSkillSource(skillKey, "Race"));
     collectEntitySkillSelections(backgroundEntry, "background", character).forEach((skillKey) => addSkillSource(skillKey, "Background"));
     return map;
@@ -944,7 +1197,13 @@ export function createRenderers(deps) {
     const hpCurrent = play.hpCurrent == null ? hpTotal : play.hpCurrent;
     const hpTemp = toNumber(play.hpTemp, 0);
     const initiativeBonus = toNumber(derived?.mods?.dex, 0);
-    const raceEntry = findCatalogEntryByName(state.catalogs?.races, character?.race);
+    const raceSourceOrder = getPreferredSourceOrder(character);
+    const raceEntry = findCatalogEntryByNameWithSelectedSourcePreference(
+      state.catalogs?.races,
+      character?.race,
+      character?.raceSource,
+      raceSourceOrder
+    );
     const speedRaw = raceEntry?.speed;
     const speed =
       Number.isFinite(toNumber(speedRaw, Number.NaN))
@@ -1008,6 +1267,29 @@ export function createRenderers(deps) {
 
     const savesHtml = renderSaveRowsImpl(state, { canToggle: false, includeRollButtons: true });
     const skillsHtml = renderSkillRowsImpl(state, { canToggle: false, includeRollButtons: true });
+    const traitSummary = getCharacterToolAndDefenseSummary(state.catalogs, character);
+    const renderTraitChip = (entry) =>
+      `<span class="play-trait-chip">${esc(entry.label)}${
+        entry.sources?.length ? `<span class="play-trait-chip-meta">${esc(entry.sources.join(" / "))}</span>` : ""
+      }</span>`;
+    const renderTraitGroup = (title, entries) => {
+      if (!entries.length) return "";
+      return `
+        <div class="play-trait-group">
+          <h4>${esc(title)}</h4>
+          <div class="play-trait-chip-list">${entries.map((entry) => renderTraitChip(entry)).join("")}</div>
+        </div>
+      `;
+    };
+    const traitSectionHtml = [
+      renderTraitGroup("Tool Proficiencies", traitSummary.tools),
+      renderTraitGroup("Resistances", traitSummary.resistances),
+      renderTraitGroup("Immunities", traitSummary.immunities),
+      renderTraitGroup("Condition Immunities", traitSummary.conditionImmunities),
+      renderTraitGroup("Vulnerabilities", traitSummary.vulnerabilities),
+    ]
+      .filter(Boolean)
+      .join("");
 
     const attackMode = play.attackMode === "edit" ? "edit" : "view";
     const autoAttacksRaw = getAutoAttacks?.(state);
@@ -1120,6 +1402,7 @@ export function createRenderers(deps) {
     const selectedOptionalFeatures = Array.isArray(character?.optionalFeatures) ? character.optionalFeatures : [];
     const classTableEffects = Array.isArray(character?.progression?.classTableEffects) ? character.progression.classTableEffects : [];
     const featureModes = Array.isArray(character?.progression?.featureModes) ? character.progression.featureModes : [];
+    const speciesTraits = getSpeciesTraitRows(raceEntry);
     const attacksPerAttackActionFromFeatures = unlockedFeatures.reduce((maxAttacks, feature) => {
       const featureName = String(feature?.name ?? "").trim();
       if (!featureName || !featureName.toLowerCase().startsWith("extra attack")) return maxAttacks;
@@ -1290,6 +1573,22 @@ export function createRenderers(deps) {
           })
           .join("")
       : "<span class='muted'>No mode-based feature choices available.</span>";
+    const speciesTraitListHtml = speciesTraits.length
+      ? speciesTraits
+          .map(
+            (trait) => `
+            <li class="feature-row">
+              <span class="class-feature-level">Species</span>
+              <div class="feature-main">
+                <button type="button" class="spell-name-btn feature-name-btn" data-open-species-trait="${esc(trait.name)}">${esc(
+                  trait.name
+                )}</button>
+              </div>
+            </li>
+          `
+          )
+          .join("")
+      : "";
 
     const selectedSpells = Array.isArray(character?.spells) ? character.spells.filter(Boolean) : [];
     const hasSelectedSpells = selectedSpells.length > 0;
@@ -1406,6 +1705,7 @@ export function createRenderers(deps) {
         <article class="card">
           <h3 class="title">Abilities & Saves</h3>
           <div class="play-list ability-save-grid">${savesHtml}</div>
+          ${traitSectionHtml ? `<div class="play-trait-shell">${traitSectionHtml}</div>` : ""}
         </article>
 
         <article class="card">
@@ -1456,6 +1756,8 @@ export function createRenderers(deps) {
           <h3 class="title">Features</h3>
           <h4>Class/Subclass Features</h4>
           ${featureListHtml ? `<ul class="class-feature-list">${featureListHtml}</ul>` : "<p class='muted'>No unlocked class features.</p>"}
+          <h4>Species Traits</h4>
+          ${speciesTraitListHtml ? `<ul class="class-feature-list">${speciesTraitListHtml}</ul>` : "<p class='muted'>No species traits found.</p>"}
           <h4>Feature Modes</h4>
           <div class="play-list">${featureModesHtml}</div>
           <h4>Class Table Effects</h4>
@@ -1547,30 +1849,58 @@ export function createRenderers(deps) {
     `;
     }
     if (stepIndex === 2) {
-      const selectedRace = findCatalogEntryByName(catalogs.races, character.race);
-      const selectedBackground = findCatalogEntryByName(catalogs.backgrounds, character.background);
+      const raceSourceOrder = getPreferredSourceOrder(character);
+      const selectedRace = findCatalogEntryByNameWithSelectedSourcePreference(
+        catalogs.races,
+        character.race,
+        character.raceSource,
+        raceSourceOrder
+      );
+      const selectedBackground = findCatalogEntryByNameWithSelectedSourcePreference(
+        catalogs.backgrounds,
+        character.background,
+        character.backgroundSource,
+        raceSourceOrder
+      );
       const raceAbilitySummary = getAbilityBonusesSummary(selectedRace, "race", character);
       const raceSkillSummary = getSkillProficiencySummary(selectedRace, "race", character);
       const backgroundAbilitySummary = getAbilityBonusesSummary(selectedBackground, "background", character);
       const backgroundSkillSummary = getSkillProficiencySummary(selectedBackground, "background", character);
-      const raceChoiceEditors = renderAutoChoiceEditorsForEntity(selectedRace, "race", character);
-      const backgroundChoiceEditors = renderAutoChoiceEditorsForEntity(selectedBackground, "background", character);
+      const raceAbilityMap = getAbilityBonusesMap(selectedRace, "race", character);
+      const backgroundAbilityMap = getAbilityBonusesMap(selectedBackground, "background", character);
+      const raceAbilityTotal = getAbilityBonusTotal(raceAbilityMap);
+      const backgroundAbilityTotal = getAbilityBonusTotal(backgroundAbilityMap);
+      const abilityRulesHint = raceAbilityTotal > 0 && backgroundAbilityTotal > 0
+        ? "<strong>Rules mix detected:</strong> both race and background grant ability bonuses. This stacks bonuses and can exceed standard 2014/2024 assumptions."
+        : raceAbilityTotal > 0
+          ? "<strong>2014-style active:</strong> race is currently providing ability bonuses."
+          : backgroundAbilityTotal > 0
+            ? "<strong>2024-style active:</strong> background is currently providing ability bonuses."
+            : "No automatic ability score bonuses detected from race/background.";
+      const raceChoiceEditors = renderAutoChoiceEditorsForEntity(selectedRace, "race", character, catalogs);
+      const backgroundChoiceEditors = renderAutoChoiceEditorsForEntity(selectedBackground, "background", character, catalogs);
       return `
       <h2 class="title">Ancestry & Background</h2>
       <div class="row">
         <label>Race
           <select id="race">
             <option value="">Select race</option>
-            ${optionList(catalogs.races, character.race)}
+            ${optionList(catalogs.races, character.race, { includeSourceInValue: true, selectedSource: character.raceSource })}
           </select>
         </label>
         <label>Background
           <select id="background">
             <option value="">Select background</option>
-            ${optionList(catalogs.backgrounds, character.background)}
+            ${optionList(catalogs.backgrounds, character.background, {
+              includeSourceInValue: true,
+              selectedSource: character.backgroundSource,
+            })}
           </select>
         </label>
       </div>
+      <p class="muted ability-rules-note ${raceAbilityTotal > 0 && backgroundAbilityTotal > 0 ? "is-warning" : ""}">
+        ${abilityRulesHint}
+      </p>
       <div class="play-list">
         <p class="muted">
           <strong>Race bonuses:</strong>
@@ -1599,15 +1929,28 @@ export function createRenderers(deps) {
     }
     if (stepIndex === 3) {
       const subclassOptions = getSubclassSelectOptions(state);
-      const classEntry = findCatalogEntryByName(catalogs.classes, character.class);
+      const sourceOrder = getPreferredSourceOrder(character);
+      const classEntry = findCatalogEntryByNameWithSelectedSourcePreference(
+        catalogs.classes,
+        character.class,
+        character.classSource,
+        sourceOrder
+      );
       const classSkillChoiceEditors = renderClassSkillChoiceEditors(classEntry, character, catalogs);
+      const classChoiceSourceKey = `class:${String(classEntry?.name ?? character?.class ?? "").trim().toLowerCase() || "primary"}`;
+      const classToolChoiceEditors = renderAutoChoiceEditorsForEntity(
+        { toolProficiencies: classEntry?.startingProficiencies?.toolProficiencies },
+        classChoiceSourceKey,
+        character,
+        catalogs
+      );
       return `
       <h2 class="title">Class & Multiclass</h2>
       <div class="row">
         <label>Class
           <select id="class">
             <option value="">Select class</option>
-            ${optionList(catalogs.classes, character.class)}
+            ${optionList(catalogs.classes, character.class, { includeSourceInValue: true, selectedSource: character.classSource })}
           </select>
         </label>
         <label>Subclass
@@ -1629,6 +1972,7 @@ export function createRenderers(deps) {
         <button class="btn secondary" type="button" data-open-levelup>Level Up</button>
       </div>
       ${classSkillChoiceEditors ? `<div class="auto-choice-shell">${classSkillChoiceEditors}</div>` : ""}
+      ${classToolChoiceEditors ? `<div class="auto-choice-shell">${classToolChoiceEditors}</div>` : ""}
       <h3 class="title">Feat Slots</h3>
       <p class="subtitle">Feat slots come from your class levels. Pick a feat for each slot.</p>
       <div class="option-list">
@@ -1768,7 +2112,11 @@ export function createRenderers(deps) {
         .join("")}
     </div>
     <h4>Multiclass</h4>
-    <p class="muted">${character.multiclass.length ? character.multiclass.map((m) => `${m.class} ${m.level}`).join(", ") : "None"}</p>
+    <p class="muted">${
+      character.multiclass.length
+        ? character.multiclass.map((m) => `${esc(m.class)} ${esc(m.level)}`).join(", ")
+        : "None"
+    }</p>
   `;
   }
 
@@ -1810,7 +2158,8 @@ export function createRenderers(deps) {
                 2,
                 saveAbilities,
                 asiSelected,
-                (ability) => abilityLabels[ability] ?? ability.toUpperCase()
+                (ability) => abilityLabels[ability] ?? ability.toUpperCase(),
+                { allowDuplicates: true }
               )}
             </div>
           `
