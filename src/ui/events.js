@@ -321,7 +321,8 @@ export function createEvents(deps) {
     const sourcePreset = app.querySelector("#source-preset");
     if (sourcePreset) {
       sourcePreset.addEventListener("change", async (evt) => {
-        const preset = evt.target.value || DEFAULT_SOURCE_PRESET;
+        const currentPreset = String(store.getState().character?.sourcePreset ?? DEFAULT_SOURCE_PRESET).trim();
+        const preset = evt.target.value || currentPreset || DEFAULT_SOURCE_PRESET;
         store.updateCharacter({ sourcePreset: preset });
         const nextCharacter = store.getState().character;
         const catalogs = await loadCatalogs(getCharacterAllowedSources(nextCharacter));

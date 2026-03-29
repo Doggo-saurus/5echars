@@ -116,6 +116,22 @@ function mapMagicVariantsToItems(variants) {
     .filter(Boolean);
 }
 
+function isSrdTagged(item) {
+  if (!item || typeof item !== "object") return false;
+  if (item.srd === true || item.srd52 === true || item.basicRules === true) return true;
+  const inherits = item.inherits;
+  if (!inherits || typeof inherits !== "object") return false;
+  return inherits.srd === true || inherits.srd52 === true || inherits.basicRules === true;
+}
+
+function isSrdOnlyCatalogContent(groups) {
+  const entries = (Array.isArray(groups) ? groups : [])
+    .flatMap((group) => (Array.isArray(group) ? group : []))
+    .filter((entry) => entry && typeof entry === "object");
+  if (!entries.length) return false;
+  return entries.every((entry) => isSrdTagged(entry));
+}
+
 function getDefaultConditionsCatalog() {
   return [
     { name: "Blinded", source: "PHB" },
@@ -225,6 +241,41 @@ export async function loadAvailableSourceEntries() {
   } catch {
     const sourceSet = new Set(Object.keys(SOURCE_LABELS));
     return buildSourceEntries(sourceSet, new Map());
+  }
+}
+
+export async function isCatalogDataSrdOnly() {
+  try {
+    const [classData, races, backgrounds, feats, optionalFeatures, spells, items, baseItems, magicVariants, conditions] = await Promise.all([
+      loadClassDataFromIndex(),
+      loadSingleFile("races.json", "race"),
+      loadSingleFile("backgrounds.json", "background"),
+      loadSingleFile("feats.json", "feat"),
+      loadSingleFile("optionalfeatures.json", "optionalfeature"),
+      loadFromIndex("spells", "spell"),
+      loadSingleFile("items.json", "item"),
+      loadSingleFile("items-base.json", "baseitem"),
+      loadSingleFile("magicvariants.json", "magicvariant"),
+      loadSingleFile("conditionsdiseases.json", "condition"),
+    ]);
+    const playableRaces = filterNpcRaces(races);
+    const variantItems = mapMagicVariantsToItems(magicVariants);
+    const allItems = dedupeByNameAndSource([...items, ...baseItems, ...variantItems]);
+    return isSrdOnlyCatalogContent([
+      classData.classes,
+      classData.subclasses,
+      classData.classFeatures,
+      classData.subclassFeatures,
+      playableRaces,
+      backgrounds,
+      feats,
+      optionalFeatures,
+      spells,
+      allItems,
+      conditions,
+    ]);
+  } catch {
+    return false;
   }
 }
 

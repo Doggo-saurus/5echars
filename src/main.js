@@ -5,7 +5,7 @@ import {
   SOURCE_PRESET_LABELS,
   getAllowedSources,
 } from "./config/sources.js";
-import { loadAvailableSourceEntries, loadAvailableSources, loadCatalogs } from "./data-loader.js";
+import { isCatalogDataSrdOnly, loadAvailableSourceEntries, loadAvailableSources, loadCatalogs } from "./data-loader.js";
 import { STEPS, createInitialCharacter, createStore } from "./state/character-store.js";
 import { loadAppState, saveAppState } from "./state/persistence.js";
 import { createCharacter, flushPendingCharacterSync, getCharacter, saveCharacter } from "./character-api.js";
@@ -78,6 +78,33 @@ const appState = {
   localCharacterVersion: 0,
   localCharacterUpdatedAt: "",
 };
+const { srd: srdPresetSources = [], ...nonSrdSourcePresets } = SOURCE_PRESETS;
+const { srd: srdPresetLabel = "SRD", ...nonSrdSourcePresetLabels } = SOURCE_PRESET_LABELS;
+let runtimeSourcePresets = { ...nonSrdSourcePresets };
+let runtimeSourcePresetLabels = { ...nonSrdSourcePresetLabels };
+let sourcePresetRuntimeReady = false;
+
+function getRuntimeDefaultSourcePreset() {
+  if (runtimeSourcePresets[DEFAULT_SOURCE_PRESET]) return DEFAULT_SOURCE_PRESET;
+  const [firstPreset] = Object.keys(runtimeSourcePresets);
+  return firstPreset ?? DEFAULT_SOURCE_PRESET;
+}
+
+function resolveRuntimeSourcePreset(presetKey) {
+  const normalized = String(presetKey ?? "").trim();
+  if (normalized && runtimeSourcePresets[normalized]) return normalized;
+  return getRuntimeDefaultSourcePreset();
+}
+
+async function ensureRuntimeSourcePresets() {
+  if (sourcePresetRuntimeReady) return;
+  const srdOnly = await isCatalogDataSrdOnly();
+  if (srdOnly) {
+    runtimeSourcePresets = { srd: srdPresetSources };
+    runtimeSourcePresetLabels = { srd: srdPresetLabel };
+  }
+  sourcePresetRuntimeReady = true;
+}
 
 const {
   renderRollHistory,
@@ -3897,8 +3924,8 @@ function getSpellPrimaryDiceNotation(spell) {
 }
 
 function getCharacterAllowedSources(character) {
-  const sourcePreset = character?.sourcePreset ?? DEFAULT_SOURCE_PRESET;
-  const presetSources = getAllowedSources(sourcePreset);
+  const sourcePreset = resolveRuntimeSourcePreset(character?.sourcePreset ?? DEFAULT_SOURCE_PRESET);
+  const presetSources = runtimeSourcePresets[sourcePreset] ?? getAllowedSources(sourcePreset);
   const customSources = Array.isArray(character?.customSources)
     ? character.customSources.map((entry) => String(entry ?? "").trim()).filter(Boolean)
     : [];
@@ -4482,7 +4509,18 @@ function openClassDetailsModal(state) {
 }
 
 async function loadCatalogsForCharacter(character) {
-  const catalogs = await loadCatalogs(getCharacterAllowedSources(character));
+  await ensureRuntimeSourcePresets();
+  const resolvedPreset = resolveRuntimeSourcePreset(character?.sourcePreset ?? DEFAULT_SOURCE_PRESET);
+  const nextCharacter = character && character.sourcePreset !== resolvedPreset
+    ? { ...character, sourcePreset: resolvedPreset }
+    : character;
+  if (nextCharacter && nextCharacter !== character) {
+    const currentSourcePreset = String(store.getState().character?.sourcePreset ?? "").trim();
+    if (currentSourcePreset !== resolvedPreset) {
+      store.updateCharacter({ sourcePreset: resolvedPreset });
+    }
+  }
+  const catalogs = await loadCatalogs(getCharacterAllowedSources(nextCharacter));
   store.setCatalogs(catalogs);
   const nextState = store.getState();
   updateCharacterWithRequiredSettings(nextState, {}, { preserveUserOverrides: true });
@@ -4732,7 +4770,7 @@ const events = createEvents({
   toNumber,
   isUuid,
   SKILLS,
-  DEFAULT_SOURCE_PRESET,
+  DEFAULT_SOURCE_PRESET: getRuntimeDefaultSourcePreset(),
   getAllowedSources,
   getCharacterAllowedSources,
   sourceLabels: SOURCE_LABELS,
@@ -4788,8 +4826,8 @@ const renderers = createRenderers({
   abilityLabels: ABILITY_LABELS,
   skills: SKILLS,
   spellSlotLevels: SPELL_SLOT_LEVELS,
-  sourcePresets: SOURCE_PRESETS,
-  sourcePresetLabels: SOURCE_PRESET_LABELS,
+  sourcePresets: () => runtimeSourcePresets,
+  sourcePresetLabels: () => runtimeSourcePresetLabels,
   getCharacterAllowedSources,
   sourceLabels: SOURCE_LABELS,
   optionList,

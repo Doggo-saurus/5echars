@@ -1821,13 +1821,21 @@ export function createRenderers(deps) {
       const sourceText = effectiveSources
         .map((source) => sourceLabels?.[source] ?? source)
         .join(", ");
+      const resolvedSourcePresets =
+        typeof sourcePresets === "function" ? sourcePresets() ?? {} : sourcePresets ?? {};
+      const resolvedSourcePresetLabels =
+        typeof sourcePresetLabels === "function" ? sourcePresetLabels() ?? {} : sourcePresetLabels ?? {};
+      const presetKeys = Object.keys(resolvedSourcePresets);
+      const selectedPreset = presetKeys.includes(character.sourcePreset)
+        ? character.sourcePreset
+        : (presetKeys[0] ?? character.sourcePreset);
       return `
       <h2 class="title">Source Preset</h2>
       <p class="subtitle">Choose which books and options this character can use.</p>
       <label>Preset
         <select id="source-preset">
-          ${Object.keys(sourcePresets)
-            .map((key) => `<option value="${key}" ${key === character.sourcePreset ? "selected" : ""}>${esc(sourcePresetLabels[key] ?? key)}</option>`)
+          ${presetKeys
+            .map((key) => `<option value="${key}" ${key === selectedPreset ? "selected" : ""}>${esc(resolvedSourcePresetLabels[key] ?? key)}</option>`)
             .join("")}
         </select>
       </label>

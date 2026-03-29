@@ -1,4 +1,5 @@
 export const SOURCE_PRESETS = {
+  srd: ["PHB", "XPHB", "DMG", "XDMG", "XGE", "TCE", "SCAG", "MPMM"],
   set2014: ["PHB", "XGE", "TCE", "DMG"],
   set2024: ["XPHB", "XGE", "TCE", "XDMG"],
   core: ["PHB"],
@@ -6,6 +7,7 @@ export const SOURCE_PRESETS = {
 };
 
 export const SOURCE_PRESET_LABELS = {
+  srd: "SRD",
   set2014: "2014 (PHB, XGE, Tasha's, DMG)",
   set2024: "2024 (PHB, XGE, Tasha's, XDMG)",
   core: "Core (PHB)",
