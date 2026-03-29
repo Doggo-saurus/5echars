@@ -3323,7 +3323,7 @@ function addToolProficienciesFromStructuredSpec(collector, spec, sourceLabel = "
           }
         }
         if (from.length) {
-          collector.add(`Choose ${count} tool${count > 1 ? "s" : ""}: ${from.join(", ")}`, sourceLabel);
+          collector.add(`Choose ${count} tool${count > 1 ? "s" : ""}`, sourceLabel);
         }
         return;
       }

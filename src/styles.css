@@ -2811,6 +2811,16 @@ body.play-mode #dice-overlay {
     font-size: 16px;
   }
 
+  .play-sheet-head,
+  .dice-result-wrap {
+    min-width: 0;
+  }
+
+  #dice-result-inline {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
   .layout {
     grid-template-columns: 1fr;
     max-width: 100%;
@@ -2884,7 +2894,15 @@ body.play-mode #dice-overlay {
 
   .dice-style-row {
     justify-content: flex-end;
-    flex-wrap: nowrap;
+    flex-wrap: wrap;
+    min-width: 0;
+  }
+
+  .dice-style-row select {
+    min-width: 0;
+    width: auto;
+    max-width: 100%;
+    flex: 1 1 9rem;
   }
 
   .play-grid-4 {
@@ -2906,6 +2924,51 @@ body.play-mode #dice-overlay {
 
   .attack-row-stats-view {
     grid-template-columns: 1fr;
+  }
+
+  .attack-card > *,
+  .attack-row-top > *,
+  .attack-row-actions > *,
+  .attack-row-stats > * {
+    min-width: 0;
+  }
+
+  .ability-save-row,
+  .save-label,
+  .skill-row,
+  .skill-btn,
+  .skill-left,
+  .attack-card,
+  .attack-row-top,
+  .attack-row-stats,
+  .attack-row-stats-view {
+    min-width: 0;
+  }
+
+  .save-label {
+    white-space: normal;
+  }
+
+  .skill-name {
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+    overflow-wrap: anywhere;
+  }
+
+  .attack-title-row {
+    flex-wrap: wrap;
+    align-items: flex-start;
+  }
+
+  .attack-title-heading {
+    min-width: 0;
+    flex-wrap: wrap;
+  }
+
+  .attack-pill {
+    overflow-wrap: anywhere;
+    word-break: break-word;
   }
 
   .hp-pair-row {
@@ -2967,6 +3030,34 @@ body.play-mode #dice-overlay {
 
   .ability-save-grid {
     grid-template-columns: 1fr;
+  }
+
+  .feature-row-feat .feature-main {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: start;
+    min-width: 0;
+  }
+
+  .feature-row-feat .feat-tile-btn {
+    min-width: 0;
+  }
+
+  .feature-row-feat .feature-use-controls {
+    justify-self: end;
+    flex-wrap: wrap;
+    min-width: 0;
+  }
+
+  .feat-tile-head {
+    min-width: 0;
+    flex-wrap: wrap;
+  }
+
+  .feat-tile-title,
+  .feat-tile-meta,
+  .feat-tile-summary {
+    overflow-wrap: anywhere;
   }
 
   .spell-slot-grid {
@@ -3032,5 +3123,13 @@ body.play-mode #dice-overlay {
 
   .title-with-history .play-manual-menu {
     margin-left: auto;
+  }
+
+  .feature-row-feat .feature-main {
+    grid-template-columns: 1fr;
+  }
+
+  .feature-row-feat .feature-use-controls {
+    justify-self: start;
   }
 }
