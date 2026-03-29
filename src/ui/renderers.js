@@ -2456,11 +2456,20 @@ export function createRenderers(deps) {
   `;
   }
 
+  function renderTopLogoLink() {
+    return `
+      <a class="app-brand-link" href="/" aria-label="Go to home">
+        <img class="app-brand-logo" src="/icons/icon.svg" alt="Action Surge logo" />
+      </a>
+    `;
+  }
+
   function renderBuildMode(state) {
     return `
-    <main class="layout">
+    <main class="layout layout-build">
       <section class="card">
         <div class="title-with-history">
+          ${renderTopLogoLink()}
           <h1 class="title">Character Editor</h1>
           ${renderCharacterHistorySelector("build-character-history-select", state.character?.id ?? null, {
             className: "character-history-control character-history-control-inline",
@@ -2526,6 +2535,7 @@ export function createRenderers(deps) {
         <div class="card">
           <div class="play-header">
             <div class="title-with-history">
+              ${renderTopLogoLink()}
               <h1 class="title">Character Sheet</h1>
               ${renderCharacterHistorySelector("play-character-history-select", state.character?.id ?? null, {
                 className: "character-history-control character-history-control-inline",

@@ -28,12 +28,12 @@ const persistedState = loadAppState();
 const store = createStore(persistedState?.character ?? createInitialCharacter());
 const DICE_MODULE_SOURCES = [
   {
-    moduleUrl: "/src/vendor/local-dice-box.js",
-    assetOrigin: window.location.origin,
-  },
-  {
     moduleUrl: "https://unpkg.com/@3d-dice/dice-box@1.1.4/dist/dice-box.es.min.js",
     assetOrigin: "https://unpkg.com/@3d-dice/dice-box@1.1.4/dist/",
+  },
+  {
+    moduleUrl: "/src/vendor/local-dice-box.js",
+    assetOrigin: window.location.origin,
   },
 ];
 const DICE_STYLE_PRESETS = {
@@ -585,14 +585,14 @@ async function getDiceBox() {
             origin: source.assetOrigin,
             theme: "default",
             scale: 12,
-            // Keep rolls readable: less spin/throw, stronger damping, and a longer settle window.
-            gravity: 2.1,
-            throwForce: 1.3,
-            spinForce: 0.85,
-            startingHeight: 4,
-            linearDamping: 0.9,
-            angularDamping: 0.93,
-            settleTimeout: 2600,
+            // Punchier throws: stronger launch/spin with lower damping for more bounce.
+            gravity: 2.35,
+            throwForce: 4.8,
+            spinForce: 1.55,
+            startingHeight: 7,
+            linearDamping: 0.82,
+            angularDamping: 0.86,
+            settleTimeout: 3200,
           });
           await box.init();
           uiState.diceBox = box;
@@ -4520,6 +4520,9 @@ function renderOnboardingHome() {
     <main class="layout layout-onboarding">
       <section class="card">
         <div class="title-with-history">
+          <a class="app-brand-link" href="/" aria-label="Go to home">
+            <img class="app-brand-logo" src="/icons/icon.svg" alt="Action Surge logo" />
+          </a>
           <h1 class="title">Action Surge</h1>
           ${renderCharacterHistorySelector("home-character-history-select", null, {
             className: "character-history-control character-history-control-inline",

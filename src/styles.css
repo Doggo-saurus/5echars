@@ -45,6 +45,11 @@ body {
   gap: 1rem;
 }
 
+.layout-build {
+  grid-template-columns: minmax(0, 1fr) clamp(280px, 28vw, 420px);
+  max-width: 1700px;
+}
+
 .card {
   background: linear-gradient(160deg, rgba(255, 255, 255, 0.03), transparent), var(--panel);
   border: 1px solid rgba(255, 255, 255, 0.08);
@@ -265,6 +270,20 @@ input, select, textarea {
   gap: 0.8rem;
   margin-bottom: 0.75rem;
   flex-wrap: wrap;
+}
+
+.app-brand-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 0;
+  text-decoration: none;
+}
+
+.app-brand-logo {
+  width: 2rem;
+  height: 2rem;
+  display: block;
 }
 
 .title-with-history .title {
