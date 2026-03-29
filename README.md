@@ -1,4 +1,4 @@
-# Character Builder (Vanilla SPA)
+# Action Surge (Vanilla SPA)
 
 Single-page character builder with curated source catalogs and modal-based advanced pickers.
 

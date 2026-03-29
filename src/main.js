@@ -8,7 +8,7 @@ import {
 import { loadAvailableSourceEntries, loadAvailableSources, loadCatalogs } from "./data-loader.js";
 import { STEPS, createInitialCharacter, createStore } from "./state/character-store.js";
 import { loadAppState, saveAppState } from "./state/persistence.js";
-import { createCharacter, getCharacter, saveCharacter } from "./character-api.js";
+import { createCharacter, flushPendingCharacterSync, getCharacter, saveCharacter } from "./character-api.js";
 import { createPersistence } from "./app/persistence.js";
 import { createDiceUi } from "./dice/index.js";
 import { openModal } from "./ui/modals/modal.js";
@@ -26,8 +26,16 @@ import {
 const app = document.getElementById("app");
 const persistedState = loadAppState();
 const store = createStore(persistedState?.character ?? createInitialCharacter());
-const DICE_MODULE_URL = "https://unpkg.com/@3d-dice/dice-box@1.1.4/dist/dice-box.es.min.js";
-const DICE_ASSET_ORIGIN = "https://unpkg.com/@3d-dice/dice-box@1.1.4/dist/";
+const DICE_MODULE_SOURCES = [
+  {
+    moduleUrl: "/src/vendor/local-dice-box.js",
+    assetOrigin: window.location.origin,
+  },
+  {
+    moduleUrl: "https://unpkg.com/@3d-dice/dice-box@1.1.4/dist/dice-box.es.min.js",
+    assetOrigin: "https://unpkg.com/@3d-dice/dice-box@1.1.4/dist/",
+  },
+];
 const DICE_STYLE_PRESETS = {
   ember: { label: "Ember Gold", themeColor: "#f59e0b", lightIntensity: 1.05, shadowTransparency: 0.75 },
   arcane: { label: "Arcane Cyan", themeColor: "#0891b2", lightIntensity: 1.05, shadowTransparency: 0.78 },
@@ -564,35 +572,44 @@ async function getDiceBox() {
     try {
       const tray = document.getElementById("dice-tray");
       if (!tray) return null;
+      let lastError = null;
+      for (const source of DICE_MODULE_SOURCES) {
+        try {
+          const module = await import(source.moduleUrl);
+          const DiceBox = module?.default;
+          if (!DiceBox) continue;
 
-      const module = await import(DICE_MODULE_URL);
-      const DiceBox = module?.default;
-      if (!DiceBox) return null;
-
-      const box = new DiceBox({
-        container: "#dice-tray",
-        assetPath: "assets/",
-        origin: DICE_ASSET_ORIGIN,
-        theme: "default",
-        scale: 12,
-        // Keep rolls readable: less spin/throw, stronger damping, and a longer settle window.
-        gravity: 2.1,
-        throwForce: 1.3,
-        spinForce: 0.85,
-        startingHeight: 4,
-        linearDamping: 0.9,
-        angularDamping: 0.93,
-        settleTimeout: 2600,
-      });
-      await box.init();
-      uiState.diceBox = box;
-      applyDiceStyle(box);
-      return box;
+          const box = new DiceBox({
+            container: "#dice-tray",
+            assetPath: "assets/",
+            origin: source.assetOrigin,
+            theme: "default",
+            scale: 12,
+            // Keep rolls readable: less spin/throw, stronger damping, and a longer settle window.
+            gravity: 2.1,
+            throwForce: 1.3,
+            spinForce: 0.85,
+            startingHeight: 4,
+            linearDamping: 0.9,
+            angularDamping: 0.93,
+            settleTimeout: 2600,
+          });
+          await box.init();
+          uiState.diceBox = box;
+          applyDiceStyle(box);
+          return box;
+        } catch (error) {
+          lastError = error;
+        }
+      }
+      if (lastError) {
+        console.error("Dice modules failed to initialize", lastError);
+      }
     } catch (error) {
       console.error("Dice Box failed to initialize", error);
-      setDiceResult("Visual dice failed to load.", true);
-      return null;
     }
+    setDiceResult("Visual dice failed to load.", true);
+    return null;
   })();
 
   return diceBoxPromise;
@@ -4503,7 +4520,7 @@ function renderOnboardingHome() {
     <main class="layout layout-onboarding">
       <section class="card">
         <div class="title-with-history">
-          <h1 class="title">Character Builder</h1>
+          <h1 class="title">Action Surge</h1>
           ${renderCharacterHistorySelector("home-character-history-select", null, {
             className: "character-history-control character-history-control-inline",
           })}
@@ -4685,6 +4702,7 @@ const persistence = createPersistence({
   getCharacter,
   saveCharacter,
   createCharacter,
+  flushPendingCharacterSync,
   isUuid,
   getCharacterVersion,
   withSyncMeta,
@@ -4703,7 +4721,7 @@ const persistence = createPersistence({
   withCharacterChangeLog,
 });
 
-const { loadCharacterById, createOrSavePermanentCharacter, queueRemoteSave, bootstrap } = persistence;
+const { loadCharacterById, createOrSavePermanentCharacter, queueRemoteSave, bootstrap, flushPendingSaves } = persistence;
 
 const events = createEvents({
   app,
@@ -5377,6 +5395,45 @@ function render(state) {
   });
 }
 
+let serviceWorkerRefreshPending = false;
+let serviceWorkerUpdateTimer = null;
+
+async function registerServiceWorker() {
+  if (!("serviceWorker" in navigator)) return;
+  try {
+    const registration = await navigator.serviceWorker.register("/sw.js", { scope: "/" });
+    registration.update().catch(() => {});
+    if (registration.waiting) {
+      registration.waiting.postMessage({ type: "SKIP_WAITING" });
+    }
+    registration.addEventListener("updatefound", () => {
+      const installing = registration.installing;
+      if (!installing) return;
+      installing.addEventListener("statechange", () => {
+        if (installing.state === "installed" && navigator.serviceWorker.controller) {
+          installing.postMessage({ type: "SKIP_WAITING" });
+        }
+      });
+    });
+    navigator.serviceWorker.addEventListener("controllerchange", () => {
+      if (serviceWorkerRefreshPending) return;
+      serviceWorkerRefreshPending = true;
+      window.location.reload();
+    });
+    if (serviceWorkerUpdateTimer != null) {
+      clearInterval(serviceWorkerUpdateTimer);
+    }
+    // Poll for updates during active play sessions so refresh picks new deploys quickly.
+    serviceWorkerUpdateTimer = window.setInterval(() => {
+      if (document.visibilityState === "visible") {
+        registration.update().catch(() => {});
+      }
+    }, 60_000);
+  } catch (error) {
+    console.error("Service worker registration failed", error);
+  }
+}
+
 store.subscribe((state) => {
   captureCharacterLogChanges(state.character);
   render(state);
@@ -5397,6 +5454,13 @@ store.subscribe((state) => {
     rememberLastCharacterId(state.character.id);
     upsertCharacterHistory(state.character, { touchAccess: false });
   }
+});
+
+registerServiceWorker();
+window.addEventListener("online", () => {
+  flushPendingSaves().catch((error) => {
+    console.error("Pending sync flush failed", error);
+  });
 });
 
 bootstrap().catch((error) => {

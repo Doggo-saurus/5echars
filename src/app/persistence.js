@@ -5,6 +5,7 @@ export function createPersistence(deps) {
     getCharacter,
     saveCharacter,
     createCharacter,
+    flushPendingCharacterSync,
     isUuid,
     getCharacterVersion,
     withSyncMeta,
@@ -23,7 +24,18 @@ export function createPersistence(deps) {
     withCharacterChangeLog,
   } = deps;
 
+  async function flushPendingSaves() {
+    if (typeof flushPendingCharacterSync !== "function") return { flushed: 0, pending: 0 };
+    try {
+      return await flushPendingCharacterSync();
+    } catch (error) {
+      markBrowserOnlyPersistence(error);
+      return { flushed: 0, pending: null };
+    }
+  }
+
   async function loadCharacterById(characterId) {
+    await flushPendingSaves();
     const latestLocalState = loadAppState();
     const localCharacter = latestLocalState?.character && latestLocalState.character.id === characterId ? latestLocalState.character : null;
     let payload = null;
@@ -68,12 +80,14 @@ export function createPersistence(deps) {
   }
 
   async function createOrSavePermanentCharacter(state) {
+    await flushPendingSaves();
     const existingId = isUuid(state.character?.id) ? state.character.id : null;
     const nextVersion = Math.max(appState.localCharacterVersion, getCharacterVersion(state.character)) + 1;
     const versionedCharacter = withSyncMeta(withCharacterChangeLog(state.character), nextVersion);
     if (existingId) {
       const payload = await saveCharacter(existingId, versionedCharacter);
       await applyRemoteCharacterPayload(payload, existingId);
+      await flushPendingSaves();
       setCharacterIdInUrl(existingId, true);
       return existingId;
     }
@@ -82,6 +96,7 @@ export function createPersistence(deps) {
     const parsed = getCharacterFromApiPayload(payload, null);
     setCharacterIdInUrl(parsed.id, false);
     await applyRemoteCharacterPayload(payload, parsed.id);
+    await flushPendingSaves();
     return parsed.id;
   }
 
@@ -96,6 +111,7 @@ export function createPersistence(deps) {
     appState.remoteSaveTimer = setTimeout(async () => {
       appState.remoteSaveTimer = null;
         try {
+          await flushPendingSaves();
           const latestState = store.getState();
           const nextVersion = Math.max(appState.localCharacterVersion, getCharacterVersion(latestState.character)) + 1;
           const versionedCharacter = withSyncMeta(withCharacterChangeLog(latestState.character), nextVersion);
@@ -103,6 +119,7 @@ export function createPersistence(deps) {
           appState.localCharacterVersion = Math.max(appState.localCharacterVersion, nextVersion);
           appState.localCharacterUpdatedAt = withSyncMeta(versionedCharacter, nextVersion).__syncMeta?.updatedAt ?? appState.localCharacterUpdatedAt;
           updatePersistenceStatusFromPayload(payload);
+          await flushPendingSaves();
         } catch (error) {
           console.error("Remote character save failed", error);
           markBrowserOnlyPersistence(error);
@@ -111,6 +128,7 @@ export function createPersistence(deps) {
   }
 
   async function bootstrap() {
+    await flushPendingSaves();
     const requestedCharacterId = getCharacterIdFromUrl();
 
     if (requestedCharacterId) {
@@ -137,5 +155,5 @@ export function createPersistence(deps) {
     render(store.getState());
   }
 
-  return { loadCharacterById, createOrSavePermanentCharacter, queueRemoteSave, bootstrap };
+  return { loadCharacterById, createOrSavePermanentCharacter, queueRemoteSave, bootstrap, flushPendingSaves };
 }

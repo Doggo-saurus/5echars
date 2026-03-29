@@ -1,4 +1,5 @@
 import express from "express";
+import { readdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { v4 as uuidv4 } from "uuid";
@@ -16,6 +17,46 @@ function normalizeCharacterInput(input, fallbackId = null) {
   }
   const id = isUuid(input.id) ? input.id : fallbackId;
   return { ...input, id };
+}
+
+async function listRelativeFiles(rootDir, subDir, includeFile) {
+  const startDir = path.join(rootDir, subDir);
+  const stack = [startDir];
+  const results = [];
+  while (stack.length) {
+    const currentDir = stack.pop();
+    const entries = await readdir(currentDir, { withFileTypes: true });
+    for (const entry of entries) {
+      const absolutePath = path.join(currentDir, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(absolutePath);
+        continue;
+      }
+      const relativePath = path.relative(rootDir, absolutePath).split(path.sep).join("/");
+      if (includeFile(relativePath)) {
+        results.push(`/${relativePath}`);
+      }
+    }
+  }
+  return results;
+}
+
+function keepPublicOfflineAsset(relativePath) {
+  const normalized = String(relativePath ?? "");
+  if (!normalized.startsWith("public/")) return false;
+  if (normalized === "public/index.html") return true;
+  if (normalized === "public/manifest.webmanifest") return true;
+  if (normalized === "public/sw.js") return true;
+  if (normalized.startsWith("public/icons/")) return true;
+  return false;
+}
+
+function keepSrcOfflineAsset(relativePath) {
+  return /\.(?:js|css)$/i.test(String(relativePath ?? ""));
+}
+
+function keepCatalogDataAsset(relativePath) {
+  return /\.json$/i.test(String(relativePath ?? ""));
 }
 
 const app = express();
@@ -87,11 +128,38 @@ app.put("/api/characters/:id", async (req, res) => {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const repoRoot = path.resolve(__dirname, "../..");
+const offlineAssetSet = new Set(["/"]);
+
+const publicAssets = await listRelativeFiles(repoRoot, "public", keepPublicOfflineAsset);
+publicAssets.forEach((assetPath) => {
+  if (assetPath === "/public/index.html") {
+    offlineAssetSet.add("/");
+    offlineAssetSet.add("/index.html");
+    return;
+  }
+  offlineAssetSet.add(assetPath.replace(/^\/public/, ""));
+});
+
+const srcAssets = await listRelativeFiles(repoRoot, "src", keepSrcOfflineAsset);
+srcAssets.forEach((assetPath) => {
+  offlineAssetSet.add(assetPath);
+});
+
+const dataAssets = await listRelativeFiles(repoRoot, "data/catalog-src/data", keepCatalogDataAsset);
+dataAssets.forEach((assetPath) => {
+  offlineAssetSet.add(assetPath);
+});
+
+const offlineAssets = [...offlineAssetSet].sort((a, b) => a.localeCompare(b));
 
 app.use("/src", express.static(path.join(repoRoot, "src")));
 app.use("/data", express.static(path.join(repoRoot, "data")));
 app.use("/data/catalog-src", express.static(path.join(repoRoot, "data/catalog-src")));
 app.use(express.static(path.join(repoRoot, "public")));
+
+app.get("/api/offline-assets", (_req, res) => {
+  res.json({ assets: offlineAssets });
+});
 
 app.get("/JSON_FORMAT_REFERENCE", (_req, res) => {
   res.type("text/markdown; charset=utf-8");

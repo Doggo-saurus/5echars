@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192">
+  <defs>
+    <linearGradient id="bg192" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#020617" />
+      <stop offset="100%" stop-color="#1d4ed8" />
+    </linearGradient>
+    <linearGradient id="bolt192" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#f8fafc" />
+      <stop offset="100%" stop-color="#dbeafe" />
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="184" height="184" rx="40" fill="url(#bg192)" />
+  <circle cx="96" cy="96" r="64" fill="none" stroke="#f8fafc" stroke-opacity="0.2" stroke-width="10" />
+  <path fill="#f59e0b" d="M140 44l14 14-18 18-14-14 18-18Z" />
+  <path
+    fill="url(#bolt192)"
+    d="M108 30 52 112h40l-16 56 64-92h-40l8-46Z"
+  />
+</svg>
