@@ -3323,7 +3323,9 @@ function getCharacterToolAndDefenseSummary(catalogs, character) {
     play: character?.play,
     pools: toolPools,
   });
-  if (Array.isArray(classEntry?.startingProficiencies?.tools)) {
+  const classHasStructuredTools = Array.isArray(classEntry?.startingProficiencies?.toolProficiencies)
+    && classEntry.startingProficiencies.toolProficiencies.length > 0;
+  if (!classHasStructuredTools && Array.isArray(classEntry?.startingProficiencies?.tools)) {
     classEntry.startingProficiencies.tools.forEach((tool) => toolCollector.add(tool, "Class"));
   }
 
@@ -3333,8 +3335,11 @@ function getCharacterToolAndDefenseSummary(catalogs, character) {
     if (!className) return;
     const classCatalogEntry = getClassCatalogEntry(catalogs, className, "", sourceOrder);
     const tools = classCatalogEntry?.multiclassing?.proficienciesGained?.tools;
-    if (!Array.isArray(tools)) return;
-    tools.forEach((tool) => toolCollector.add(tool, "Multiclass"));
+    const multiclassHasStructuredTools = Array.isArray(classCatalogEntry?.multiclassing?.proficienciesGained?.toolProficiencies)
+      && classCatalogEntry.multiclassing.proficienciesGained.toolProficiencies.length > 0;
+    if (!multiclassHasStructuredTools && Array.isArray(tools)) {
+      tools.forEach((tool) => toolCollector.add(tool, "Multiclass"));
+    }
     const multiclassSourceKey = `multiclass:${className.toLowerCase() || "class"}`;
     addToolProficienciesFromStructuredSpec(
       toolCollector,
