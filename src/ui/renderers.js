@@ -1778,10 +1778,15 @@ export function createRenderers(deps) {
             <button class="btn secondary" id="play-open-items">Add Item</button>
           </div>
           <div class="inventory-list">${renderInventoryRowsImpl(character)}</div>
+        </article>
+
+        <article class="card">
+          <h3 class="title">Notes</h3>
+          <label>Character Notes
+            <textarea id="play-character-notes" class="play-notes-textarea" rows="3">${esc(character.notes ?? "")}</textarea>
+          </label>
           <label>Combat Notes
-            <textarea id="play-notes" rows="4" style="width:100%; background:#0b1220; color:#e5e7eb; border:1px solid rgba(255,255,255,0.2); border-radius:10px; padding:0.6rem;">${esc(
-              play.notes ?? ""
-            )}</textarea>
+            <textarea id="play-notes" class="play-notes-textarea" rows="3">${esc(play.notes ?? "")}</textarea>
           </label>
         </article>
 
@@ -1851,6 +1856,12 @@ export function createRenderers(deps) {
       <div class="row">
         <label>Name <input id="name" value="${esc(character.name)}"></label>
       </div>
+      <label>Character Password: Setting this will prevent any character edits without the matching password
+        <div class="edit-password-inline-row">
+          <input id="edit-password" value="${esc(character.editPassword)}" type="text" autocomplete="off">
+          <button type="button" class="btn secondary" id="edit-password-confirm" disabled>Confirm</button>
+        </div>
+      </label>
       <label>Notes
         <textarea id="notes" rows="5">${esc(character.notes)}</textarea>
       </label>
@@ -2465,11 +2476,7 @@ export function createRenderers(deps) {
   }
 
   function renderTopLogoLink() {
-    return `
-      <a class="app-brand-link" href="/" aria-label="Go to home">
-        <img class="app-brand-logo" src="/icons/icon.svg" alt="Action Surge logo" />
-      </a>
-    `;
+    return `<span data-brand-logo-slot></span>`;
   }
 
   function renderBuildMode(state) {

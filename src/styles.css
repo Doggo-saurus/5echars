@@ -168,6 +168,21 @@ body {
   gap: 0.75rem;
 }
 
+.edit-password-inline-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: flex-end;
+}
+
+.edit-password-inline-row input {
+  flex: 1 1 auto;
+}
+
+.edit-password-inline-row .btn {
+  margin-top: 0.35rem;
+  white-space: nowrap;
+}
+
 .ability-edit-grid {
   grid-template-columns: repeat(2, minmax(0, 240px));
   justify-content: start;
@@ -2784,7 +2799,18 @@ body.play-mode #dice-overlay {
   border-color: rgba(255, 255, 255, 0.3);
 }
 
+.play-notes-textarea {
+  min-height: 5.6rem;
+  resize: vertical;
+}
+
 @media (max-width: 960px) {
+  input,
+  select,
+  textarea {
+    font-size: 16px;
+  }
+
   .layout {
     grid-template-columns: 1fr;
     max-width: 100%;

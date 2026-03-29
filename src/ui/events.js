@@ -403,6 +403,28 @@ export function createEvents(deps) {
       el.addEventListener("input", handler);
       el.addEventListener("change", handler);
     });
+    const editPasswordEl = app.querySelector("#edit-password");
+    const editPasswordConfirmEl = app.querySelector("#edit-password-confirm");
+    if (editPasswordEl && editPasswordConfirmEl) {
+      const getSavedEditPassword = () => String(store.getState().character?.editPassword ?? "");
+      const syncEditPasswordConfirmState = () => {
+        editPasswordConfirmEl.disabled = editPasswordEl.value === getSavedEditPassword();
+      };
+      const confirmEditPassword = () => {
+        if (editPasswordConfirmEl.disabled) return;
+        store.updateCharacter({ editPassword: editPasswordEl.value });
+        editPasswordConfirmEl.disabled = true;
+      };
+      editPasswordEl.addEventListener("input", syncEditPasswordConfirmState);
+      editPasswordEl.addEventListener("change", syncEditPasswordConfirmState);
+      editPasswordEl.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter") return;
+        event.preventDefault();
+        confirmEditPassword();
+      });
+      editPasswordConfirmEl.addEventListener("click", confirmEditPassword);
+      syncEditPasswordConfirmState();
+    }
     [["#race", "race"], ["#background", "background"]].forEach(([sel, field]) => {
       const el = app.querySelector(sel);
       if (!el) return;
@@ -1675,6 +1697,10 @@ export function createEvents(deps) {
       withUpdatedPlay(state, (play) => {
         play.notes = value;
       });
+    });
+    app.querySelector("#play-character-notes")?.addEventListener("input", (evt) => {
+      const value = evt.target.value;
+      store.updateCharacter({ notes: value });
     });
 
     app.querySelectorAll("[data-feature-mode-id]").forEach((select) => {

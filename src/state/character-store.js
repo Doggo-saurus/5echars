@@ -287,6 +287,7 @@ function normalizeCharacter(character) {
     optionalFeatures: Array.isArray(character.optionalFeatures)
       ? character.optionalFeatures.map((feature) => normalizeOptionalFeatureEntry(feature)).filter(Boolean)
       : [],
+    editPassword: typeof character.editPassword === "string" ? character.editPassword : "",
     subclass: subclassName,
     classSelection: {
       subclass: {
@@ -420,6 +421,7 @@ export function createInitialCharacter() {
     feats: [],
     optionalFeatures: [],
     notes: "",
+    editPassword: "",
     multiclass: [],
     classSelection: {
       subclass: {

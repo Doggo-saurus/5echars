@@ -6,6 +6,8 @@ import { v4 as uuidv4 } from "uuid";
 import { createCharacterRepository } from "./bootstrap.js";
 
 const UUID_V4_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const EDIT_PASSWORD_FIELD = "editPassword";
+const INVALID_EDIT_PASSWORD_CODE = "INVALID_EDIT_PASSWORD";
 
 function isUuid(value) {
   return UUID_V4_REGEX.test(String(value ?? "").trim());
@@ -17,6 +19,52 @@ function normalizeCharacterInput(input, fallbackId = null) {
   }
   const id = isUuid(input.id) ? input.id : fallbackId;
   return { ...input, id };
+}
+
+function hasOwnEditPassword(character) {
+  return Boolean(
+    character &&
+      typeof character === "object" &&
+      !Array.isArray(character) &&
+      Object.prototype.hasOwnProperty.call(character, EDIT_PASSWORD_FIELD)
+  );
+}
+
+function getStoredEditPassword(character) {
+  const value = character?.[EDIT_PASSWORD_FIELD];
+  return typeof value === "string" ? value : "";
+}
+
+function isEditPasswordConfigured(character) {
+  return getStoredEditPassword(character).length > 0;
+}
+
+function isValidEditPasswordAttempt(character, attempt) {
+  if (!isEditPasswordConfigured(character)) return true;
+  return getStoredEditPassword(character) === String(attempt ?? "");
+}
+
+function getEditPasswordAttempt(body) {
+  if (typeof body?.editPasswordAttempt === "string") return body.editPasswordAttempt;
+  if (typeof body?.character?.[EDIT_PASSWORD_FIELD] === "string") return body.character[EDIT_PASSWORD_FIELD];
+  return "";
+}
+
+function toPublicCharacter(input, fallbackId = null) {
+  const normalized = normalizeCharacterInput(input, fallbackId);
+  const next = { ...normalized };
+  delete next[EDIT_PASSWORD_FIELD];
+  return next;
+}
+
+function mergeCharacterForPersist(existingCharacter, incomingCharacter, id) {
+  const normalizedExisting = normalizeCharacterInput(existingCharacter, id);
+  const normalizedIncoming = normalizeCharacterInput(incomingCharacter, id);
+  if (hasOwnEditPassword(normalizedIncoming)) return normalizedIncoming;
+  return {
+    ...normalizedIncoming,
+    [EDIT_PASSWORD_FIELD]: getStoredEditPassword(normalizedExisting),
+  };
 }
 
 async function listRelativeFiles(rootDir, subDir, includeFile) {
@@ -84,7 +132,7 @@ app.post("/api/characters", async (req, res) => {
     const id = uuidv4();
     const character = normalizeCharacterInput(req.body?.character, id);
     await repository.create(id, character);
-    res.status(201).json({ id, character, storage });
+    res.status(201).json({ id, character: toPublicCharacter(character, id), storage });
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : "Failed to create character" });
   }
@@ -103,7 +151,7 @@ app.get("/api/characters/:id", async (req, res) => {
       res.status(404).json({ error: "Character not found" });
       return;
     }
-    res.json({ id, character: normalizeCharacterInput(character, id), storage });
+    res.json({ id, character: toPublicCharacter(character, id), storage });
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : "Failed to load character" });
   }
@@ -117,9 +165,27 @@ app.put("/api/characters/:id", async (req, res) => {
   }
 
   try {
-    const character = normalizeCharacterInput(req.body?.character, id);
+    const existing = await repository.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Character not found" });
+      return;
+    }
+
+    const existingCharacter = normalizeCharacterInput(existing, id);
+    const editPasswordAttempt = getEditPasswordAttempt(req.body);
+    if (!isValidEditPasswordAttempt(existingCharacter, editPasswordAttempt)) {
+      res.status(403).json({ error: "Invalid edit password", code: INVALID_EDIT_PASSWORD_CODE });
+      return;
+    }
+
+    if (req.body?.validateEditPasswordOnly === true) {
+      res.json({ id, ok: true, storage });
+      return;
+    }
+
+    const character = mergeCharacterForPersist(existingCharacter, req.body?.character, id);
     await repository.save(id, character);
-    res.json({ id, character, storage });
+    res.json({ id, character: toPublicCharacter(character, id), storage });
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : "Failed to save character" });
   }

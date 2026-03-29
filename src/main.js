@@ -8,7 +8,14 @@ import {
 import { isCatalogDataSrdOnly, loadAvailableSourceEntries, loadAvailableSources, loadCatalogs } from "./data-loader.js";
 import { STEPS, createInitialCharacter, createStore } from "./state/character-store.js";
 import { loadAppState, saveAppState } from "./state/persistence.js";
-import { createCharacter, flushPendingCharacterSync, getCharacter, saveCharacter } from "./character-api.js";
+import {
+  createCharacter,
+  flushPendingCharacterSync,
+  getCharacter,
+  getCharacterEditPassword,
+  saveCharacter,
+  validateCharacterEditPassword,
+} from "./character-api.js";
 import { createPersistence } from "./app/persistence.js";
 import { createDiceUi } from "./dice/index.js";
 import { openModal } from "./ui/modals/modal.js";
@@ -252,6 +259,32 @@ function getCharacterDisplayName(name) {
   return parsed || "Unnamed Hero";
 }
 
+function buildClassLevelSummary(character, fallbackClassName = "", fallbackLevel = 1) {
+  if (character && typeof character === "object" && !Array.isArray(character)) {
+    const primaryClassName = String(character.class ?? "").trim();
+    const { primaryLevel, multiclass } = getCharacterClassLevels(character);
+    const parts = [];
+    if (primaryClassName) parts.push(`Level ${primaryLevel} ${primaryClassName}`);
+    multiclass.forEach((entry) => {
+      const className = String(entry?.class ?? "").trim();
+      if (!className) return;
+      const level = Math.max(1, Math.min(20, toNumber(entry?.level, 1)));
+      parts.push(`Level ${level} ${className}`);
+    });
+    if (parts.length) return parts.join(", ");
+  }
+
+  const className = String(fallbackClassName ?? "").trim() || "Adventurer";
+  const level = Math.max(1, Math.min(20, toNumber(fallbackLevel, 1)));
+  return `Level ${level} ${className}`;
+}
+
+function formatCharacterHistoryEntrySummary(entry) {
+  const name = getCharacterDisplayName(entry?.name);
+  const classSummary = String(entry?.classSummary ?? "").trim() || buildClassLevelSummary(null, entry?.className, entry?.level);
+  return `${name} (${classSummary})`;
+}
+
 function loadCharacterHistory() {
   let parsed = [];
   try {
@@ -269,8 +302,9 @@ function loadCharacterHistory() {
       const name = getCharacterDisplayName(entry?.name);
       const level = Math.max(1, Math.min(20, toNumber(entry?.level, 1)));
       const className = String(entry?.className ?? "").trim();
+      const classSummary = String(entry?.classSummary ?? "").trim();
       const lastAccessedAt = typeof entry?.lastAccessedAt === "string" ? entry.lastAccessedAt : "";
-      return { id, name, level, className, lastAccessedAt };
+      return { id, name, level, className, classSummary, lastAccessedAt };
     })
     .filter(Boolean)
     .slice(0, CHARACTER_HISTORY_LIMIT);
@@ -290,10 +324,18 @@ function upsertCharacterHistory(character, options = {}) {
   const nextName = getCharacterDisplayName(character?.name || current?.name);
   const nextLevel = Math.max(1, Math.min(20, toNumber(character?.level, current?.level ?? 1)));
   const nextClassName = String(character?.class ?? current?.className ?? "").trim();
+  const nextClassSummary = buildClassLevelSummary(character, current?.className, current?.level ?? nextLevel);
 
   if (!current) {
     saveCharacterHistory([
-      { id, name: nextName, level: nextLevel, className: nextClassName, lastAccessedAt: new Date().toISOString() },
+      {
+        id,
+        name: nextName,
+        level: nextLevel,
+        className: nextClassName,
+        classSummary: nextClassSummary,
+        lastAccessedAt: new Date().toISOString(),
+      },
       ...entries,
     ]);
     return;
@@ -301,14 +343,25 @@ function upsertCharacterHistory(character, options = {}) {
 
   if (!shouldTouchAccess) {
     saveCharacterHistory(
-      entries.map((entry) => (entry.id === id ? { ...entry, name: nextName, level: nextLevel, className: nextClassName } : entry))
+      entries.map((entry) =>
+        entry.id === id
+          ? { ...entry, name: nextName, level: nextLevel, className: nextClassName, classSummary: nextClassSummary }
+          : entry
+      )
     );
     return;
   }
 
   const withoutCurrent = entries.filter((entry) => entry.id !== id);
   saveCharacterHistory([
-    { id, name: nextName, level: nextLevel, className: nextClassName, lastAccessedAt: new Date().toISOString() },
+    {
+      id,
+      name: nextName,
+      level: nextLevel,
+      className: nextClassName,
+      classSummary: nextClassSummary,
+      lastAccessedAt: new Date().toISOString(),
+    },
     ...withoutCurrent,
   ]);
 }
@@ -432,8 +485,7 @@ function renderCharacterHistorySelector(selectId, selectedCharacterId = null, op
         ${entries
           .map((entry) => {
             const selected = selectedCharacterId === entry.id ? "selected" : "";
-            const classLabel = entry.className || "Adventurer";
-            const label = `${entry.name} (Lv ${entry.level} ${classLabel})`;
+            const label = formatCharacterHistoryEntrySummary(entry);
             return `<option value="${esc(entry.id)}" ${selected}>${esc(label)}</option>`;
           })
           .join("")}
@@ -1342,6 +1394,7 @@ function buildPlayerFacingChangeEntry(key, beforeValue, afterValue, timestamp) {
 function buildCharacterChangeEntries(previousCharacter, nextCharacter) {
   const previous = previousCharacter && typeof previousCharacter === "object" && !Array.isArray(previousCharacter) ? previousCharacter : {};
   const next = nextCharacter && typeof nextCharacter === "object" && !Array.isArray(nextCharacter) ? nextCharacter : {};
+  const ignoredLogKeys = new Set([CHARACTER_SYNC_META_KEY, "editPassword"]);
   const keyOrder = [
     "name",
     "level",
@@ -1360,7 +1413,7 @@ function buildCharacterChangeEntries(previousCharacter, nextCharacter) {
     "progression",
   ];
   const allKeys = [...new Set([...Object.keys(previous), ...Object.keys(next)])]
-    .filter((key) => key !== CHARACTER_SYNC_META_KEY)
+    .filter((key) => !ignoredLogKeys.has(key))
     .sort((a, b) => {
       const aIndex = keyOrder.indexOf(a);
       const bIndex = keyOrder.indexOf(b);
@@ -4554,6 +4607,9 @@ async function applyRemoteCharacterPayload(payload, fallbackId = null, defaultMo
 function renderOnboardingHome() {
   const lastCharacterId = getLastCharacterId();
   const hasLastCharacter = Boolean(lastCharacterId);
+  const lastCharacterSummary = hasLastCharacter
+    ? formatCharacterHistoryEntrySummary(loadCharacterHistory().find((entry) => entry.id === lastCharacterId))
+    : "";
   return `
     <main class="layout layout-onboarding">
       <section class="card">
@@ -4585,11 +4641,10 @@ function renderOnboardingHome() {
         <p class="muted">
           ${
             hasLastCharacter
-              ? `Last local character link ID: ${esc(lastCharacterId)}`
-              : "No recent local character found in this browser."
+              ? `Last character: ${esc(lastCharacterSummary)}`
+              : "No recent character found in this browser."
           }
         </p>
-        <p class="muted">Export JSON is available in the Review step after opening or creating a character.</p>
       </section>
     </main>
   `;
@@ -4673,8 +4728,111 @@ function bindOnboardingEvents() {
 }
 
 function bindModeEvents() {
+  const openInfoModal = (title, message) => {
+    openModal({
+      title,
+      bodyHtml: `<p class="subtitle">${esc(message)}</p>`,
+      actions: [{ label: "Close", secondary: true, onClick: (done) => done() }],
+    });
+  };
+
+  const openEditPasswordPromptModal = (characterId) => {
+    const inputId = "build-mode-edit-password-input";
+    const statusId = "build-mode-edit-password-status";
+    let isSubmitting = false;
+    let closeModal = () => {};
+
+    const setStatusMessage = (message) => {
+      const statusEl = document.getElementById(statusId);
+      if (!statusEl) return;
+      statusEl.textContent = String(message ?? "");
+    };
+
+    const submitPassword = async () => {
+      if (isSubmitting) return;
+      const inputEl = document.getElementById(inputId);
+      if (!inputEl) return;
+      const enteredPassword = String(inputEl.value ?? "");
+      isSubmitting = true;
+      inputEl.disabled = true;
+      setStatusMessage("");
+      try {
+        await validateCharacterEditPassword(characterId, enteredPassword);
+        store.updateCharacter({ editPassword: enteredPassword });
+        closeModal();
+        store.setMode("build");
+      } catch (error) {
+        const isInvalidPassword = Number(error?.status) === 403 || String(error?.payload?.code ?? "") === "INVALID_EDIT_PASSWORD";
+        if (isInvalidPassword) {
+          setStatusMessage("Invalid edit password.");
+        } else {
+          setStatusMessage(error instanceof Error ? error.message : "Could not validate edit password.");
+        }
+      } finally {
+        isSubmitting = false;
+        inputEl.disabled = false;
+        inputEl.focus();
+        inputEl.select();
+      }
+    };
+
+    closeModal = openModal({
+      title: "Enter Edit Password",
+      bodyHtml: `
+        <p class="subtitle">This character is protected. Enter the edit password to continue.</p>
+        <label>Password
+          <input id="${inputId}" type="password" autocomplete="current-password">
+        </label>
+        <p id="${statusId}" class="muted" aria-live="polite"></p>
+      `,
+      actions: [
+        { label: "Unlock", onClick: () => void submitPassword() },
+        { label: "Cancel", secondary: true, onClick: (done) => done() },
+      ],
+    });
+
+    const inputEl = document.getElementById(inputId);
+    inputEl?.focus();
+    inputEl?.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      void submitPassword();
+    });
+  };
+
   app.querySelectorAll("[data-mode]").forEach((button) => {
-    button.addEventListener("click", () => store.setMode(button.dataset.mode));
+    button.addEventListener("click", async () => {
+      const targetMode = button.dataset.mode === "play" ? "play" : "build";
+      if (targetMode !== "build") {
+        store.setMode(targetMode);
+        return;
+      }
+
+      const currentState = store.getState();
+      const characterId = String(currentState.character?.id ?? "").trim();
+      const localEditPassword = getCharacterEditPassword(currentState.character);
+      if (localEditPassword) {
+        store.setMode("build");
+        return;
+      }
+      if (!isUuid(characterId)) {
+        store.setMode("build");
+        return;
+      }
+
+      try {
+        await validateCharacterEditPassword(characterId, "");
+        store.updateCharacter({ editPassword: "" });
+        store.setMode("build");
+      } catch (error) {
+        const isInvalidPassword = Number(error?.status) === 403 || String(error?.payload?.code ?? "") === "INVALID_EDIT_PASSWORD";
+        if (isInvalidPassword) {
+          openEditPasswordPromptModal(characterId);
+          return;
+        }
+        openInfoModal("Edit Password Check Failed", error instanceof Error ? error.message : "Could not validate edit password.");
+      }
+    });
   });
 }
 
@@ -5396,6 +5554,31 @@ function dockDiceOverlay(isPlayMode) {
   overlay.classList.remove("in-header");
 }
 
+let persistentBrandLogoLink = null;
+
+function ensurePersistentBrandLogoLink() {
+  if (persistentBrandLogoLink) return persistentBrandLogoLink;
+  const link = document.createElement("a");
+  link.className = "app-brand-link";
+  link.href = "/";
+  link.setAttribute("aria-label", "Go to home");
+
+  const image = document.createElement("img");
+  image.className = "app-brand-logo";
+  image.src = "/icons/icon.svg";
+  image.alt = "Action Surge logo";
+
+  link.appendChild(image);
+  persistentBrandLogoLink = link;
+  return persistentBrandLogoLink;
+}
+
+function hydratePersistentBrandLogo() {
+  const slot = app.querySelector("[data-brand-logo-slot]");
+  if (!slot) return;
+  slot.replaceWith(ensurePersistentBrandLogoLink());
+}
+
 function render(state) {
   if (appState.showOnboardingHome) {
     document.body.classList.remove("play-mode");
@@ -5416,6 +5599,7 @@ function render(state) {
   }
 
   app.innerHTML = state.mode === "play" ? renderPlayMode(state) : renderBuildMode(state);
+  hydratePersistentBrandLogo();
   dockDiceOverlay(isPlayMode);
   applyDiceStyle();
   syncDiceResultElements();

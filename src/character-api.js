@@ -1,6 +1,8 @@
 const DEFAULT_API_BASE = "/api";
 const LOCAL_CHARACTER_STORE_KEY = "fivee-character-local-store-v1";
 const LOCAL_SYNC_QUEUE_KEY = "fivee-character-sync-queue-v1";
+const LOCAL_EDIT_PASSWORD_STORE_KEY = "fivee-character-edit-password-store-v1";
+const EDIT_PASSWORD_FIELD = "editPassword";
 const UUID_V4_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function getApiBase() {
@@ -51,6 +53,57 @@ function normalizeCharacterForId(id, character) {
   return { ...next, id };
 }
 
+function hasOwnEditPassword(character) {
+  return Boolean(
+    character &&
+      typeof character === "object" &&
+      !Array.isArray(character) &&
+      Object.prototype.hasOwnProperty.call(character, EDIT_PASSWORD_FIELD)
+  );
+}
+
+function preserveLocalEditPassword(remoteCharacter, localCharacter) {
+  if (hasOwnEditPassword(remoteCharacter)) return remoteCharacter;
+  if (!localCharacter || typeof localCharacter !== "object" || Array.isArray(localCharacter)) return remoteCharacter;
+  const localPassword = localCharacter[EDIT_PASSWORD_FIELD];
+  if (typeof localPassword !== "string" || !localPassword) return remoteCharacter;
+  return { ...remoteCharacter, [EDIT_PASSWORD_FIELD]: localPassword };
+}
+
+function readLocalEditPasswordStore() {
+  const parsed = readJsonStorage(LOCAL_EDIT_PASSWORD_STORE_KEY, {});
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+  return parsed;
+}
+
+function writeLocalEditPasswordStore(store) {
+  writeJsonStorage(LOCAL_EDIT_PASSWORD_STORE_KEY, store);
+}
+
+function getStoredEditPasswordForCharacter(id) {
+  if (!isUuid(id)) return "";
+  const store = readLocalEditPasswordStore();
+  const value = store[id];
+  return typeof value === "string" ? value : "";
+}
+
+function syncStoredEditPasswordForCharacter(id, character) {
+  if (!isUuid(id)) return;
+  if (!character || typeof character !== "object" || Array.isArray(character)) return;
+  if (!hasOwnEditPassword(character)) return;
+  const store = readLocalEditPasswordStore();
+  const rawPassword = character[EDIT_PASSWORD_FIELD];
+  const nextPassword = typeof rawPassword === "string" ? rawPassword : "";
+  if (nextPassword) store[id] = nextPassword;
+  else delete store[id];
+  writeLocalEditPasswordStore(store);
+}
+
+export function getCharacterEditPassword(character) {
+  const value = character?.[EDIT_PASSWORD_FIELD];
+  return typeof value === "string" ? value : "";
+}
+
 function readLocalCharacterStore() {
   const parsed = readJsonStorage(LOCAL_CHARACTER_STORE_KEY, {});
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
@@ -67,17 +120,23 @@ function getLocalCharacter(id) {
   const entry = store[id];
   if (!entry || typeof entry !== "object") return null;
   const character = normalizeCharacterForId(id, entry.character);
+  const storedPassword = getStoredEditPasswordForCharacter(id);
+  if (!hasOwnEditPassword(character) && storedPassword) {
+    return { ...character, [EDIT_PASSWORD_FIELD]: storedPassword };
+  }
   return character;
 }
 
 function setLocalCharacter(id, character) {
   if (!isUuid(id)) return;
   const store = readLocalCharacterStore();
+  const normalizedCharacter = normalizeCharacterForId(id, character);
   store[id] = {
-    character: normalizeCharacterForId(id, character),
+    character: normalizedCharacter,
     updatedAt: new Date().toISOString(),
   };
   writeLocalCharacterStore(store);
+  syncStoredEditPasswordForCharacter(id, normalizedCharacter);
 }
 
 function readSyncQueue() {
@@ -155,11 +214,18 @@ async function parseJsonResponse(response) {
   return payload ?? {};
 }
 
-async function saveCharacterToRemote(id, character) {
+async function saveCharacterToRemote(id, character, options = {}) {
+  const requestBody = {
+    character: character ?? null,
+    editPasswordAttempt: typeof options.editPasswordAttempt === "string" ? options.editPasswordAttempt : "",
+  };
+  if (options.validateOnly === true) {
+    requestBody.validateEditPasswordOnly = true;
+  }
   const response = await fetch(`${getApiBase()}/characters/${encodeURIComponent(id)}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ character: character ?? null }),
+    body: JSON.stringify(requestBody),
   });
   return parseJsonResponse(response);
 }
@@ -185,9 +251,14 @@ export async function flushPendingCharacterSync() {
   const pending = [];
   for (const entry of queue) {
     try {
-      const payload = await saveCharacterToRemote(entry.id, entry.character);
+      const payload = await saveCharacterToRemote(entry.id, entry.character, {
+        editPasswordAttempt: getCharacterEditPassword(getLocalCharacter(entry.id)) || getCharacterEditPassword(entry.character),
+      });
       const remoteId = isUuid(payload?.id) ? payload.id : entry.id;
-      const remoteCharacter = normalizeCharacterForId(remoteId, payload?.character ?? entry.character);
+      const remoteCharacter = preserveLocalEditPassword(
+        normalizeCharacterForId(remoteId, payload?.character ?? entry.character),
+        entry.character
+      );
       setLocalCharacter(remoteId, remoteCharacter);
       dequeueSyncCharacter(entry.id);
       flushed += 1;
@@ -210,7 +281,10 @@ export async function createCharacter(character) {
       });
       const payload = await parseJsonResponse(response);
       const id = isUuid(payload?.id) ? payload.id : createLocalUuid();
-      const remoteCharacter = normalizeCharacterForId(id, payload?.character ?? baseCharacter);
+      const remoteCharacter = preserveLocalEditPassword(
+        normalizeCharacterForId(id, payload?.character ?? baseCharacter),
+        baseCharacter
+      );
       setLocalCharacter(id, remoteCharacter);
       dequeueSyncCharacter(id);
       return { ...payload, id, character: remoteCharacter };
@@ -235,7 +309,10 @@ export async function getCharacter(id) {
     if (isOnline()) {
       const response = await fetch(`${getApiBase()}/characters/${encodeURIComponent(parsedId)}`);
       const payload = await parseJsonResponse(response);
-      const remoteCharacter = normalizeCharacterForId(parsedId, payload?.character);
+      const remoteCharacter = preserveLocalEditPassword(
+        normalizeCharacterForId(parsedId, payload?.character),
+        getLocalCharacter(parsedId)
+      );
       setLocalCharacter(parsedId, remoteCharacter);
       return { ...payload, id: parsedId, character: remoteCharacter };
     }
@@ -258,16 +335,35 @@ export async function getCharacter(id) {
   throw createNotFoundError();
 }
 
+export async function validateCharacterEditPassword(id, editPasswordAttempt) {
+  const parsedId = String(id ?? "").trim();
+  if (!isUuid(parsedId)) {
+    throw createNotFoundError("Invalid character id");
+  }
+  const payload = await saveCharacterToRemote(parsedId, null, {
+    validateOnly: true,
+    editPasswordAttempt: typeof editPasswordAttempt === "string" ? editPasswordAttempt : "",
+  });
+  return { ...payload, id: parsedId };
+}
+
 export async function saveCharacter(id, character) {
   const parsedId = String(id ?? "").trim();
   if (!isUuid(parsedId)) {
     throw createNotFoundError("Invalid character id");
   }
   const nextCharacter = normalizeCharacterForId(parsedId, character);
+  const localCharacter = getLocalCharacter(parsedId);
+  const editPasswordAttempt = getCharacterEditPassword(localCharacter) || getCharacterEditPassword(nextCharacter);
   try {
     if (isOnline()) {
-      const payload = await saveCharacterToRemote(parsedId, nextCharacter);
-      const remoteCharacter = normalizeCharacterForId(parsedId, payload?.character ?? nextCharacter);
+      const payload = await saveCharacterToRemote(parsedId, nextCharacter, {
+        editPasswordAttempt,
+      });
+      const remoteCharacter = preserveLocalEditPassword(
+        normalizeCharacterForId(parsedId, payload?.character ?? nextCharacter),
+        nextCharacter
+      );
       setLocalCharacter(parsedId, remoteCharacter);
       dequeueSyncCharacter(parsedId);
       return { ...payload, id: parsedId, character: remoteCharacter };
