@@ -489,6 +489,12 @@ input, select, textarea {
   border-color: rgba(255, 255, 255, 0.3);
 }
 
+.inspiration-pill.is-active {
+  border-color: var(--accent);
+  color: #111827;
+  background: var(--accent);
+}
+
 button:is(
   [data-roll-initiative],
   [data-roll-death-save],

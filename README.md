@@ -9,13 +9,13 @@ This project vendors source data into `data/` using a pinned clone workflow.
 Run the vendor script:
 
 ```bash
-bash ./scripts/vendor-catalog-data.sh
+bash ./scripts/vendor-catalog-data.sh <repo-url>
 ```
 
 Optionally pin to a tag/branch:
 
 ```bash
-bash ./scripts/vendor-catalog-data.sh v2.25.4
+bash ./scripts/vendor-catalog-data.sh <repo-url> v2.25.4
 ```
 
 ## Run locally (Node service)

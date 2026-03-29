@@ -90,7 +90,7 @@ const repoRoot = path.resolve(__dirname, "../..");
 
 app.use("/src", express.static(path.join(repoRoot, "src")));
 app.use("/data", express.static(path.join(repoRoot, "data")));
-app.use("/data/catalog-src", express.static(path.join(repoRoot, "data/5etools-src")));
+app.use("/data/catalog-src", express.static(path.join(repoRoot, "data/catalog-src")));
 app.use(express.static(path.join(repoRoot, "public")));
 
 app.get("/JSON_FORMAT_REFERENCE", (_req, res) => {

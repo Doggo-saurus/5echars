@@ -1,4 +1,5 @@
-data/5etools-src/
+data/
+data/catalog-src/
 server/node_modules/
 .env
 data/redis/

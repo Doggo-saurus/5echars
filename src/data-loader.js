@@ -146,10 +146,15 @@ function getBookSourceLabelMap(books) {
 
 function buildSourceEntries(sourceSet, bookLabels) {
   return [...sourceSet]
-    .map((sourceKey) => ({
-      key: sourceKey,
-      label: SOURCE_LABELS[sourceKey] ?? bookLabels.get(sourceKey) ?? sourceKey,
-    }))
+    .map((sourceKey) => {
+      const label = SOURCE_LABELS[sourceKey] ?? bookLabels.get(sourceKey) ?? "";
+      if (!label) return null;
+      return {
+        key: sourceKey,
+        label,
+      };
+    })
+    .filter(Boolean)
     .sort((a, b) => String(a.label).localeCompare(String(b.label)));
 }
 

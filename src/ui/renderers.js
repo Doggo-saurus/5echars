@@ -1290,12 +1290,12 @@ export function createRenderers(deps) {
             <div class="pill">Passive Perception ${derived.passivePerception}</div>
             <button
               type="button"
-              class="pill pill-btn"
+              class="pill pill-btn inspiration-pill ${play.inspiration ? "is-active" : ""}"
               data-toggle-inspiration
               aria-pressed="${play.inspiration ? "true" : "false"}"
               title="Toggle inspiration"
             >
-              Inspiration ${play.inspiration ? "On" : "Off"}
+              Inspiration ${play.inspiration ? "Yes" : "No"}
             </button>
             <button type="button" class="pill pill-btn" data-roll-initiative title="Roll initiative">
               Initiative ${initiativeBonus >= 0 ? "+" : ""}${initiativeBonus}
