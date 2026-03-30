@@ -791,8 +791,34 @@ export function createRenderers(deps) {
     return { allTools, artisans, instruments, gamingSets };
   }
 
+  function normalizeToolCategoryKey(value) {
+    const raw = String(value ?? "").trim();
+    if (!raw) return "";
+    const compact = raw.replace(/['’]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+    if (compact === "any") return "any";
+    if (compact === "anytool") return "anytool";
+    if (compact === "anyartisantool" || compact === "anyartisanstool") return "anyartisantool";
+    if (compact === "anymusicalinstrument") return "anymusicalinstrument";
+    if (compact === "anygamingset") return "anygamingset";
+    const words = raw
+      .replace(/([a-z])([A-Z])/g, "$1 $2")
+      .replace(/['’]/g, "")
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter(Boolean)
+      .map((word) => (word.endsWith("s") && word.length > 3 ? word.slice(0, -1) : word));
+    if (!words.length) return "";
+    if (words.length === 1 && words[0] === "any") return "any";
+    if (!words.includes("any")) return words.join("");
+    if (words.includes("artisan") && words.includes("tool")) return "anyartisantool";
+    if (words.includes("musical") && words.includes("instrument")) return "anymusicalinstrument";
+    if (words.includes("gaming") && words.includes("set")) return "anygamingset";
+    if (words.includes("tool")) return "anytool";
+    return words.join("");
+  }
+
   function getToolPoolForCategoryKey(key, pools) {
-    const normalized = String(key ?? "").trim().toLowerCase();
+    const normalized = normalizeToolCategoryKey(key);
     if (normalized === "any" || normalized === "anytool") return pools.allTools;
     if (normalized === "anyartisantool") return pools.artisans;
     if (normalized === "anymusicalinstrument") return pools.instruments;
@@ -801,7 +827,7 @@ export function createRenderers(deps) {
   }
 
   function getToolCategoryTitle(key, count = 1) {
-    const normalized = String(key ?? "").trim().toLowerCase();
+    const normalized = normalizeToolCategoryKey(key);
     const qty = Math.max(1, toNumber(count, 1));
     if (normalized === "any" || normalized === "anytool") return `Any tool${qty > 1 ? "s" : ""}`;
     if (normalized === "anyartisantool") return `Any artisan's tool${qty > 1 ? "s" : ""}`;
