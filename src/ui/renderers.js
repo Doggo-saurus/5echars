@@ -1213,7 +1213,7 @@ export function createRenderers(deps) {
     const { character, catalogs } = state;
     const play = character?.play ?? {};
     const usesPreparedSpells = doesClassUsePreparedSpells(catalogs, character);
-    const canTogglePreparedVisibility = usesPreparedSpells;
+    const canTogglePreparedVisibility = false;
     const levelVisibilityMap =
       play?.showAllPreparedCasterSpellsByLevel && typeof play.showAllPreparedCasterSpellsByLevel === "object" && !Array.isArray(play.showAllPreparedCasterSpellsByLevel)
         ? play.showAllPreparedCasterSpellsByLevel
@@ -1223,7 +1223,7 @@ export function createRenderers(deps) {
       const key = String(level);
       const levelValue = levelVisibilityMap[key];
       if (typeof levelValue === "boolean") return levelValue;
-      return Boolean(play.showAllPreparedCasterSpells);
+      return false;
     };
     const selectedSpells = Array.isArray(character?.spells) ? character.spells : [];
     if (!selectedSpells.length) return "<span class='muted'>No spells selected.</span>";
@@ -1326,7 +1326,7 @@ export function createRenderers(deps) {
       const key = String(level);
       const levelValue = levelVisibilityMap[key];
       if (typeof levelValue === "boolean") return levelValue;
-      return Boolean(play.showAllPreparedCasterSpells);
+      return false;
     };
     const preparedLimit = usesPreparedSpells ? getPreparedSpellLimit(state) : Infinity;
     const preparedCount = usesPreparedSpells ? countPreparedSpells(state) : 0;

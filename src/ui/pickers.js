@@ -140,6 +140,44 @@ export function createPickers(deps) {
     };
 
     const allSpells = state.catalogs.spells;
+    const spellLevelByName = new Map(
+      (Array.isArray(allSpells) ? allSpells : [])
+        .map((spell) => [String(spell?.name ?? "").trim(), Math.max(0, toNumber(spell?.level, 0))])
+        .filter(([name]) => name)
+    );
+    const resolveClassCantripLimit = (character) => {
+      if (!character || typeof character !== "object") return 0;
+      const tracks = [];
+      const primaryClassName = String(character.class ?? "").trim();
+      const totalLevel = Math.max(1, Math.min(20, toNumber(character.level, 1)));
+      const multiclassEntries = Array.isArray(character.multiclass) ? character.multiclass : [];
+      const cleanedMulticlass = multiclassEntries
+        .map((entry) => ({
+          className: String(entry?.class ?? "").trim(),
+          level: Math.max(1, Math.min(20, toNumber(entry?.level, 1))),
+        }))
+        .filter((entry) => entry.className);
+      const multiclassTotal = cleanedMulticlass.reduce((sum, entry) => sum + entry.level, 0);
+      const primaryLevel = Math.max(1, totalLevel - multiclassTotal);
+      if (primaryClassName) tracks.push({ className: primaryClassName, level: primaryLevel });
+      cleanedMulticlass.forEach((entry) => tracks.push(entry));
+      if (!tracks.length) return 0;
+
+      const classEntries = Array.isArray(state.catalogs?.classes) ? state.catalogs.classes : [];
+      const findClassEntry = (className) => {
+        const key = String(className ?? "").trim().toLowerCase();
+        if (!key) return null;
+        return classEntries.find((entry) => String(entry?.name ?? "").trim().toLowerCase() === key) ?? null;
+      };
+
+      return tracks.reduce((sum, track) => {
+        const classEntry = findClassEntry(track.className);
+        const progression = Array.isArray(classEntry?.cantripProgression) ? classEntry.cantripProgression : [];
+        if (!progression.length) return sum;
+        const index = Math.max(0, Math.min(progression.length - 1, Math.floor(track.level) - 1));
+        return sum + Math.max(0, toNumber(progression[index], 0));
+      }, 0);
+    };
     const sourceOptions = [...new Set(allSpells.map((it) => it.source).filter(Boolean))].sort();
     openModal({
       title: "Choose Spells",
@@ -179,6 +217,11 @@ export function createPickers(deps) {
       const levelValue = levelEl.value;
       const sourceValue = sourceEl.value;
       const currentCharacter = store.getState().character;
+      const cantripLimit = resolveClassCantripLimit(currentCharacter);
+      const selectedCantripCount = (Array.isArray(currentCharacter?.spells) ? currentCharacter.spells : []).reduce(
+        (count, spellName) => count + (toNumber(spellLevelByName.get(String(spellName ?? "").trim()), 0) === 0 ? 1 : 0),
+        0
+      );
       const autoClassListSet = new Set(
         (Array.isArray(currentCharacter?.play?.autoClassListSpells) ? currentCharacter.play.autoClassListSpells : [])
           .map((name) => String(name ?? "").trim().toLowerCase())
@@ -198,8 +241,20 @@ export function createPickers(deps) {
 
       listEl.innerHTML = filtered.length
         ? filtered
-            .map(
-              (spell) => `
+            .map((spell) => {
+              const spellNameKey = String(spell?.name ?? "").trim();
+              const isAutoManaged = autoClassListSet.has(spellNameKey.toLowerCase());
+              const isSelected = store.getState().character.spells.includes(spell.name);
+              const isCantrip = toNumber(spell?.level, 0) === 0;
+              const canAddCantrip = !isCantrip || isSelected || selectedCantripCount < cantripLimit;
+              const disablePick = isAutoManaged || !canAddCantrip;
+              const title = isAutoManaged
+                ? "This spell is auto-managed from class access."
+                : !canAddCantrip
+                  ? `Cantrip limit reached (${cantripLimit}).`
+                  : "";
+              const label = isAutoManaged ? "Auto" : !canAddCantrip ? "Max" : isSelected ? "Remove" : "Add";
+              return `
             <div class="option-row">
               <div>
                 <button type="button" class="spell-picker-name-btn" data-spell-view="${esc(spell.name)}">${esc(spell.name)}</button>
@@ -211,23 +266,13 @@ export function createPickers(deps) {
                   type="button"
                   class="btn secondary"
                   data-pick="${esc(spell.name)}"
-                  ${autoClassListSet.has(String(spell.name ?? "").trim().toLowerCase()) ? "disabled" : ""}
-                  title="${
-                    autoClassListSet.has(String(spell.name ?? "").trim().toLowerCase())
-                      ? "This spell is auto-managed from class access."
-                      : ""
-                  }"
-                >${
-                  autoClassListSet.has(String(spell.name ?? "").trim().toLowerCase())
-                    ? "Auto"
-                    : store.getState().character.spells.includes(spell.name)
-                      ? "Remove"
-                      : "Add"
-                }</button>
+                  ${disablePick ? "disabled" : ""}
+                  title="${title}"
+                >${label}</button>
               </div>
             </div>
           `
-            )
+            })
             .join("")
         : "<p class='muted'>No spells match these filters or your class/subclass spell list.</p>";
 
@@ -250,6 +295,15 @@ export function createPickers(deps) {
           );
           if (autoClassListSet.has(String(spellName ?? "").trim().toLowerCase())) return;
           const selectedSpells = store.getState().character.spells ?? [];
+          const isCantrip = toNumber(spellLevelByName.get(String(spellName ?? "").trim()), 0) === 0;
+          if (!selectedSpells.includes(spellName) && isCantrip) {
+            const cantripLimit = resolveClassCantripLimit(store.getState().character);
+            const selectedCantripCount = selectedSpells.reduce(
+              (count, name) => count + (toNumber(spellLevelByName.get(String(name ?? "").trim()), 0) === 0 ? 1 : 0),
+              0
+            );
+            if (selectedCantripCount >= cantripLimit) return;
+          }
           if (selectedSpells.includes(spellName)) store.removeSpell(spellName);
           else store.addSpell(spellName);
           renderSpellRows();

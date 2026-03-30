@@ -2519,26 +2519,30 @@ function doesSpellListClass(spell, classKey) {
 }
 
 function getAutoClassListSpellNames(catalogs, character) {
-  const classMaxLevelByKey = new Map();
+  const classAutoSpellRulesByKey = new Map();
   getClassLevelTracks(character).forEach((track) => {
     const classEntry = getClassCatalogEntry(catalogs, track.className);
     if (!classUsesFullPreparedSpellList(classEntry)) return;
     const classKey = getClassKey(classEntry.name);
     if (!classKey) return;
     const maxSpellLevel = getClassMaxPreparedSpellLevel(catalogs, classEntry.name, track.level);
-    const previousMax = classMaxLevelByKey.get(classKey) ?? 0;
-    if (maxSpellLevel > previousMax) classMaxLevelByKey.set(classKey, maxSpellLevel);
+    const hasCantripProgression = Array.isArray(classEntry?.cantripProgression) && classEntry.cantripProgression.length > 0;
+    const previousRule = classAutoSpellRulesByKey.get(classKey) ?? { maxSpellLevel: 0, autoIncludeCantrips: !hasCantripProgression };
+    classAutoSpellRulesByKey.set(classKey, {
+      maxSpellLevel: Math.max(previousRule.maxSpellLevel, maxSpellLevel),
+      autoIncludeCantrips: previousRule.autoIncludeCantrips || !hasCantripProgression,
+    });
   });
-  if (!classMaxLevelByKey.size) return [];
+  if (!classAutoSpellRulesByKey.size) return [];
 
   const spells = Array.isArray(catalogs?.spells) ? catalogs.spells : [];
   const names = new Map();
   spells.forEach((spell) => {
     const spellLevel = Math.max(0, toNumber(spell?.level, 0));
-    const isAvailable = [...classMaxLevelByKey.entries()].some(([classKey, maxSpellLevel]) => {
+    const isAvailable = [...classAutoSpellRulesByKey.entries()].some(([classKey, rule]) => {
       if (!doesSpellListClass(spell, classKey)) return false;
-      if (spellLevel === 0) return true;
-      return spellLevel <= maxSpellLevel;
+      if (spellLevel === 0) return Boolean(rule?.autoIncludeCantrips);
+      return spellLevel <= toNumber(rule?.maxSpellLevel, 0);
     });
     if (!isAvailable) return;
     const name = String(spell?.name ?? "").trim();

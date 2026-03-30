@@ -677,7 +677,7 @@ export function createEvents(deps) {
               : {};
           if (levelKey) nextByLevel[levelKey] = mode === "all";
           play.showAllPreparedCasterSpellsByLevel = nextByLevel;
-          play.showAllPreparedCasterSpells = mode === "all";
+          play.showAllPreparedCasterSpells = false;
         });
       });
     });
@@ -1471,7 +1471,7 @@ export function createEvents(deps) {
               : {};
           if (levelKey) nextByLevel[levelKey] = mode === "all";
           play.showAllPreparedCasterSpellsByLevel = nextByLevel;
-          play.showAllPreparedCasterSpells = mode === "all";
+          play.showAllPreparedCasterSpells = false;
         });
       });
     });
