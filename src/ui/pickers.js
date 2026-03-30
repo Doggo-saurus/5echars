@@ -178,6 +178,12 @@ export function createPickers(deps) {
       const searchValue = searchEl.value.trim();
       const levelValue = levelEl.value;
       const sourceValue = sourceEl.value;
+      const currentCharacter = store.getState().character;
+      const autoClassListSet = new Set(
+        (Array.isArray(currentCharacter?.play?.autoClassListSpells) ? currentCharacter.play.autoClassListSpells : [])
+          .map((name) => String(name ?? "").trim().toLowerCase())
+          .filter(Boolean)
+      );
       const filtered = allSpells
         .filter((spell) => isSpellAvailableToCharacter(spell, state.character))
         .filter((spell) => matchesSearchQuery(searchValue, spell.name, spell.sourceLabel, spell.source))
@@ -201,7 +207,23 @@ export function createPickers(deps) {
               </div>
               <div class="option-row-actions">
                 <button type="button" class="btn secondary" data-spell-view="${esc(spell.name)}">View</button>
-                <button type="button" class="btn secondary" data-pick="${esc(spell.name)}">${store.getState().character.spells.includes(spell.name) ? "Remove" : "Add"}</button>
+                <button
+                  type="button"
+                  class="btn secondary"
+                  data-pick="${esc(spell.name)}"
+                  ${autoClassListSet.has(String(spell.name ?? "").trim().toLowerCase()) ? "disabled" : ""}
+                  title="${
+                    autoClassListSet.has(String(spell.name ?? "").trim().toLowerCase())
+                      ? "This spell is auto-managed from class access."
+                      : ""
+                  }"
+                >${
+                  autoClassListSet.has(String(spell.name ?? "").trim().toLowerCase())
+                    ? "Auto"
+                    : store.getState().character.spells.includes(spell.name)
+                      ? "Remove"
+                      : "Add"
+                }</button>
               </div>
             </div>
           `
@@ -221,6 +243,12 @@ export function createPickers(deps) {
         button.addEventListener("click", () => {
           const spellName = button.dataset.pick;
           if (!spellName) return;
+          const autoClassListSet = new Set(
+            (Array.isArray(store.getState().character?.play?.autoClassListSpells) ? store.getState().character.play.autoClassListSpells : [])
+              .map((name) => String(name ?? "").trim().toLowerCase())
+              .filter(Boolean)
+          );
+          if (autoClassListSet.has(String(spellName ?? "").trim().toLowerCase())) return;
           const selectedSpells = store.getState().character.spells ?? [];
           if (selectedSpells.includes(spellName)) store.removeSpell(spellName);
           else store.addSpell(spellName);

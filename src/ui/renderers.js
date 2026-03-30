@@ -26,6 +26,7 @@ export function createRenderers(deps) {
     doesClassUsePreparedSpells,
     getPreparedSpellLimit,
     countPreparedSpells,
+    isSpellAlwaysPrepared,
     getSaveProficiencyLabelMap,
     getCharacterToolAndDefenseSummary,
     getLevelUpPreview,
@@ -1260,6 +1261,10 @@ export function createRenderers(deps) {
     const play = state.character.play ?? {};
     const defaultSpellSlots = getCharacterSpellSlotDefaults(state.catalogs, state.character);
     const usesPreparedSpells = doesClassUsePreparedSpells(state.catalogs, state.character);
+    const hasAutoClassListSpells = Array.isArray(play?.autoClassListSpells) && play.autoClassListSpells.length > 0;
+    const canTogglePreparedVisibility = usesPreparedSpells && hasAutoClassListSpells;
+    const showAllPreparedCasterSpells = canTogglePreparedVisibility ? Boolean(play.showAllPreparedCasterSpells) : true;
+    const showPreparedOnly = canTogglePreparedVisibility && !showAllPreparedCasterSpells;
     const preparedLimit = usesPreparedSpells ? getPreparedSpellLimit(state) : Infinity;
     const preparedCount = usesPreparedSpells ? countPreparedSpells(state) : 0;
     const grouped = new Map();
@@ -1271,18 +1276,25 @@ export function createRenderers(deps) {
       const level = spell ? toNumber(spell.level, 0) : 99;
       const isCantrip = level === 0;
       const existing = play.preparedSpells?.[name];
-      const isPrepared = usesPreparedSpells ? (isCantrip ? true : Boolean(existing)) : true;
+      const alwaysPrepared = usesPreparedSpells ? isSpellAlwaysPrepared(state, name, play) : false;
+      const isPrepared = usesPreparedSpells ? (isCantrip ? true : alwaysPrepared || Boolean(existing)) : true;
+      if (showPreparedOnly && !isPrepared) return;
       const slotInfo = level > 0 ? getSpellSlotValues(play, defaultSpellSlots, level) : { max: Infinity, used: 0 };
       const hasSlotsAvailable = level === 0 || toNumber(slotInfo.max, 0) - toNumber(slotInfo.used, 0) > 0;
       const stateClass = !isPrepared ? "is-unprepared" : hasSlotsAvailable ? "is-prepared-available" : "is-prepared-unavailable";
-      const canTogglePrepared = !isCantrip && (isPrepared || preparedCount < preparedLimit);
-      const row = { name, spell, level, isPrepared, canTogglePrepared, isCantrip };
+      const canTogglePrepared = !isCantrip && !alwaysPrepared && (isPrepared || preparedCount < preparedLimit);
+      const row = { name, spell, level, isPrepared, canTogglePrepared, isCantrip, alwaysPrepared };
       const list = grouped.get(level) ?? [];
       list.push({ ...row, stateClass, hasSlotsAvailable });
       grouped.set(level, list);
     });
 
-    if (!grouped.size) return "<span class='muted'>No spells selected.</span>";
+    if (!grouped.size) {
+      if (showPreparedOnly) {
+        return "<span class='muted'>No prepared spells right now. Switch to All Spells to review your full class list.</span>";
+      }
+      return "<span class='muted'>No spells selected.</span>";
+    }
 
     return [...grouped.entries()]
       .sort(([a], [b]) => a - b)
@@ -1290,7 +1302,7 @@ export function createRenderers(deps) {
         const title = level === 99 ? "Unknown Level" : getSpellLevelLabel(level);
         const body = rows
           .sort((a, b) => String(a?.name ?? "").localeCompare(String(b?.name ?? "")))
-          .map(({ name, spell, isPrepared, stateClass, hasSlotsAvailable, canTogglePrepared, isCantrip }) => {
+          .map(({ name, spell, isPrepared, stateClass, hasSlotsAvailable, canTogglePrepared, isCantrip, alwaysPrepared }) => {
             const spellCombat = getSpellCombatContext(state, spell);
             const school = spell?.school ? spellSchoolLabels[spell.school] ?? spell.school : "";
             const source = spell?.sourceLabel ?? spell?.source ?? "";
@@ -1299,17 +1311,26 @@ export function createRenderers(deps) {
                 ? `DC ${spellCombat.saveDc} ${spellCombat.saveText}`
                 : "";
             const meta = [school, source, saveMeta].filter(Boolean).join(" - ");
-            const knownTag = usesPreparedSpells ? (isPrepared ? "Prepared" : "Unprepared") : "Known";
+            const knownTag = usesPreparedSpells
+              ? alwaysPrepared
+                ? "Always Prepared"
+                : isPrepared
+                  ? "Prepared"
+                  : "Unprepared"
+              : "Known";
             const slotTag = toNumber(spell?.level, 0) > 0 && isPrepared ? (hasSlotsAvailable ? "Slots Available" : "No Slots Left") : "";
             const knownAndSlotTag = slotTag ? `${knownTag} · ${slotTag}` : knownTag;
             const prepButtonTitle = isCantrip
               ? "Cantrips are always prepared"
+              : alwaysPrepared
+                ? "Automatically prepared from class feature"
               : !isPrepared && !canTogglePrepared
                 ? "Preparation limit reached"
                 : "Toggle prepared";
+            const castDisabled = usesPreparedSpells && toNumber(spell?.level, 0) > 0 && !isPrepared;
             const spellAttackButtonHtml =
               spellCombat.hasSpellAttack && spellCombat.attackBonus != null
-                ? `<button type="button" class="btn secondary spell-cast-btn" data-spell-attack-roll="${esc(name)}">To Hit ${esc(
+                ? `<button type="button" class="btn secondary spell-cast-btn" data-spell-attack-roll="${esc(name)}" ${castDisabled ? "disabled" : ""}>To Hit ${esc(
                     signed(spellCombat.attackBonus)
                   )}</button>`
                 : "";
@@ -1341,7 +1362,7 @@ export function createRenderers(deps) {
               <div class="spell-action-group">
                 ${spellAttackButtonHtml}
                 ${ritualBadgeHtml}
-                <button type="button" class="btn secondary spell-cast-btn" data-spell-cast="${esc(name)}">${castLabel}</button>
+                <button type="button" class="btn secondary spell-cast-btn" data-spell-cast="${esc(name)}" ${castDisabled ? "disabled" : ""}>${castLabel}</button>
               </div>
             </div>
           `;
@@ -1896,6 +1917,37 @@ export function createRenderers(deps) {
 
     const selectedSpells = Array.isArray(character?.spells) ? character.spells.filter(Boolean) : [];
     const hasSelectedSpells = selectedSpells.length > 0;
+    const usesPreparedSpells = doesClassUsePreparedSpells(state.catalogs, character);
+    const hasAutoClassListSpells = Array.isArray(play?.autoClassListSpells) && play.autoClassListSpells.length > 0;
+    const canTogglePreparedVisibility = usesPreparedSpells && hasAutoClassListSpells;
+    const showAllPreparedCasterSpells = canTogglePreparedVisibility ? Boolean(play.showAllPreparedCasterSpells) : true;
+    const spellHelpText = canTogglePreparedVisibility
+      ? "Prepared view keeps your combat list clean. Switch to All Spells whenever you want to review and change your prepared picks."
+      : usesPreparedSpells
+        ? "Toggle P to mark prepared. Auto-granted spells are always prepared and do not count against your preparation limit."
+        : "Known casters track known spells here. Click a spell name to view details and roll from its description.";
+    const spellVisibilityToggleHtml = canTogglePreparedVisibility
+      ? `
+      <div class="spell-visibility-toggle" role="group" aria-label="Spell list visibility">
+        <button
+          type="button"
+          class="spell-visibility-btn ${showAllPreparedCasterSpells ? "" : "is-active"}"
+          data-spell-list-visibility="prepared"
+          aria-pressed="${showAllPreparedCasterSpells ? "false" : "true"}"
+        >
+          Prepared
+        </button>
+        <button
+          type="button"
+          class="spell-visibility-btn ${showAllPreparedCasterSpells ? "is-active" : ""}"
+          data-spell-list-visibility="all"
+          aria-pressed="${showAllPreparedCasterSpells ? "true" : "false"}"
+        >
+          All Spells
+        </button>
+      </div>
+    `
+      : "";
     const visibleSpellSlotLevels = spellSlotLevels.filter((level) => {
       const values = getSpellSlotValues(play, defaultSpellSlots, level);
       return toNumber(values.max, 0) > 0;
@@ -2046,7 +2098,8 @@ export function createRenderers(deps) {
               : "<p class='muted'>No spell slots available yet.</p>"}
           </div>
           <h4>Prepared/Known Spells</h4>
-          <p class="muted spell-prep-help">Toggle P to mark prepared. Click a spell name to view details and roll from its description.</p>
+          ${spellVisibilityToggleHtml}
+          <p class="muted spell-prep-help">${esc(spellHelpText)}</p>
           <div id="spell-cast-status" class="spell-cast-status ${spellStatus.isError ? "is-error" : ""}" ${spellStatus.message ? "" : "hidden"}>${esc(
               spellStatus.message
             )}</div>
@@ -2429,11 +2482,16 @@ export function createRenderers(deps) {
     if (stepIndex === 6) {
       const play = character.play ?? {};
       const defaultSpellSlots = getCharacterSpellSlotDefaults(catalogs, character);
+      const hasAutoClassListSpells = Array.isArray(play?.autoClassListSpells) && play.autoClassListSpells.length > 0;
+      const subtitle = hasAutoClassListSpells
+        ? "Your class spell list is auto-managed for this caster. Use the picker to browse details or add non-class extras."
+        : "Search and add spells to your spell list.";
+      const pickerLabel = hasAutoClassListSpells ? "Browse Spells" : "Pick Spells";
       return `
       <h2 class="title">Spells</h2>
-      <p class="subtitle">Search and add spells to your spell list.</p>
+      <p class="subtitle">${esc(subtitle)}</p>
       <div class="toolbar">
-        <button class="btn secondary" id="open-spells">Pick Spells</button>
+        <button class="btn secondary" id="open-spells">${esc(pickerLabel)}</button>
       </div>
       <div class="build-spell-list">
         ${renderBuildSpellListImpl(character, catalogs)}

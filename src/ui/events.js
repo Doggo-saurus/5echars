@@ -38,6 +38,8 @@ export function createEvents(deps) {
     openCustomRollModal,
     countPreparedSpells,
     getPreparedSpellLimit,
+    doesClassUsePreparedSpells,
+    isSpellAlwaysPrepared,
     getSpellByName,
     getSpellCombatContext,
     setDiceResult,
@@ -1436,6 +1438,18 @@ export function createEvents(deps) {
       });
     });
 
+    app.querySelectorAll("[data-spell-list-visibility]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const mode = String(button.dataset.spellListVisibility ?? "").trim().toLowerCase();
+        const hasAutoClassListSpells =
+          Array.isArray(state.character?.play?.autoClassListSpells) && state.character.play.autoClassListSpells.length > 0;
+        if (!doesClassUsePreparedSpells(state.catalogs, state.character) || !hasAutoClassListSpells) return;
+        withUpdatedPlay(state, (play) => {
+          play.showAllPreparedCasterSpells = mode === "all";
+        });
+      });
+    });
+
     app.querySelectorAll("[data-spell-prepared-btn]").forEach((button) => {
       button.addEventListener("click", () => {
         const spellName = button.dataset.spellPreparedBtn;
@@ -1445,6 +1459,7 @@ export function createEvents(deps) {
           const isPrepared = Boolean(current);
           const spell = getSpellByName(state, spellName);
           const isCantrip = toNumber(spell?.level, 0) === 0;
+          if (isSpellAlwaysPrepared(state, spellName, play)) return;
           if (isCantrip) {
             play.preparedSpells = { ...(play.preparedSpells ?? {}), [spellName]: true };
             return;
@@ -1513,6 +1528,16 @@ export function createEvents(deps) {
         const slotLevel = String(spellLevel);
         let slotSpent = false;
         let slotError = "";
+        const usesPreparedSpells = doesClassUsePreparedSpells(state.catalogs, state.character);
+        const isPreparedForCast = spellLevel === 0
+          || !usesPreparedSpells
+          || isSpellAlwaysPrepared(state, spell.name)
+          || Boolean(state.character?.play?.preparedSpells?.[spell.name]);
+
+        if (!isPreparedForCast) {
+          setSpellCastStatus(`Cast ${spell.name}: spell is not prepared.`, true, { durationMs: 10000 });
+          return;
+        }
 
         if (spellLevel > 0) {
           withUpdatedPlay(state, (play) => {

@@ -2407,12 +2407,24 @@ function extractSpellNameFromGrant(value) {
   return "";
 }
 
-function collectAdditionalSpellNamesFromEntries(entries, classLevel) {
-  const names = new Set();
-  const addFromSpellList = (list) => {
+const AUTO_SPELL_GRANT_PRIORITY = {
+  expanded: 1,
+  innate: 2,
+  known: 3,
+  prepared: 4,
+};
+
+function collectAdditionalSpellGrantsFromEntries(entries, classLevel) {
+  const grants = new Map();
+  const addFromSpellList = (list, grantType) => {
     (Array.isArray(list) ? list : []).forEach((entry) => {
       const name = extractSpellNameFromGrant(entry);
-      if (name) names.add(name);
+      if (!name) return;
+      const key = name.toLowerCase();
+      const current = grants.get(key);
+      const currentPriority = AUTO_SPELL_GRANT_PRIORITY[current?.grantType] ?? 0;
+      const nextPriority = AUTO_SPELL_GRANT_PRIORITY[grantType] ?? 0;
+      if (!current || nextPriority >= currentPriority) grants.set(key, { name, grantType });
     });
   };
   (Array.isArray(entries) ? entries : []).forEach((block) => {
@@ -2423,37 +2435,115 @@ function collectAdditionalSpellNamesFromEntries(entries, classLevel) {
       Object.entries(bucket).forEach(([levelRaw, list]) => {
         const unlockLevel = toNumber(levelRaw, NaN);
         if (!Number.isFinite(unlockLevel) || unlockLevel > classLevel) return;
-        addFromSpellList(list);
+        addFromSpellList(list, key);
       });
     });
   });
-  return [...names.values()];
+  return [...grants.values()];
 }
 
-function getAutoGrantedSpellNames(catalogs, character) {
+function getAutoGrantedSpellData(catalogs, character) {
   const catalogNameByLower = new Map(
     (Array.isArray(catalogs?.spells) ? catalogs.spells : [])
       .map((spell) => String(spell?.name ?? "").trim())
       .filter(Boolean)
       .map((name) => [name.toLowerCase(), name])
   );
-  const names = new Map();
-  const addName = (rawName) => {
+  const grants = new Map();
+  const addGrant = (rawName, grantType) => {
     const cleaned = cleanSpellInlineTags(rawName);
     if (!cleaned) return;
     const key = cleaned.toLowerCase();
     const canonical = catalogNameByLower.get(key) ?? cleaned;
-    if (!names.has(key)) names.set(key, canonical);
+    const current = grants.get(key);
+    const currentPriority = AUTO_SPELL_GRANT_PRIORITY[current?.grantType] ?? 0;
+    const nextPriority = AUTO_SPELL_GRANT_PRIORITY[grantType] ?? 0;
+    if (!current || nextPriority >= currentPriority) grants.set(key, { name: canonical, grantType });
   };
   const tracks = getClassLevelTracks(character);
   tracks.forEach((track) => {
     const classEntry = getClassCatalogEntry(catalogs, track.className);
     if (!classEntry) return;
-    collectAdditionalSpellNamesFromEntries(classEntry.additionalSpells, track.level).forEach((name) => addName(name));
+    collectAdditionalSpellGrantsFromEntries(classEntry.additionalSpells, track.level).forEach((grant) =>
+      addGrant(grant.name, grant.grantType)
+    );
     if (!track.isPrimary) return;
     const subclassEntry = getSelectedSubclassEntry(catalogs, character);
     if (!subclassEntry) return;
-    collectAdditionalSpellNamesFromEntries(subclassEntry.additionalSpells, track.level).forEach((name) => addName(name));
+    collectAdditionalSpellGrantsFromEntries(subclassEntry.additionalSpells, track.level).forEach((grant) =>
+      addGrant(grant.name, grant.grantType)
+    );
+  });
+  const autoPreparedSpells = {};
+  const autoSpellGrantTypes = {};
+  [...grants.entries()].forEach(([key, grant]) => {
+    autoPreparedSpells[key] = true;
+    autoSpellGrantTypes[key] = grant.grantType;
+  });
+  return {
+    names: [...grants.values()].map((grant) => grant.name),
+    autoPreparedSpells,
+    autoSpellGrantTypes,
+  };
+}
+
+const FULL_LIST_PREPARED_CASTER_KEYS = new Set(["cleric", "druid", "paladin", "artificer"]);
+
+function classUsesFullPreparedSpellList(classEntry) {
+  if (!isRecordObject(classEntry) || !classEntry.preparedSpells) return false;
+  const classKey = getClassKey(classEntry.name);
+  if (!FULL_LIST_PREPARED_CASTER_KEYS.has(classKey)) return false;
+  if (Array.isArray(classEntry.spellsKnownProgression) && classEntry.spellsKnownProgression.length) return false;
+  if (Array.isArray(classEntry.spellsKnownProgressionFixed) && classEntry.spellsKnownProgressionFixed.length) return false;
+  if (isRecordObject(classEntry.spellsKnownProgressionFixedByLevel)
+    && Object.keys(classEntry.spellsKnownProgressionFixedByLevel).length) return false;
+  return true;
+}
+
+function getClassMaxPreparedSpellLevel(catalogs, className, classLevel) {
+  const defaults = getClassSpellSlotDefaults(catalogs, className, classLevel);
+  return SPELL_SLOT_LEVELS.reduce((highest, slotLevel) => {
+    if (toNumber(defaults?.[String(slotLevel)], 0) > 0) return slotLevel;
+    return highest;
+  }, 0);
+}
+
+function doesSpellListClass(spell, classKey) {
+  if (!spell || !classKey) return false;
+  const classLookup = spell?.spellSourceEntry?.class;
+  if (!isRecordObject(classLookup)) return false;
+  return Object.values(classLookup).some((sourceMap) =>
+    Object.keys(sourceMap ?? {}).some((className) => getClassKey(className) === classKey)
+  );
+}
+
+function getAutoClassListSpellNames(catalogs, character) {
+  const classMaxLevelByKey = new Map();
+  getClassLevelTracks(character).forEach((track) => {
+    const classEntry = getClassCatalogEntry(catalogs, track.className);
+    if (!classUsesFullPreparedSpellList(classEntry)) return;
+    const classKey = getClassKey(classEntry.name);
+    if (!classKey) return;
+    const maxSpellLevel = getClassMaxPreparedSpellLevel(catalogs, classEntry.name, track.level);
+    const previousMax = classMaxLevelByKey.get(classKey) ?? 0;
+    if (maxSpellLevel > previousMax) classMaxLevelByKey.set(classKey, maxSpellLevel);
+  });
+  if (!classMaxLevelByKey.size) return [];
+
+  const spells = Array.isArray(catalogs?.spells) ? catalogs.spells : [];
+  const names = new Map();
+  spells.forEach((spell) => {
+    const spellLevel = Math.max(0, toNumber(spell?.level, 0));
+    const isAvailable = [...classMaxLevelByKey.entries()].some(([classKey, maxSpellLevel]) => {
+      if (!doesSpellListClass(spell, classKey)) return false;
+      if (spellLevel === 0) return true;
+      return spellLevel <= maxSpellLevel;
+    });
+    if (!isAvailable) return;
+    const name = String(spell?.name ?? "").trim();
+    if (!name) return;
+    const key = name.toLowerCase();
+    if (!names.has(key)) names.set(key, name);
   });
   return [...names.values()];
 }
@@ -4501,9 +4591,16 @@ function countPreparedSpells(state, playOverride = null) {
   return selectedSpells.reduce((count, spellName) => {
     const spell = getSpellByName(state, spellName);
     const isCantrip = toNumber(spell?.level, 0) === 0;
-    if (!isCantrip && Boolean(play.preparedSpells?.[spellName])) return count + 1;
+    if (!isCantrip && !isSpellAlwaysPrepared(state, spellName, play) && Boolean(play.preparedSpells?.[spellName])) return count + 1;
     return count;
   }, 0);
+}
+
+function isSpellAlwaysPrepared(state, spellName, playOverride = null) {
+  const play = playOverride ?? state?.character?.play ?? {};
+  const key = String(spellName ?? "").trim().toLowerCase();
+  if (!key || !isRecordObject(play?.autoPreparedSpells)) return false;
+  return Boolean(play.autoPreparedSpells[key]);
 }
 
 function toTitleCase(value) {
@@ -5413,6 +5510,8 @@ const events = createEvents({
   openCustomRollModal,
   countPreparedSpells,
   getPreparedSpellLimit,
+  doesClassUsePreparedSpells,
+  isSpellAlwaysPrepared,
   getSpellByName,
   getSpellCombatContext,
   setDiceResult,
@@ -5463,6 +5562,7 @@ const renderers = createRenderers({
   doesClassUsePreparedSpells,
   getPreparedSpellLimit,
   countPreparedSpells,
+  isSpellAlwaysPrepared,
   getSaveProficiencyLabelMap,
   getCharacterToolAndDefenseSummary,
   getLevelUpPreview,
@@ -5631,14 +5731,20 @@ function updateCharacterWithRequiredSettings(state, patch, options = {}) {
   const defaultSpellSlots = getCharacterSpellSlotDefaults(state.catalogs, nextCharacter);
   syncSpellSlotsWithDefaults(nextPlay, defaultSpellSlots, { preserveUserOverrides: options.preserveUserOverrides !== false });
   const nextProgression = recomputeCharacterProgression(state.catalogs, nextCharacter);
-  const autoGrantedSpells = getAutoGrantedSpellNames(state.catalogs, nextCharacter);
+  const autoGrantedSpellData = getAutoGrantedSpellData(state.catalogs, nextCharacter);
+  const autoGrantedSpells = autoGrantedSpellData.names;
+  const autoClassListSpells = getAutoClassListSpellNames(state.catalogs, nextCharacter);
   const previousAutoSpells = Array.isArray(nextPlay.autoGrantedSpells) ? nextPlay.autoGrantedSpells : [];
+  const previousClassListSpells = Array.isArray(nextPlay.autoClassListSpells) ? nextPlay.autoClassListSpells : [];
   const previousAutoSet = new Set(previousAutoSpells.map((name) => String(name ?? "").trim().toLowerCase()).filter(Boolean));
+  const previousClassListSet = new Set(previousClassListSpells.map((name) => String(name ?? "").trim().toLowerCase()).filter(Boolean));
   const manualSpells = (Array.isArray(nextCharacter.spells) ? nextCharacter.spells : []).filter(
-    (name) => !previousAutoSet.has(String(name ?? "").trim().toLowerCase())
+    (name) =>
+      !previousAutoSet.has(String(name ?? "").trim().toLowerCase())
+      && !previousClassListSet.has(String(name ?? "").trim().toLowerCase())
   );
   const mergedSpellMap = new Map();
-  [...manualSpells, ...autoGrantedSpells].forEach((name) => {
+  [...manualSpells, ...autoGrantedSpells, ...autoClassListSpells].forEach((name) => {
     const normalized = String(name ?? "").trim();
     if (!normalized) return;
     const key = normalized.toLowerCase();
@@ -5646,6 +5752,9 @@ function updateCharacterWithRequiredSettings(state, patch, options = {}) {
   });
   const nextSpells = [...mergedSpellMap.values()];
   nextPlay.autoGrantedSpells = autoGrantedSpells;
+  nextPlay.autoClassListSpells = autoClassListSpells;
+  nextPlay.autoPreparedSpells = autoGrantedSpellData.autoPreparedSpells;
+  nextPlay.autoSpellGrantTypes = autoGrantedSpellData.autoSpellGrantTypes;
   nextPlay.preparedSpells = Object.fromEntries(
     Object.entries(nextPlay.preparedSpells ?? {}).filter(([name]) =>
       mergedSpellMap.has(String(name ?? "").trim().toLowerCase())
@@ -5779,8 +5888,8 @@ function getLevelUpPreview(state, draft) {
   const nextSaves = getAutomaticSaveProficiencies(state.catalogs, nextCharacter);
   const currentProgression = recomputeCharacterProgression(state.catalogs, currentCharacter);
   const nextProgression = recomputeCharacterProgression(state.catalogs, nextCharacter);
-  const currentAutoSpells = getAutoGrantedSpellNames(state.catalogs, currentCharacter);
-  const nextAutoSpells = getAutoGrantedSpellNames(state.catalogs, nextCharacter);
+  const currentAutoSpells = getAutoGrantedSpellData(state.catalogs, currentCharacter).names;
+  const nextAutoSpells = getAutoGrantedSpellData(state.catalogs, nextCharacter).names;
   const currentSpellSet = new Set(currentAutoSpells.map((name) => name.toLowerCase()));
   const nextSpellSet = new Set(nextAutoSpells.map((name) => name.toLowerCase()));
   const addedAutoSpells = nextAutoSpells.filter((name) => !currentSpellSet.has(name.toLowerCase()));

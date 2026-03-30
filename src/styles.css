@@ -2032,6 +2032,40 @@ body.play-mode #dice-overlay {
   font-size: 0.82rem;
 }
 
+.spell-visibility-toggle {
+  display: inline-flex;
+  gap: 0.18rem;
+  padding: 0.18rem;
+  margin: 0.35rem 0 0.5rem;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.spell-visibility-btn {
+  border: 1px solid transparent;
+  background: transparent;
+  color: rgba(229, 231, 235, 0.84);
+  border-radius: 999px;
+  padding: 0.24rem 0.72rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+
+.spell-visibility-btn:hover {
+  color: var(--text);
+  border-color: rgba(255, 255, 255, 0.25);
+}
+
+.spell-visibility-btn.is-active {
+  background: rgba(52, 211, 153, 0.18);
+  border-color: rgba(52, 211, 153, 0.55);
+  color: #d1fae5;
+}
+
 .spell-cast-status {
   margin: 0 0 0.65rem;
   padding: 0.4rem 0.55rem;

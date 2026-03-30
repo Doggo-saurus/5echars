@@ -58,6 +58,10 @@ function getDefaultPlayState() {
     autoChoiceSelections: {},
     featureModes: {},
     autoGrantedSpells: [],
+    autoClassListSpells: [],
+    autoPreparedSpells: {},
+    autoSpellGrantTypes: {},
+    showAllPreparedCasterSpells: false,
     preparedSpells: {},
     spellSlots: getDefaultSpellSlots(),
     spellSlotMaxOverrides: {},
@@ -225,6 +229,19 @@ function normalizeCharacter(character) {
       Array.isArray(character.play?.autoGrantedSpells)
         ? character.play.autoGrantedSpells.map((name) => String(name ?? "").trim()).filter(Boolean)
         : [],
+    autoClassListSpells:
+      Array.isArray(character.play?.autoClassListSpells)
+        ? character.play.autoClassListSpells.map((name) => String(name ?? "").trim()).filter(Boolean)
+        : [],
+    autoPreparedSpells:
+      character.play?.autoPreparedSpells && typeof character.play.autoPreparedSpells === "object"
+        ? { ...character.play.autoPreparedSpells }
+        : {},
+    autoSpellGrantTypes:
+      character.play?.autoSpellGrantTypes && typeof character.play.autoSpellGrantTypes === "object"
+        ? { ...character.play.autoSpellGrantTypes }
+        : {},
+    showAllPreparedCasterSpells: Boolean(character.play?.showAllPreparedCasterSpells),
     autoSaveProficiencies:
       character.play?.autoSaveProficiencies && typeof character.play.autoSaveProficiencies === "object"
         ? { ...character.play.autoSaveProficiencies }
