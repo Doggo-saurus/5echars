@@ -450,7 +450,9 @@ async function importCharacterFromParsedJson(parsed, options = {}) {
       if (!shouldContinue) return { cancelled: true, id: importedId };
     }
 
-    const payload = await saveCharacter(importedId, { ...preparedCharacter, id: importedId });
+    const payload = existsRemotely
+      ? await saveCharacter(importedId, { ...preparedCharacter, id: importedId })
+      : await createCharacter({ ...preparedCharacter, id: importedId });
     const normalized = getCharacterFromApiPayload(payload, importedId);
     setCharacterIdInUrl(normalized.id, false);
     await applyRemoteCharacterPayload(payload, normalized.id);
