@@ -1095,6 +1095,15 @@ export function createRenderers(deps) {
   }
 
   function renderSpellGroupsByLevelImpl(state) {
+    const isSpellRitualCast = (spell) => {
+      if (!spell || typeof spell !== "object") return false;
+      if (spell.ritual === true) return true;
+      const ritualMeta = spell.meta?.ritual;
+      if (ritualMeta === true) return true;
+      if (typeof ritualMeta === "string" && ritualMeta.trim().toLowerCase() === "true") return true;
+      return false;
+    };
+
     const play = state.character.play ?? {};
     const defaultSpellSlots = getCharacterSpellSlotDefaults(state.catalogs, state.character);
     const usesPreparedSpells = doesClassUsePreparedSpells(state.catalogs, state.character);
@@ -1152,6 +1161,9 @@ export function createRenderers(deps) {
                   )}</button>`
                 : "";
             const castLabel = spellCombat.hasSpellAttack ? "Damage" : "Cast";
+            const ritualBadgeHtml = isSpellRitualCast(spell)
+              ? '<span class="spell-ritual-pill" title="Can be cast as a ritual">R</span>'
+              : "";
             return `
             <div class="spell-row ${stateClass}">
               ${
@@ -1173,8 +1185,11 @@ export function createRenderers(deps) {
               <button type="button" class="spell-name-btn" data-spell-open="${esc(name)}">${esc(name)}</button>
               <span class="spell-known-tag muted">${knownAndSlotTag}</span>
               <span class="spell-meta muted">${esc(meta || "")}</span>
-              ${spellAttackButtonHtml}
-              <button type="button" class="btn secondary spell-cast-btn" data-spell-cast="${esc(name)}">${castLabel}</button>
+              <div class="spell-action-group">
+                ${spellAttackButtonHtml}
+                ${ritualBadgeHtml}
+                <button type="button" class="btn secondary spell-cast-btn" data-spell-cast="${esc(name)}">${castLabel}</button>
+              </div>
             </div>
           `;
           })
