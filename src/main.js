@@ -2218,7 +2218,7 @@ function getAutoResourcesFromFeatures(features) {
     .filter(Boolean);
 }
 
-function getAutoResourcesFromRules(catalogs, character, features, feats) {
+function getAutoResourcesFromRules(catalogs, character, features, feats, optionalFeatures) {
   const classLevelMap = getClassLevelMap(character);
   const byId = new Map();
 
@@ -2261,7 +2261,118 @@ function getAutoResourcesFromRules(catalogs, character, features, feats) {
     });
   });
 
+  (Array.isArray(optionalFeatures) ? optionalFeatures : []).forEach((feature) => {
+    const optionalFeatureDetail = (catalogs?.optionalFeatures ?? []).find(
+      (entry) => buildEntityId(["optionalfeature", entry?.name, entry?.source]) === feature.id
+    );
+    const descriptor = getResourceDescriptorFromEntry(optionalFeatureDetail, feature.name, getCharacterHighestClassLevel(character));
+    if (!descriptor) return;
+    byId.set(`${AUTO_RESOURCE_ID_PREFIX}${feature.id}`, {
+      autoId: `${AUTO_RESOURCE_ID_PREFIX}${feature.id}`,
+      name: descriptor.name,
+      current: descriptor.max,
+      max: descriptor.max,
+      recharge: descriptor.recharge,
+    });
+  });
+
   return [...byId.values()];
+}
+
+function getAutoResourcesFromClassTableEffects(catalogs, character, unlockedFeatures, classTableEffects) {
+  const normalizeResourceLabel = (value) =>
+    cleanSpellInlineTags(String(value ?? ""))
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, " ")
+      .replace(/\s+/g, " ")
+      .replace(/\bpoints\b/g, "point")
+      .replace(/\bdice\b/g, "die")
+      .replace(/\brages\b/g, "rage")
+      .trim();
+
+  const getLabelTokenSet = (value) =>
+    new Set(
+      normalizeResourceLabel(value)
+        .split(" ")
+        .map((token) => token.trim())
+        .filter(Boolean)
+    );
+
+  const scoreResourceLabelMatch = (left, right) => {
+    const normalizedLeft = normalizeResourceLabel(left);
+    const normalizedRight = normalizeResourceLabel(right);
+    if (!normalizedLeft || !normalizedRight) return 0;
+    if (normalizedLeft === normalizedRight) return 100;
+    if (normalizedLeft.includes(normalizedRight) || normalizedRight.includes(normalizedLeft)) return 60;
+    const leftTokens = getLabelTokenSet(normalizedLeft);
+    const rightTokens = getLabelTokenSet(normalizedRight);
+    if (!leftTokens.size || !rightTokens.size) return 0;
+    let overlap = 0;
+    leftTokens.forEach((token) => {
+      if (rightTokens.has(token)) overlap += 1;
+    });
+    return overlap;
+  };
+
+  const classLevelMap = getClassLevelMap(character);
+  const candidatesByClass = new Map();
+  (Array.isArray(unlockedFeatures) ? unlockedFeatures : []).forEach((feature) => {
+    const className = String(feature?.className ?? "").trim();
+    if (!className) return;
+    const classKey = className.toLowerCase();
+    const detail = resolveFeatureEntryFromCatalogs(catalogs, feature);
+    const classLevel = toNumber(classLevelMap.get(classKey), 0);
+    const descriptor = getResourceDescriptorFromEntry(detail, feature?.name, classLevel);
+    const rechargeHint = getResourceRechargeHint(getRuleDescriptionLines(detail));
+    const list = candidatesByClass.get(classKey) ?? [];
+    if (descriptor) {
+      list.push({
+        label: String(descriptor?.name ?? "").trim(),
+        recharge: String(descriptor?.recharge ?? ""),
+        source: "descriptor",
+      });
+    }
+    if (rechargeHint) {
+      list.push({
+        label: String(feature?.name ?? "").trim(),
+        recharge: rechargeHint,
+        source: "feature",
+      });
+    }
+    if (list.length) candidatesByClass.set(classKey, list);
+  });
+
+  return (Array.isArray(classTableEffects) ? classTableEffects : [])
+    .map((effect) => {
+      const id = String(effect?.id ?? "").trim();
+      const label = String(effect?.label ?? "").trim();
+      const classKey = String(effect?.className ?? "").trim().toLowerCase();
+      const valueText = String(effect?.value ?? "").trim();
+      if (!id || !label || !classKey || !valueText) return null;
+      const max = toNumber(valueText.match(/[+\-]?\d+/)?.[0], Number.NaN);
+      if (!Number.isFinite(max) || max <= 0) return null;
+      const candidates = candidatesByClass.get(classKey) ?? [];
+      let best = null;
+      let bestScore = 0;
+      candidates.forEach((candidate) => {
+        const score = scoreResourceLabelMatch(label, candidate?.label);
+        if (score > bestScore) {
+          bestScore = score;
+          best = candidate;
+        }
+      });
+      if (!best || bestScore < 1) return null;
+      if (best.source !== "descriptor" && !String(best?.recharge ?? "").trim()) return null;
+      return {
+        autoId: `${AUTO_RESOURCE_ID_PREFIX}${id}`,
+        name: label,
+        current: max,
+        max,
+        recharge: String(best?.recharge ?? ""),
+      };
+    })
+    .filter(Boolean);
 }
 
 function syncAutoFeatureUses(play, trackers) {
@@ -2346,6 +2457,26 @@ function getAutoGrantedSpellNames(catalogs, character) {
 }
 
 function getClassTableEffects(catalogs, character) {
+  const formatClassTableRollNotation = (toRoll) => {
+    if (typeof toRoll === "string") {
+      const notation = extractSimpleNotation(toRoll);
+      return notation || String(toRoll).replace(/\s+/g, "");
+    }
+    const terms = Array.isArray(toRoll) ? toRoll : isRecordObject(toRoll) ? [toRoll] : [];
+    const notation = terms
+      .map((term) => {
+        if (typeof term === "string") return extractSimpleNotation(term);
+        if (!isRecordObject(term)) return "";
+        const count = Math.max(1, toNumber(term.number, 1));
+        const faces = Math.max(0, toNumber(term.faces, 0));
+        if (!faces) return "";
+        return `${count}d${faces}`;
+      })
+      .filter(Boolean)
+      .join("+");
+    return extractSimpleNotation(notation);
+  };
+
   const effects = [];
   const tracks = getClassLevelTracks(character);
   tracks.forEach((track) => {
@@ -2368,9 +2499,12 @@ function getClassTableEffects(catalogs, character) {
         const value = row[idx];
         let effectValue = "";
         let kind = "text";
-        if (isRecordObject(value) && typeof value.toRoll === "string") {
-          effectValue = value.toRoll;
+        if (isRecordObject(value) && value.toRoll != null) {
+          effectValue = formatClassTableRollNotation(value.toRoll);
           kind = "dice";
+        } else if (isRecordObject(value) && value.type === "bonus") {
+          effectValue = signed(toNumber(value.value, 0));
+          kind = "number";
         } else if (isRecordObject(value) && value.type === "bonusSpeed") {
           effectValue = `+${Math.max(0, toNumber(value.value, 0))} ft`;
           kind = "number";
@@ -2387,6 +2521,7 @@ function getClassTableEffects(catalogs, character) {
           label,
           kind,
           value: effectValue,
+          rollNotation: kind === "dice" ? extractSimpleNotation(effectValue) : "",
         });
       });
     });
@@ -2395,22 +2530,40 @@ function getClassTableEffects(catalogs, character) {
 }
 
 function extractFeatureModeDescriptors(catalogs, features) {
+  const getOptionLabel = (option) => {
+    if (!option) return "";
+    if (typeof option === "string") return cleanSpellInlineTags(option.split("|")[0]);
+    if (!isRecordObject(option)) return "";
+    if (typeof option.name === "string" && option.name.trim()) return cleanSpellInlineTags(option.name);
+    if (typeof option.optionalfeature === "string") return cleanSpellInlineTags(option.optionalfeature.split("|")[0]);
+    if (typeof option.subclassFeature === "string") return cleanSpellInlineTags(option.subclassFeature.split("|")[0]);
+    if (typeof option.classFeature === "string") return cleanSpellInlineTags(option.classFeature.split("|")[0]);
+    if (typeof option.feature === "string") return cleanSpellInlineTags(option.feature.split("|")[0]);
+    if (typeof option.entry === "string") return cleanSpellInlineTags(option.entry);
+    return "";
+  };
+
+  const normalizeModeCount = (raw) => {
+    const parsed = Math.max(1, Math.floor(toNumber(raw, 1)));
+    return Number.isFinite(parsed) ? parsed : 1;
+  };
+
   const modes = [];
   (Array.isArray(features) ? features : []).forEach((feature) => {
     const detail = resolveFeatureEntryFromCatalogs(catalogs, feature);
     const entries = Array.isArray(detail?.entries) ? detail.entries : [];
     entries.forEach((entry, entryIndex) => {
       if (!isRecordObject(entry) || entry.type !== "options" || !Array.isArray(entry.entries)) return;
-      const optionValues = entry.entries
-        .map((option) => cleanSpellInlineTags(option?.name ?? ""))
-        .filter(Boolean);
-      if (optionValues.length < 2) return;
+      const optionValues = [...new Set(entry.entries.map((option) => getOptionLabel(option)).filter(Boolean))];
+      const count = Math.min(optionValues.length, normalizeModeCount(entry.count));
+      if (optionValues.length < 2 || count < 1) return;
       modes.push({
         id: buildEntityId(["feature-mode", feature.id, entryIndex]),
         featureId: feature.id,
         featureName: feature.name,
         className: feature.className,
         optionValues,
+        count,
       });
     });
   });
@@ -2595,6 +2748,51 @@ function openFeatDetailsModal(state, featId) {
       if (!notation) return;
       close();
       rollVisualNotation(feat.name, notation);
+    });
+  });
+}
+
+function openOptionalFeatureDetailsModal(state, featureId) {
+  const selectedFeature = (state.character?.optionalFeatures ?? []).find((it) => it.id === featureId);
+  if (!selectedFeature) return;
+  const detail =
+    (state.catalogs?.optionalFeatures ?? []).find((entry) => buildEntityId(["optionalfeature", entry?.name, entry?.source]) === featureId)
+    ?? null;
+  const lines = getRuleDescriptionLines(detail);
+  const bodyHtml = lines.length
+    ? lines
+        .map((line) => {
+          const body = renderTextWithInlineDiceButtons(line);
+          return `<p>${body}</p>`;
+        })
+        .join("")
+    : "<p class='muted'>No description is available for this optional feature.</p>";
+  const featureTypes = Array.isArray(detail?.featureType)
+    ? detail.featureType.map((entry) => String(entry ?? "").trim()).filter(Boolean)
+    : [String(detail?.featureType ?? selectedFeature?.featureType ?? "").trim()].filter(Boolean);
+  const metaRows = [
+    { label: "Source", value: detail?.sourceLabel ?? detail?.source ?? selectedFeature?.source ?? "" },
+    { label: "Granted At Level", value: selectedFeature.levelGranted ? String(selectedFeature.levelGranted) : "" },
+    { label: "Class", value: selectedFeature.className || "" },
+    { label: "Type", value: selectedFeature.slotType || "" },
+    { label: "Feature Type", value: featureTypes.join(", ") },
+  ].filter((row) => row.value);
+  const close = openModal({
+    title: selectedFeature.name,
+    bodyHtml: `
+      <div class="spell-meta-grid">
+        ${metaRows.map((row) => `<div><strong>${esc(row.label)}:</strong> ${esc(row.value)}</div>`).join("")}
+      </div>
+      <div class="spell-description">${bodyHtml}</div>
+    `,
+    actions: [{ label: "Close", secondary: true, onClick: (done) => done() }],
+  });
+  document.querySelectorAll("[data-spell-roll]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const notation = button.dataset.spellRoll;
+      if (!notation) return;
+      close();
+      rollVisualNotation(selectedFeature.name, notation);
     });
   });
 }
@@ -2932,6 +3130,30 @@ function getAbilityBonusesFromEntity(entry, sourceKey, play) {
   return bonuses;
 }
 
+function getSelectedFeatAndOptionalFeatureEntries(catalogs, character, sourceOrder) {
+  const selectedFeats = Array.isArray(character?.feats) ? character.feats : [];
+  const featEntries = selectedFeats
+    .map((feat) => {
+      const entry = findCatalogEntryByNameWithSelectedSourcePreference(catalogs?.feats, feat?.name, feat?.source, sourceOrder);
+      if (!entry) return null;
+      const sourceKey = `feat:${String(feat?.id ?? "").trim() || buildEntityId(["feat", feat?.name, feat?.source])}`;
+      return { entry, sourceKey };
+    })
+    .filter(Boolean);
+  const selectedOptionalFeatures = Array.isArray(character?.optionalFeatures) ? character.optionalFeatures : [];
+  const optionalFeatureEntries = selectedOptionalFeatures
+    .map((feature) => {
+      const entry = findCatalogEntryByNameWithSelectedSourcePreference(catalogs?.optionalFeatures, feature?.name, feature?.source, sourceOrder);
+      if (!entry) return null;
+      const sourceKey = `optional-feature:${
+        String(feature?.id ?? "").trim() || buildEntityId(["optionalfeature", feature?.name, feature?.source])
+      }`;
+      return { entry, sourceKey };
+    })
+    .filter(Boolean);
+  return { featEntries, optionalFeatureEntries };
+}
+
 function getAutomaticAbilityBonuses(catalogs, character, play) {
   const sourceOrder = getPreferredSourceOrder(character);
   const raceEntry = findCatalogEntryByNameWithSelectedSourcePreference(
@@ -2948,6 +3170,24 @@ function getAutomaticAbilityBonuses(catalogs, character, play) {
   );
   const raceBonuses = getAbilityBonusesFromEntity(raceEntry, "race", play);
   const backgroundBonuses = getAbilityBonusesFromEntity(backgroundEntry, "background", play);
+  const { featEntries, optionalFeatureEntries } = getSelectedFeatAndOptionalFeatureEntries(catalogs, character, sourceOrder);
+  const featBonuses = getEmptyAbilityMap();
+  featEntries.forEach(({ entry, sourceKey }) => {
+    const bonuses = getAbilityBonusesFromEntity(entry, sourceKey, play);
+    SAVE_ABILITIES.forEach((ability) => {
+      featBonuses[ability] = Math.max(0, toNumber(featBonuses?.[ability], 0) + toNumber(bonuses?.[ability], 0));
+    });
+  });
+  const optionalFeatureBonuses = getEmptyAbilityMap();
+  optionalFeatureEntries.forEach(({ entry, sourceKey }) => {
+    const bonuses = getAbilityBonusesFromEntity(entry, sourceKey, play);
+    SAVE_ABILITIES.forEach((ability) => {
+      optionalFeatureBonuses[ability] = Math.max(
+        0,
+        toNumber(optionalFeatureBonuses?.[ability], 0) + toNumber(bonuses?.[ability], 0)
+      );
+    });
+  });
   const featSlots = Array.isArray(character?.progression?.featSlots) ? character.progression.featSlots : [];
   const selectedFeatSlotIds = new Set(
     (Array.isArray(character?.feats) ? character.feats : [])
@@ -2969,7 +3209,11 @@ function getAutomaticAbilityBonuses(catalogs, character, play) {
   return SAVE_ABILITIES.reduce((acc, ability) => {
     acc[ability] = Math.max(
       0,
-      toNumber(raceBonuses[ability], 0) + toNumber(backgroundBonuses[ability], 0) + toNumber(asiBonuses[ability], 0)
+      toNumber(raceBonuses[ability], 0)
+        + toNumber(backgroundBonuses[ability], 0)
+        + toNumber(asiBonuses[ability], 0)
+        + toNumber(featBonuses[ability], 0)
+        + toNumber(optionalFeatureBonuses[ability], 0)
     );
     return acc;
   }, {});
@@ -3123,7 +3367,8 @@ function getAutomaticSaveProficiencies(catalogs, character) {
     character?.backgroundSource,
     sourceOrder
   );
-  [raceEntry, backgroundEntry].forEach((entry) => {
+  const { featEntries, optionalFeatureEntries } = getSelectedFeatAndOptionalFeatureEntries(catalogs, character, sourceOrder);
+  [raceEntry, backgroundEntry, ...featEntries.map((item) => item.entry), ...optionalFeatureEntries.map((item) => item.entry)].forEach((entry) => {
     const saveOptions = Array.isArray(entry?.saveProficiencies) ? entry.saveProficiencies : [];
     const selected = saveOptions.find((option) => isRecordObject(option)) ?? null;
     if (!selected) return;
@@ -3154,6 +3399,7 @@ function getAutomaticSkillProficiencies(catalogs, character, play) {
     character?.backgroundSource,
     sourceOrder
   );
+  const { featEntries, optionalFeatureEntries } = getSelectedFeatAndOptionalFeatureEntries(catalogs, character, sourceOrder);
   const activeSkills = new Set();
   if (classEntry) {
     const className = String(classEntry?.name ?? character?.class ?? "").trim().toLowerCase();
@@ -3163,6 +3409,12 @@ function getAutomaticSkillProficiencies(catalogs, character, play) {
   }
   [raceEntry, backgroundEntry].forEach((entry) => {
     const sourceKey = entry === raceEntry ? "race" : "background";
+    collectSkillProficienciesFromEntity(entry, sourceKey, play).forEach((skillKey) => activeSkills.add(skillKey));
+  });
+  featEntries.forEach(({ entry, sourceKey }) => {
+    collectSkillProficienciesFromEntity(entry, sourceKey, play).forEach((skillKey) => activeSkills.add(skillKey));
+  });
+  optionalFeatureEntries.forEach(({ entry, sourceKey }) => {
     collectSkillProficienciesFromEntity(entry, sourceKey, play).forEach((skillKey) => activeSkills.add(skillKey));
   });
   return SKILLS.reduce((acc, skill) => {
@@ -4275,7 +4527,8 @@ function normalizeItemTypeCode(value) {
 }
 
 function normalizeWeaponProficiencyToken(value) {
-  return String(value ?? "")
+  const cleanedValue = cleanSpellInlineTags(String(value ?? ""));
+  return cleanedValue
     .trim()
     .toLowerCase()
     .replace(/\./g, "")
@@ -4363,10 +4616,19 @@ function isWeaponProficient(entry, proficiencyTokens) {
   const isRanged = isRangedWeaponEntry(entry);
   const isMelee = !isRanged;
 
-  if (family === "simple" && tokenList.some((token) => token.includes("simple weapon"))) return true;
-  if (family === "martial" && tokenList.some((token) => token.includes("martial weapon"))) return true;
-  if (isRanged && tokenList.some((token) => token.includes("ranged weapon"))) return true;
-  if (isMelee && tokenList.some((token) => token.includes("melee weapon"))) return true;
+  const hasSimpleWeaponProficiency = tokenList.some(
+    (token) => token === "simple" || token === "simple weapon" || token === "simple weapons"
+  );
+  const hasMartialWeaponProficiency = tokenList.some(
+    (token) => token === "martial" || token === "martial weapon" || token === "martial weapons"
+  );
+  const hasRangedWeaponProficiency = tokenList.some((token) => token === "ranged weapon" || token === "ranged weapons");
+  const hasMeleeWeaponProficiency = tokenList.some((token) => token === "melee weapon" || token === "melee weapons");
+
+  if (family === "simple" && hasSimpleWeaponProficiency) return true;
+  if (family === "martial" && hasMartialWeaponProficiency) return true;
+  if (isRanged && hasRangedWeaponProficiency) return true;
+  if (isMelee && hasMeleeWeaponProficiency) return true;
 
   const itemName = normalizeItemNameForProficiency(getInventoryItemName(entry));
   if (itemName && tokenList.some((token) => normalizeItemNameForProficiency(token) === itemName)) return true;
@@ -4438,17 +4700,123 @@ function getWeaponNameBonus(entry) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+function normalizeFeatureAttackToken(value) {
+  return cleanSpellInlineTags(String(value ?? ""))
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function scoreFeatureAttackNameOverlap(left, right) {
+  const a = normalizeFeatureAttackToken(left);
+  const b = normalizeFeatureAttackToken(right);
+  if (!a || !b) return 0;
+  if (a === b) return 100;
+  if (a.includes(b) || b.includes(a)) return 60;
+  const aTokens = new Set(a.split(" ").filter(Boolean));
+  const bTokens = new Set(b.split(" ").filter(Boolean));
+  let overlap = 0;
+  aTokens.forEach((token) => {
+    if (bTokens.has(token)) overlap += 1;
+  });
+  return overlap;
+}
+
+function getClassFeatureAttackBuilders() {
+  const buildUnarmedStrikeAttack = (context) => {
+    const rollNotation = extractSimpleNotation(context?.effect?.rollNotation ?? context?.effect?.value ?? "");
+    if (!rollNotation) return null;
+    const featureText = String(context?.featureText ?? "").toLowerCase();
+    const effectLabel = String(context?.effect?.label ?? "");
+    const hintsUnarmed = /unarmed strike|unarmed attacks?|unarmed/.test(featureText);
+    const hintsAttack = /\battack\b/.test(featureText);
+    const labelHints = /martial arts/i.test(effectLabel);
+    if (!(labelHints || (hintsUnarmed && hintsAttack))) return null;
+
+    const strMod = toNumber(context?.derived?.mods?.str, 0);
+    const dexMod = toNumber(context?.derived?.mods?.dex, 0);
+    const allowsDex = /dexterity (?:modifier )?instead of strength/.test(featureText) || /martial arts/i.test(effectLabel);
+    const ability = allowsDex && dexMod >= strMod ? { key: "dex", mod: dexMod } : { key: "str", mod: strMod };
+    const proficiencyBonus = toNumber(context?.derived?.proficiencyBonus, 0);
+    const damageNotation = formatDamageNotation(rollNotation, ability.mod);
+    if (!damageNotation) return null;
+    return {
+      source: "auto-feature",
+      autoSourceLabel: cleanSpellInlineTags(context?.effect?.label || context?.feature?.name || "Class Feature"),
+      name: "Unarmed Strike",
+      toHit: signed(ability.mod + proficiencyBonus),
+      damage: `${damageNotation} bludgeoning`,
+      proficient: true,
+      ability: ability.key,
+    };
+  };
+
+  return [buildUnarmedStrikeAttack];
+}
+
+function getClassFeatureAutoAttacks(state) {
+  const character = state?.character ?? {};
+  const progression = character?.progression ?? {};
+  const effects = Array.isArray(progression?.classTableEffects) ? progression.classTableEffects : [];
+  const unlocked = Array.isArray(progression?.unlockedFeatures) ? progression.unlockedFeatures : [];
+  if (!effects.length || !unlocked.length) return [];
+
+  const effectCandidates = effects.filter((effect) => extractSimpleNotation(effect?.rollNotation ?? effect?.value ?? ""));
+  if (!effectCandidates.length) return [];
+
+  const builders = getClassFeatureAttackBuilders();
+  const attacks = [];
+  const seen = new Set();
+
+  effectCandidates.forEach((effect) => {
+    const className = String(effect?.className ?? "").trim().toLowerCase();
+    if (!className) return;
+    let bestFeature = null;
+    let bestScore = 0;
+    unlocked.forEach((feature) => {
+      if (String(feature?.className ?? "").trim().toLowerCase() !== className) return;
+      const score = scoreFeatureAttackNameOverlap(effect?.label, feature?.name);
+      if (score > bestScore) {
+        bestScore = score;
+        bestFeature = feature;
+      }
+    });
+    if (!bestFeature) return;
+    const detail = resolveFeatureEntryFromCatalogs(state?.catalogs, bestFeature);
+    const featureText = getRuleDescriptionLines(detail).join(" ");
+    const context = {
+      state,
+      derived: state?.derived ?? {},
+      effect,
+      feature: bestFeature,
+      featureText,
+    };
+    builders.forEach((builder) => {
+      const attack = builder(context);
+      if (!attack) return;
+      const key = `${String(attack?.name ?? "").trim().toLowerCase()}|${String(attack?.autoSourceLabel ?? "").trim().toLowerCase()}`;
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      attacks.push(attack);
+    });
+  });
+
+  return attacks;
+}
+
 function getAutoAttacks(state) {
   const character = state?.character ?? {};
   const equippedWeapons = getInventoryObjectEntries(character).filter((entry) => Boolean(entry?.equipped) && isInventoryWeapon(entry));
-  if (!equippedWeapons.length) return [];
+  const featureAttacks = getClassFeatureAutoAttacks(state);
+  if (!equippedWeapons.length) return featureAttacks;
   const fightingStyles = getCharacterFightingStyleSet(character, state?.catalogs);
   const hasArcheryStyle = fightingStyles.has("archery");
   const hasDuelingStyle = fightingStyles.has("dueling");
   const equippedWeaponCount = equippedWeapons.length;
 
   const profTokens = getCharacterWeaponProficiencyTokens(state?.catalogs, character);
-  return equippedWeapons
+  const weaponAttacks = equippedWeapons
     .map((entry) => {
       const name = getInventoryItemName(entry);
       if (!name) return null;
@@ -4479,6 +4847,7 @@ function getAutoAttacks(state) {
       };
     })
     .filter(Boolean);
+  return [...featureAttacks, ...weaponAttacks];
 }
 
 function getClassFeatureRows(classEntry) {
@@ -4975,6 +5344,7 @@ const events = createEvents({
   openClassDetailsModal,
   openFeatureDetailsModal,
   openFeatDetailsModal,
+  openOptionalFeatureDetailsModal,
   openSpeciesTraitDetailsModal,
   applyDiceStyle,
   rerollLastRoll,
@@ -5040,6 +5410,7 @@ const renderers = createRenderers({
   getModeToggle,
   getAutoAttacks,
   getCharacterChangeLog: () => uiState.characterChangeLog,
+  extractSimpleNotation,
 });
 
 const {
@@ -5218,7 +5589,21 @@ function updateCharacterWithRequiredSettings(state, patch, options = {}) {
       mergedSpellMap.has(String(name ?? "").trim().toLowerCase())
     )
   );
-  const autoTrackers = getAutoResourcesFromRules(state.catalogs, nextCharacter, nextProgression.unlockedFeatures, nextCharacter.feats);
+  const autoTrackers = [
+    ...getAutoResourcesFromRules(
+      state.catalogs,
+      nextCharacter,
+      nextProgression.unlockedFeatures,
+      nextCharacter.feats,
+      nextCharacter.optionalFeatures
+    ),
+    ...getAutoResourcesFromClassTableEffects(
+      state.catalogs,
+      nextCharacter,
+      nextProgression.unlockedFeatures,
+      nextProgression.classTableEffects
+    ),
+  ];
   nextPlay.featureUses = syncAutoFeatureUses(nextPlay, autoTrackers);
   const allowedFeatureModeIds = new Set((nextProgression.featureModes ?? []).map((mode) => mode.id));
   const nextFeatureModes = isRecordObject(nextPlay.featureModes) ? { ...nextPlay.featureModes } : {};
@@ -5228,8 +5613,19 @@ function updateCharacterWithRequiredSettings(state, patch, options = {}) {
   (nextProgression.featureModes ?? []).forEach((mode) => {
     const options = Array.isArray(mode?.optionValues) ? mode.optionValues : [];
     if (!options.length) return;
-    const current = String(nextFeatureModes[mode.id] ?? "").trim();
-    if (!current || !options.includes(current)) nextFeatureModes[mode.id] = options[0];
+    const maxCount = Math.max(1, Math.min(options.length, Math.floor(toNumber(mode?.count, 1))));
+    const raw = nextFeatureModes[mode.id];
+    const currentValues = Array.isArray(raw)
+      ? raw.map((entry) => String(entry ?? "").trim())
+      : [String(raw ?? "").trim()];
+    const selected = [...new Set(currentValues.filter((value) => value && options.includes(value)))];
+    while (selected.length < maxCount) {
+      const nextOption = options.find((option) => !selected.includes(option));
+      if (!nextOption) break;
+      selected.push(nextOption);
+    }
+    if (!selected.length) selected.push(options[0]);
+    nextFeatureModes[mode.id] = maxCount <= 1 ? selected[0] : selected.slice(0, maxCount);
   });
   nextPlay.featureModes = nextFeatureModes;
   const selectedSubclass = getSelectedSubclassEntry(state.catalogs, nextCharacter);

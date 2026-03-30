@@ -31,6 +31,7 @@ export function createEvents(deps) {
     openClassDetailsModal,
     openFeatureDetailsModal,
     openFeatDetailsModal,
+    openOptionalFeatureDetailsModal,
     openSpeciesTraitDetailsModal,
     applyDiceStyle,
     rerollLastRoll,
@@ -686,6 +687,54 @@ export function createEvents(deps) {
         openOptionalFeatureModal(state, slotId);
       });
     });
+    const setFeatureModeChoice = (modeId, value, maxCountRaw) => {
+      const resolvedModeId = String(modeId ?? "").trim();
+      const resolvedValue = String(value ?? "").trim();
+      if (!resolvedModeId || !resolvedValue) return;
+      withUpdatedPlay(state, (play) => {
+        const mode = (state.character?.progression?.featureModes ?? []).find((entry) => String(entry?.id ?? "").trim() === resolvedModeId);
+        if (!mode) return;
+        const options = Array.isArray(mode?.optionValues) ? mode.optionValues : [];
+        if (!options.includes(resolvedValue)) return;
+        const maxCount = Math.max(1, Math.min(options.length, Math.floor(toNumber(maxCountRaw, toNumber(mode?.count, 1)))));
+        const nextModes =
+          play.featureModes && typeof play.featureModes === "object" && !Array.isArray(play.featureModes)
+            ? { ...play.featureModes }
+            : {};
+        const existingRaw = nextModes[resolvedModeId];
+        const existingValues = Array.isArray(existingRaw)
+          ? existingRaw.map((entry) => String(entry ?? "").trim())
+          : [String(existingRaw ?? "").trim()];
+        let selected = [...new Set(existingValues.filter((entry) => entry && options.includes(entry)))];
+        if (maxCount <= 1) {
+          selected = [resolvedValue];
+        } else if (selected.includes(resolvedValue)) {
+          selected = selected.filter((entry) => entry !== resolvedValue);
+        } else {
+          selected.push(resolvedValue);
+          if (selected.length > maxCount) selected = selected.slice(selected.length - maxCount);
+        }
+        if (!selected.length) selected = [options[0]];
+        nextModes[resolvedModeId] = maxCount <= 1 ? selected[0] : selected;
+        play.featureModes = nextModes;
+      });
+    };
+    app.querySelectorAll("[data-feature-mode-choice]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const modeId = String(button.dataset.featureModeId ?? "").trim();
+        const value = String(button.dataset.featureModeValue ?? "").trim();
+        const maxCount = toNumber(button.dataset.featureModeMax, 1);
+        setFeatureModeChoice(modeId, value, maxCount);
+      });
+    });
+    app.querySelectorAll("[data-feature-mode-id]").forEach((select) => {
+      select.addEventListener("change", () => {
+        const modeId = String(select.dataset.featureModeId ?? "").trim();
+        const value = String(select.value ?? "").trim();
+        if (!modeId || !value) return;
+        setFeatureModeChoice(modeId, value, 1);
+      });
+    });
     app.querySelectorAll("[data-remove-feat-slot]").forEach((button) => {
       button.addEventListener("click", () => {
         const slotId = button.dataset.removeFeatSlot;
@@ -1124,6 +1173,13 @@ export function createEvents(deps) {
         openFeatDetailsModal(state, featId);
       });
     });
+    app.querySelectorAll("[data-open-optional-feature]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const featureId = button.dataset.openOptionalFeature;
+        if (!featureId) return;
+        openOptionalFeatureDetailsModal(state, featureId);
+      });
+    });
     app.querySelectorAll("[data-open-species-trait]").forEach((button) => {
       button.addEventListener("click", () => {
         const traitName = button.dataset.openSpeciesTrait;
@@ -1153,6 +1209,17 @@ export function createEvents(deps) {
           nextFeatureUses[key] = { ...tracker, current };
           playState.featureUses = nextFeatureUses;
         });
+      });
+    });
+    app.querySelectorAll("[data-class-table-roll]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const notation = extractSimpleNotation(button.dataset.classTableRoll);
+        if (!notation) {
+          setDiceResult("Class table effect: invalid dice notation.", true);
+          return;
+        }
+        const label = String(button.dataset.classTableRollLabel ?? "Class table effect").trim();
+        rollVisualNotation(label, notation);
       });
     });
 
@@ -1701,22 +1768,6 @@ export function createEvents(deps) {
     app.querySelector("#play-character-notes")?.addEventListener("input", (evt) => {
       const value = evt.target.value;
       store.updateCharacter({ notes: value });
-    });
-
-    app.querySelectorAll("[data-feature-mode-id]").forEach((select) => {
-      select.addEventListener("change", () => {
-        const modeId = String(select.dataset.featureModeId ?? "").trim();
-        if (!modeId) return;
-        const value = String(select.value ?? "").trim();
-        withUpdatedPlay(state, (play) => {
-          const nextModes =
-            play.featureModes && typeof play.featureModes === "object" && !Array.isArray(play.featureModes)
-              ? { ...play.featureModes }
-              : {};
-          nextModes[modeId] = value;
-          play.featureModes = nextModes;
-        });
-      });
     });
 
     app.querySelector("#short-rest")?.addEventListener("click", () => {

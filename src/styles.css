@@ -259,6 +259,17 @@ input, select, textarea {
   margin-top: 1rem;
 }
 
+#long-rest.btn {
+  border-color: rgba(245, 158, 11, 0.62);
+  color: #fde68a;
+  background: rgba(245, 158, 11, 0.2);
+}
+
+#long-rest.btn:hover {
+  border-color: rgba(245, 158, 11, 0.75);
+  background: rgba(245, 158, 11, 0.28);
+}
+
 .layout-onboarding {
   grid-template-columns: 1fr;
   max-width: 840px;
@@ -860,6 +871,99 @@ body.play-mode #dice-overlay {
   padding: 0.5rem;
 }
 
+.slot-list {
+  max-height: none;
+  overflow: visible;
+  padding: 0.35rem 0.45rem;
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+.slot-list .option-row {
+  gap: 0.75rem;
+  padding: 0.3rem 0.1rem;
+  align-items: flex-start;
+}
+
+.slot-list .option-row-actions {
+  gap: 0.3rem;
+  padding-top: 0.05rem;
+}
+
+.slot-list .btn {
+  padding: 0.35rem 0.65rem;
+  font-size: 0.78rem;
+}
+
+.slot-list .auto-choice-shell {
+  margin: 0.16rem 0 0.1rem;
+  gap: 0.22rem;
+}
+
+.slot-list .auto-choice-card {
+  padding: 0.28rem 0.4rem;
+}
+
+.slot-list .slot-row-main {
+  min-width: 0;
+  display: grid;
+  gap: 0.14rem;
+}
+
+.slot-list .slot-row-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+}
+
+.slot-list .slot-row-head strong {
+  font-size: 0.95rem;
+  line-height: 1.2;
+}
+
+.slot-list .slot-row-head .muted {
+  font-size: 0.8rem;
+  line-height: 1.2;
+}
+
+.slot-list .auto-choice-label {
+  font-size: 0.76rem;
+}
+
+.slot-list .auto-choice-selects.is-inline {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.3rem 0.45rem;
+}
+
+.slot-list .auto-choice-select {
+  gap: 0.12rem;
+}
+
+.slot-list .auto-choice-select .muted {
+  font-size: 0.75rem;
+}
+
+.slot-list .auto-choice-select select {
+  margin-top: 0;
+  padding: 0.4rem 0.55rem;
+  font-size: 0.84rem;
+}
+
+.slot-list .asi-inline-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  flex-wrap: nowrap;
+}
+
+.slot-list .asi-inline-select {
+  width: auto;
+  min-width: 6.9rem;
+  margin-top: 0;
+  padding: 0.45rem 0.6rem;
+  font-size: 0.88rem;
+}
+
 .option-row {
   display: flex;
   align-items: center;
@@ -1198,6 +1302,29 @@ body.play-mode #dice-overlay {
   text-overflow: ellipsis;
 }
 
+.feature-row-table-effect .feature-main {
+  align-items: center;
+}
+
+.feature-mode-selected-pills {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.class-table-effect-roll-btn {
+  border-color: rgba(245, 158, 11, 0.58);
+  background: rgba(245, 158, 11, 0.17);
+  color: #fde68a;
+}
+
+.class-table-effect-roll-btn:hover {
+  border-color: rgba(245, 158, 11, 0.74);
+  background: rgba(245, 158, 11, 0.25);
+}
+
 .feat-tile-btn {
   appearance: none;
   border: 1px solid rgba(255, 255, 255, 0.18);
@@ -1244,6 +1371,49 @@ body.play-mode #dice-overlay {
   color: rgba(229, 231, 235, 0.95);
   font-size: 0.84rem;
   line-height: 1.35;
+}
+
+.feature-mode-heading {
+  margin: 0.8rem 0 0.35rem;
+  font-size: 0.88rem;
+  color: rgba(229, 231, 235, 0.9);
+}
+
+.feature-mode-tile {
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: linear-gradient(135deg, rgba(15, 23, 42, 0.92), rgba(30, 41, 59, 0.72));
+  border-radius: 0.85rem;
+  padding: 0.65rem 0.75rem;
+  width: 100%;
+  color: var(--text);
+  display: grid;
+  gap: 0.28rem;
+}
+
+.feature-mode-option-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-top: 0.15rem;
+}
+
+.feature-mode-option-btn {
+  border-color: rgba(255, 255, 255, 0.28);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+  padding: 0.24rem 0.58rem;
+  font-size: 0.77rem;
+}
+
+.feature-mode-option-btn:hover {
+  border-color: rgba(103, 232, 249, 0.45);
+  background: rgba(103, 232, 249, 0.1);
+}
+
+.feature-mode-option-btn.is-active {
+  border-color: rgba(103, 232, 249, 0.62);
+  background: rgba(103, 232, 249, 0.2);
+  color: #cffafe;
 }
 
 .feature-use-controls {
@@ -2185,9 +2355,9 @@ body.play-mode #dice-overlay {
 }
 
 .save-prof-btn.is-active {
-  border-color: var(--accent);
-  color: #111827;
-  background: var(--accent);
+  border-color: rgba(245, 158, 11, 0.62);
+  color: #fde68a;
+  background: rgba(245, 158, 11, 0.2);
 }
 
 .save-prof-btn.is-auto {
@@ -2720,8 +2890,8 @@ body.play-mode #dice-overlay {
 }
 
 .attack-card-view {
-  border-color: rgba(245, 158, 11, 0.45);
-  background: rgba(245, 158, 11, 0.08);
+  border-color: rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.02);
 }
 
 .attack-row-top {
@@ -2803,6 +2973,28 @@ body.play-mode #dice-overlay {
 
 .attack-title {
   font-size: 0.96rem;
+}
+
+.attack-title-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-width: 0;
+}
+
+.attack-prof-pill {
+  min-width: 1.3rem;
+  height: 1.3rem;
+  border-radius: 6px;
+  border: 1px solid rgba(245, 158, 11, 0.62);
+  color: #fde68a;
+  background: rgba(245, 158, 11, 0.2);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.7rem;
+  font-weight: 700;
+  flex-shrink: 0;
 }
 
 .attack-pill {

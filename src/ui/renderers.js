@@ -40,11 +40,96 @@ export function createRenderers(deps) {
     getModeToggle,
     getAutoAttacks,
     getCharacterChangeLog,
+    extractSimpleNotation,
   } = deps;
 
   function getPlayManualLinks(state) {
-    void state;
-    return [];
+    const character = state?.character ?? {};
+    const catalogs = state?.catalogs ?? {};
+    const preferredSources = getPreferredSourceOrder(character);
+    const classEntry = findCatalogEntryByNameWithSelectedSourcePreference(
+      catalogs?.classes,
+      character?.class,
+      character?.classSource,
+      preferredSources
+    );
+    const selectedSubclass = character?.classSelection?.subclass ?? {};
+    const selectedSubclassName = String(selectedSubclass?.name ?? character?.subclass ?? "").trim();
+    const selectedSubclassSource = String(selectedSubclass?.source ?? character?.subclassSource ?? "").trim();
+    const subclassEntry = findCatalogEntryByNameWithSelectedSourcePreference(
+      catalogs?.subclasses,
+      selectedSubclassName,
+      selectedSubclassSource,
+      preferredSources
+    );
+    const links = [];
+    if (classEntry?.name && classEntry?.source) {
+      links.push({
+        href: buildClassesManualUrl(classEntry),
+        label: `${classEntry.name} class`,
+        meta: formatSourceMeta(classEntry.source),
+      });
+    }
+    if (classEntry?.name && classEntry?.source && subclassEntry?.name && subclassEntry?.source) {
+      links.push({
+        href: buildClassesManualUrl(classEntry, subclassEntry),
+        label: `${subclassEntry.name} subclass`,
+        meta: formatSourceMeta(subclassEntry.source),
+      });
+    }
+    const allowedSources = getCharacterAllowedSources(character).map((source) => normalizeSourceTag(source)).filter(Boolean);
+    allowedSources.forEach((source) => {
+      links.push({
+        href: `https://5e.tools/book.html#${source.toLowerCase()}`,
+        label: sourceLabels?.[source] ?? source,
+        meta: "Source book",
+      });
+    });
+    links.push({
+      href: "https://5e.tools/conditionsdiseases.html",
+      label: "Status conditions",
+      meta: "Conditions reference",
+    });
+    const deduped = [];
+    const seen = new Set();
+    links.forEach((entry) => {
+      const href = String(entry?.href ?? "").trim();
+      if (!href || seen.has(href)) return;
+      seen.add(href);
+      deduped.push({
+        href,
+        label: String(entry?.label ?? "").trim() || "Rule reference",
+        meta: String(entry?.meta ?? "").trim() || "Reference",
+      });
+    });
+    return deduped;
+  }
+
+  function toManualSlug(value) {
+    return String(value ?? "")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "_")
+      .replace(/^_+|_+$/g, "");
+  }
+
+  function formatSourceMeta(source) {
+    const normalized = normalizeSourceTag(source);
+    if (!normalized) return "Reference";
+    return sourceLabels?.[normalized] ?? normalized;
+  }
+
+  function buildClassesManualUrl(classEntry, subclassEntry = null) {
+    const classNameSlug = toManualSlug(classEntry?.name);
+    const classSourceSlug = toManualSlug(normalizeSourceTag(classEntry?.source));
+    const classHash = `${classNameSlug}_${classSourceSlug}`;
+    if (!subclassEntry?.name || !subclassEntry?.source) {
+      return `https://5e.tools/classes.html#${classHash}`;
+    }
+    const subclassName = String(subclassEntry?.shortName ?? subclassEntry?.name ?? "").trim();
+    const subclassNameSlug = toManualSlug(subclassName);
+    const subclassSourceSlug = toManualSlug(normalizeSourceTag(subclassEntry?.source));
+    return `https://5e.tools/classes.html#${classHash},state:sub_${subclassNameSlug}_${subclassSourceSlug}=b1`;
   }
 
   function formatCharacterLogTime(isoTimestamp) {
@@ -620,7 +705,7 @@ export function createRenderers(deps) {
     return `
       <div class="auto-choice-group">
         <p class="muted auto-choice-label">Spend ${count} points</p>
-        <div class="auto-choice-selects">
+        <div class="auto-choice-selects ${count <= 2 ? "is-inline" : ""}" data-choice-count="${esc(count)}">
           ${Array.from({ length: count }, (_, index) => {
             const selected = String(selectedValues[index] ?? "").trim();
             const selectedToken = normalizeChoiceToken(selected);
@@ -1204,9 +1289,47 @@ export function createRenderers(deps) {
       .join("");
   }
 
+  function resolveFeatureModeSelections(mode, play) {
+    const options = Array.isArray(mode?.optionValues) ? mode.optionValues : [];
+    if (!options.length) return [];
+    const maxCount = Math.max(1, Math.min(options.length, Math.floor(toNumber(mode?.count, 1))));
+    const raw = play?.featureModes?.[mode.id];
+    const currentValues = Array.isArray(raw)
+      ? raw.map((entry) => String(entry ?? "").trim())
+      : [String(raw ?? "").trim()];
+    const selected = [...new Set(currentValues.filter((value) => value && options.includes(value)))];
+    while (selected.length < maxCount) {
+      const nextOption = options.find((option) => !selected.includes(option));
+      if (!nextOption) break;
+      selected.push(nextOption);
+    }
+    if (!selected.length) selected.push(options[0]);
+    return maxCount <= 1 ? [selected[0]] : selected.slice(0, maxCount);
+  }
+
+  function isFeatureModeHandledByOptionalFeatures(mode, optionalFeatureSlots, selectedOptionalFeatures) {
+    const normalize = (value) =>
+      String(value ?? "")
+        .toLowerCase()
+        .replace(/\([^)]*\)/g, " ")
+        .replace(/[^a-z0-9\s]/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+    const modeName = normalize(mode?.featureName);
+    if (!modeName) return false;
+    const slotTypes = [
+      ...(Array.isArray(optionalFeatureSlots) ? optionalFeatureSlots : []).map((slot) => slot?.slotType),
+      ...(Array.isArray(selectedOptionalFeatures) ? selectedOptionalFeatures : []).map((feature) => feature?.slotType),
+    ]
+      .map((value) => normalize(value))
+      .filter(Boolean);
+    return slotTypes.some((slotType) => slotType.includes(modeName) || modeName.includes(slotType));
+  }
+
   function renderPlayViewImpl(state) {
     const { character, derived } = state;
     const play = character.play ?? {};
+    const classTableEffects = Array.isArray(character?.progression?.classTableEffects) ? character.progression.classTableEffects : [];
     const defaultSpellSlots = getCharacterSpellSlotDefaults(state.catalogs, character);
     const hpTotal = derived.hp;
     const hpCurrent = play.hpCurrent == null ? hpTotal : play.hpCurrent;
@@ -1220,12 +1343,20 @@ export function createRenderers(deps) {
       raceSourceOrder
     );
     const speedRaw = raceEntry?.speed;
-    const speed =
+    const baseSpeed =
       Number.isFinite(toNumber(speedRaw, Number.NaN))
         ? Math.max(0, Math.floor(toNumber(speedRaw, 30)))
         : speedRaw && typeof speedRaw === "object" && !Array.isArray(speedRaw) && Number.isFinite(toNumber(speedRaw.walk, Number.NaN))
           ? Math.max(0, Math.floor(toNumber(speedRaw.walk, 30)))
           : 30;
+    const classTableSpeedBonus = classTableEffects.reduce((sum, effect) => {
+      const label = String(effect?.label ?? "").trim().toLowerCase();
+      if (!label || (!label.includes("movement") && !label.includes("speed"))) return sum;
+      const delta = toNumber(String(effect?.value ?? "").match(/[+\-]?\d+/)?.[0], Number.NaN);
+      if (!Number.isFinite(delta)) return sum;
+      return sum + delta;
+    }, 0);
+    const speed = Math.max(0, baseSpeed + classTableSpeedBonus);
     const normalizeConditionName = (value) => String(value ?? "").trim().toLowerCase();
     const catalogConditionsRaw = Array.isArray(state.catalogs?.conditions) ? state.catalogs.conditions : [];
     const catalogConditionEntries = catalogConditionsRaw
@@ -1312,16 +1443,23 @@ export function createRenderers(deps) {
     const manualAttacks = Array.isArray(play.attacks) ? play.attacks : [];
     const attacksHtml = [...autoAttacks, ...manualAttacks]
       .map((attack, idx) => {
-        const isAutoAttack = attack?.source === "auto";
+        const isAutoAttack = attack?.source === "auto" || attack?.source === "auto-feature";
         const attackName = attack.name?.trim() || `Attack ${idx + 1}`;
         if (attackMode === "edit") {
           if (isAutoAttack) {
+            const autoSourceDetail =
+              attack?.source === "auto-feature"
+                ? `Auto from class feature (${String(attack.autoSourceLabel ?? "feature")}).`
+                : `Auto from equipped weapon (${String(attack.ability ?? "").toUpperCase()}${attack.proficient ? ", proficient" : ", not proficient"}).`;
             return `
           <div class="attack-card attack-card-view">
             <div class="attack-row-top">
-              <strong class="attack-title">${esc(attackName)}</strong>
+              <span class="attack-title-inline">
+                <strong class="attack-title">${esc(attackName)}</strong>
+                ${attack.proficient ? '<span class="attack-prof-pill" title="Proficient">P</span>' : ""}
+              </span>
             </div>
-            <p class="attack-help muted">Auto from equipped weapon (${String(attack.ability ?? "").toUpperCase()}${attack.proficient ? ", proficient" : ", not proficient"}).</p>
+            <p class="attack-help muted">${esc(autoSourceDetail)}</p>
             <div class="attack-row-stats attack-row-stats-view">
               <button
                 type="button"
@@ -1384,7 +1522,10 @@ export function createRenderers(deps) {
         return `
         <div class="attack-card attack-card-view">
           <div class="attack-row-top">
-            <strong class="attack-title">${esc(attackName)}</strong>
+            <span class="attack-title-inline">
+              <strong class="attack-title">${esc(attackName)}</strong>
+              ${attack.proficient ? '<span class="attack-prof-pill" title="Proficient">P</span>' : ""}
+            </span>
           </div>
           <div class="attack-row-stats attack-row-stats-view">
             <button
@@ -1415,8 +1556,11 @@ export function createRenderers(deps) {
     const featSlots = Array.isArray(character?.progression?.featSlots) ? character.progression.featSlots : [];
     const selectedFeats = Array.isArray(character?.feats) ? character.feats : [];
     const selectedOptionalFeatures = Array.isArray(character?.optionalFeatures) ? character.optionalFeatures : [];
-    const classTableEffects = Array.isArray(character?.progression?.classTableEffects) ? character.progression.classTableEffects : [];
-    const featureModes = Array.isArray(character?.progression?.featureModes) ? character.progression.featureModes : [];
+    const optionalFeatureSlots = Array.isArray(character?.progression?.optionalFeatureSlots) ? character.progression.optionalFeatureSlots : [];
+    const featureModesRaw = Array.isArray(character?.progression?.featureModes) ? character.progression.featureModes : [];
+    const featureModes = featureModesRaw.filter(
+      (mode) => !isFeatureModeHandledByOptionalFeatures(mode, optionalFeatureSlots, selectedOptionalFeatures)
+    );
     const speciesTraits = getSpeciesTraitRows(raceEntry);
     const attacksPerAttackActionFromFeatures = unlockedFeatures.reduce((maxAttacks, feature) => {
       const featureName = String(feature?.name ?? "").trim();
@@ -1485,6 +1629,46 @@ export function createRenderers(deps) {
           })
           .join("")
       : "";
+    const classTableEffectListHtml = classTableEffects.length
+      ? classTableEffects
+          .map((effect) => {
+            const effectLabel = `${String(effect?.className ?? "").trim()} - ${String(effect?.label ?? "").trim()}`.trim();
+            const tableResourceKey = `${autoResourceIdPrefix}${effect.id}`;
+            const tableResourceTracker = featureUses[tableResourceKey];
+            const rollNotation = extractSimpleNotation(effect?.rollNotation ?? effect?.value ?? "");
+            const trackerHtml = tableResourceTracker
+              ? `
+              <span class="feature-use-controls">
+                <span class="pill">${esc(tableResourceTracker.current)}/${esc(tableResourceTracker.max)}${
+                  formatRecharge(tableResourceTracker.recharge) ? ` ${esc(formatRecharge(tableResourceTracker.recharge))}` : ""
+                }</span>
+                <button type="button" class="save-mod-btn" data-feature-use-delta="${esc(tableResourceKey)}|inc:-1" ${
+                  tableResourceTracker.current <= 0 ? "disabled" : ""
+                }>Use</button>
+                <button type="button" class="save-mod-btn" data-feature-use-delta="${esc(tableResourceKey)}|inc:1" ${
+                  tableResourceTracker.current >= tableResourceTracker.max ? "disabled" : ""
+                }>+</button>
+              </span>
+            `
+              : "";
+            const valueHtml = trackerHtml
+              || (effect?.kind === "dice" && rollNotation
+                ? `<button type="button" class="pill pill-btn class-table-effect-roll-btn" data-class-table-roll="${esc(
+                    rollNotation
+                  )}" data-class-table-roll-label="${esc(effectLabel)}">${esc(effect.value ?? "")}</button>`
+                : `<span class="muted">${esc(effect.value ?? "")}</span>`);
+            return `
+            <li class="feature-row feature-row-table-effect">
+              <span class="class-feature-level">Class</span>
+              <div class="feature-main">
+                <strong>${esc(effectLabel)}</strong>
+                ${valueHtml}
+              </div>
+            </li>
+          `;
+          })
+          .join("")
+      : "";
     const featListHtml = selectedFeats.length
       ? selectedFeats
           .map((feat) => {
@@ -1545,49 +1729,86 @@ export function createRenderers(deps) {
       : "<span class='muted'>No feats selected.</span>";
     const optionalFeatureListHtml = selectedOptionalFeatures.length
       ? selectedOptionalFeatures
-          .map(
-            (feature) => `
-            <div class="feature-row feature-row-feat">
-              <div class="feature-main">
-                <strong>${esc(feature.name)}</strong>
-                <span class="muted">${esc(feature.className || "")}${feature.slotType ? ` - ${esc(feature.slotType)}` : ""}</span>
-              </div>
-            </div>
-          `
-          )
-          .join("")
-      : "<span class='muted'>No optional features selected.</span>";
-    const classTableEffectsHtml = classTableEffects.length
-      ? classTableEffects
-          .map(
-            (effect) => `
-            <div class="feature-row feature-row-feat">
-              <div class="feature-main">
-                <strong>${esc(effect.className)} - ${esc(effect.label)}</strong>
-                <span class="muted">${esc(effect.value)}</span>
-              </div>
-            </div>
-          `
-          )
-          .join("")
-      : "<span class='muted'>No class table effects to show.</span>";
-    const featureModesHtml = featureModes.length
-      ? featureModes
-          .map((mode) => {
-            const selected = String(play?.featureModes?.[mode.id] ?? "");
+          .map((feature) => {
+            const featureName = String(feature?.name ?? "").trim();
+            const featureSource = String(feature?.source ?? "").trim();
+            const normalizedFeatureName = featureName.toLowerCase();
+            const normalizedFeatureSource = featureSource.toLowerCase();
+            const optionalFeatureCatalog = Array.isArray(state.catalogs?.optionalFeatures) ? state.catalogs.optionalFeatures : [];
+            const detail =
+              optionalFeatureCatalog.find((entry) => {
+                const entryName = String(entry?.name ?? "").trim().toLowerCase();
+                if (entryName !== normalizedFeatureName) return false;
+                const entrySource = String(entry?.source ?? "").trim().toLowerCase();
+                if (!normalizedFeatureSource) return true;
+                return entrySource === normalizedFeatureSource;
+              })
+              ?? optionalFeatureCatalog.find((entry) => String(entry?.name ?? "").trim().toLowerCase() === normalizedFeatureName)
+              ?? null;
+            const sourceLabel = String((detail?.sourceLabel ?? detail?.source ?? featureSource) || "Unknown Source");
+            const prerequisites = Array.isArray(detail?.prerequisite) ? detail.prerequisite : [];
+            const descriptionLines = getRuleDescriptionLines(detail);
+            const summaryRaw = String(descriptionLines.find(Boolean) ?? "").trim();
+            const summaryText = summaryRaw
+              ? (summaryRaw.length > 180 ? `${summaryRaw.slice(0, 177).trimEnd()}...` : summaryRaw)
+              : "No preview available. Click to open full optional feature details.";
+            const useKey = `${autoResourceIdPrefix}${feature.id}`;
+            const tracker = featureUses[useKey];
+            const trackerHtml = tracker
+              ? `
+              <span class="feature-use-controls">
+                <span class="pill">${esc(tracker.current)}/${esc(tracker.max)}${formatRecharge(tracker.recharge) ? ` ${esc(formatRecharge(tracker.recharge))}` : ""}</span>
+                <button type="button" class="save-mod-btn" data-feature-use-delta="${esc(useKey)}|inc:-1" ${tracker.current <= 0 ? "disabled" : ""}>Use</button>
+                <button type="button" class="save-mod-btn" data-feature-use-delta="${esc(useKey)}|inc:1" ${tracker.current >= tracker.max ? "disabled" : ""}>+</button>
+              </span>
+            `
+              : "";
             return `
-            <label class="inline-field">
-              ${esc(mode.featureName)}
-              <select data-feature-mode-id="${esc(mode.id)}">
-                ${mode.optionValues
-                  .map((option) => `<option value="${esc(option)}" ${option === selected ? "selected" : ""}>${esc(option)}</option>`)
-                  .join("")}
-              </select>
-            </label>
+            <div class="feature-row feature-row-feat">
+              <div class="feature-main">
+                <button
+                  type="button"
+                  class="feat-tile-btn"
+                  data-open-optional-feature="${esc(feature.id)}"
+                  aria-label="Open ${esc(featureName)} details"
+                >
+                  <span class="feat-tile-head">
+                    <strong class="feat-tile-title">${esc(featureName)}</strong>
+                    <span class="pill">${esc(sourceLabel)}</span>
+                  </span>
+                  <span class="feat-tile-meta">
+                    ${feature.levelGranted ? `Lv ${esc(feature.levelGranted)}` : "Level ?"} - ${esc(feature.slotType || "optional feature")}${
+                      prerequisites.length ? ` - Prerequisite (${esc(prerequisites.length)})` : ""
+                    }
+                  </span>
+                  <span class="feat-tile-summary">${esc(summaryText)}</span>
+                </button>
+                ${trackerHtml}
+              </div>
+            </div>
           `;
           })
           .join("")
-      : "<span class='muted'>No mode-based feature choices available.</span>";
+      : "";
+    const featureModeSelectionsListHtml = featureModes.length
+      ? featureModes
+          .map((mode) => {
+            const selectedValues = resolveFeatureModeSelections(mode, play);
+            return `
+            <li class="feature-row">
+              <span class="class-feature-level">Choice</span>
+              <div class="feature-main">
+                <strong>${esc(mode.featureName)}</strong>
+                <span class="feature-mode-selected-pills">
+                  ${selectedValues.map((value) => `<span class="pill">${esc(value)}</span>`).join("")}
+                </span>
+              </div>
+            </li>
+          `;
+          })
+          .join("")
+      : "";
+    const classAndTableFeatureListHtml = `${classTableEffectListHtml}${featureModeSelectionsListHtml}${featureListHtml}`;
     const speciesTraitListHtml = speciesTraits.length
       ? speciesTraits
           .map(
@@ -1770,21 +1991,27 @@ export function createRenderers(deps) {
         <article class="card">
           <h3 class="title">Features</h3>
           <h4>Class/Subclass Features</h4>
-          ${featureListHtml ? `<ul class="class-feature-list">${featureListHtml}</ul>` : "<p class='muted'>No unlocked class features.</p>"}
+          ${
+            classAndTableFeatureListHtml
+              ? `<ul class="class-feature-list">${classAndTableFeatureListHtml}</ul>`
+              : "<p class='muted'>No unlocked class features.</p>"
+          }
           <h4>Species Traits</h4>
           ${speciesTraitListHtml ? `<ul class="class-feature-list">${speciesTraitListHtml}</ul>` : "<p class='muted'>No species traits found.</p>"}
-          <h4>Feature Modes</h4>
-          <div class="play-list">${featureModesHtml}</div>
-          <h4>Class Table Effects</h4>
-          <div>${classTableEffectsHtml}</div>
         </article>
 
         <article class="card">
           <h3 class="title">Feats</h3>
           <h4>Feats</h4>
           <div>${featListHtml}</div>
-          <h4>Optional Features</h4>
-          <div>${optionalFeatureListHtml}</div>
+          ${
+            optionalFeatureListHtml
+              ? `
+          <h4>Class Features</h4>
+          ${optionalFeatureListHtml ? `<div>${optionalFeatureListHtml}</div>` : ""}
+          `
+              : ""
+          }
         </article>
 
         <article class="card">
@@ -1963,6 +2190,53 @@ export function createRenderers(deps) {
     }
     if (stepIndex === 3) {
       const subclassOptions = getSubclassSelectOptions(state);
+      const progressionOptionalFeatureSlots = Array.isArray(character?.progression?.optionalFeatureSlots) ? character.progression.optionalFeatureSlots : [];
+      const selectedOptionalFeatures = Array.isArray(character?.optionalFeatures) ? character.optionalFeatures : [];
+      const progressionFeatureModesRaw = Array.isArray(character?.progression?.featureModes) ? character.progression.featureModes : [];
+      const progressionFeatureModes = progressionFeatureModesRaw.filter(
+        (mode) => !isFeatureModeHandledByOptionalFeatures(mode, progressionOptionalFeatureSlots, selectedOptionalFeatures)
+      );
+      const buildFeatureChoicesHtml = progressionFeatureModes.length
+        ? progressionFeatureModes
+            .map((mode) => {
+              const selectedValues = resolveFeatureModeSelections(mode, character?.play ?? {});
+              const maxCount = Math.max(1, Math.min(mode.optionValues.length, Math.floor(toNumber(mode?.count, 1))));
+              return `
+              <div class="feature-row feature-row-feat">
+                <div class="feature-main">
+                  <div class="feature-mode-tile">
+                    <span class="feat-tile-head">
+                      <strong class="feat-tile-title">${esc(mode.featureName)}</strong>
+                      <span class="pill">${maxCount > 1 ? `Choose ${esc(maxCount)}` : "Choice"}</span>
+                    </span>
+                    <span class="feat-tile-meta">${maxCount > 1 ? `Select up to ${esc(maxCount)} options` : "Select one option"}</span>
+                    <div class="feature-mode-option-list">
+                      ${mode.optionValues
+                        .map(
+                          (option) => `
+                        <button
+                          type="button"
+                          class="pill pill-btn feature-mode-option-btn ${selectedValues.includes(option) ? "is-active" : ""}"
+                          data-feature-mode-choice="true"
+                          data-feature-mode-id="${esc(mode.id)}"
+                          data-feature-mode-value="${esc(option)}"
+                          data-feature-mode-max="${esc(maxCount)}"
+                          aria-pressed="${selectedValues.includes(option) ? "true" : "false"}"
+                          title="Choose ${esc(option)}"
+                        >
+                          ${esc(option)}
+                        </button>
+                      `
+                        )
+                        .join("")}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            `;
+            })
+            .join("")
+        : "";
       const sourceOrder = getPreferredSourceOrder(character);
       const classEntry = findCatalogEntryByNameWithSelectedSourcePreference(
         catalogs.classes,
@@ -2009,14 +2283,25 @@ export function createRenderers(deps) {
       ${classToolChoiceEditors ? `<div class="auto-choice-shell">${classToolChoiceEditors}</div>` : ""}
       <h3 class="title">Feat Slots</h3>
       <p class="subtitle">Feat slots come from your class levels. Pick a feat for each slot.</p>
-      <div class="option-list">
+      <div class="option-list slot-list">
         ${renderBuildFeatSlotsImpl(character)}
       </div>
       <h3 class="title">Optional Feature Slots</h3>
       <p class="subtitle">Optional feature slots come from your class levels. Pick an option for each slot.</p>
-      <div class="option-list">
+      <div class="option-list slot-list">
         ${renderBuildOptionalFeatureSlotsImpl(character)}
       </div>
+      ${
+        buildFeatureChoicesHtml
+          ? `
+      <h3 class="title">Class Feature Choices</h3>
+      <p class="subtitle">Choose class feature options earned from class progression.</p>
+      <div class="option-list slot-list">
+        ${buildFeatureChoicesHtml}
+      </div>
+      `
+          : ""
+      }
     `;
     }
     if (stepIndex === 4) {
@@ -2184,25 +2469,44 @@ export function createRenderers(deps) {
           : [];
         const asiEditorHtml = !hasSelectedFeat && isAsiSlot
           ? `
-            <div class="auto-choice-shell">
-              <p class="muted"><strong>ASI choice</strong> Pick up to two abilities to gain +1 each.</p>
-              ${renderChoiceSelects(
-                asiSourceKey,
-                asiChoiceId,
-                2,
-                saveAbilities,
-                asiSelected,
-                (ability) => abilityLabels[ability] ?? ability.toUpperCase(),
-                { allowDuplicates: true }
-              )}
+            <div class="asi-inline-row">
+              ${Array.from({ length: 2 }, (_, index) => {
+                const selected = String(asiSelected[index] ?? "").trim();
+                const selectedToken = normalizeChoiceToken(selected);
+                return `
+                  <select
+                    class="asi-inline-select"
+                    data-asi-choice-select="1"
+                    data-auto-choice-source="${esc(asiSourceKey)}"
+                    data-auto-choice-id="${esc(asiChoiceId)}"
+                    data-auto-choice-max="2"
+                    data-auto-choice-allow-duplicates="true"
+                    aria-label="ASI point ${index + 1}"
+                  >
+                    <option value="">-</option>
+                    ${saveAbilities
+                      .map((abilityValue) => {
+                        const ability = String(abilityValue ?? "").trim();
+                        if (!ability) return "";
+                        const isSelected = normalizeChoiceToken(ability) === selectedToken;
+                        return `<option value="${esc(ability)}" ${isSelected ? "selected" : ""}>${esc(
+                          `+1 ${abilityLabels[ability] ?? ability.toUpperCase()}`
+                        )}</option>`;
+                      })
+                      .join("")}
+                  </select>
+                `;
+              }).join("")}
             </div>
           `
           : "";
         return `
         <div class="option-row">
-          <div>
-            <strong>${esc(slotLabel)}</strong>
-            <div class="muted">${slot.feat ? `${esc(slot.feat.name)} (${esc(slot.feat.source || "Unknown Source")})` : "No feat selected."}</div>
+          <div class="slot-row-main">
+            <div class="slot-row-head">
+              <strong>${esc(slotLabel)}</strong>
+              <span class="muted">${slot.feat ? `${esc(slot.feat.name)} (${esc(slot.feat.source || "Unknown Source")})` : "No feat selected."}</span>
+            </div>
             ${asiEditorHtml}
           </div>
           <div class="option-row-actions">
@@ -2226,9 +2530,11 @@ export function createRenderers(deps) {
         }`;
         return `
         <div class="option-row">
-          <div>
-            <strong>${esc(slotLabel)}</strong>
-            <div class="muted">${selected ? `${esc(selected.name)} (${esc(selected.source || "Unknown Source")})` : "No optional feature selected."}</div>
+          <div class="slot-row-main">
+            <div class="slot-row-head">
+              <strong>${esc(slotLabel)}</strong>
+              <span class="muted">${selected ? `${esc(selected.name)} (${esc(selected.source || "Unknown Source")})` : "No optional feature selected."}</span>
+            </div>
           </div>
           <div class="option-row-actions">
             <button type="button" class="btn secondary" data-open-optional-feature-picker="${esc(slot.id)}">${
