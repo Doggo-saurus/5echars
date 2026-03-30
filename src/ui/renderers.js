@@ -819,6 +819,16 @@ export function createRenderers(deps) {
     return "Source";
   }
 
+  function formatDefenseTypeLabel(value) {
+    const normalized = String(value ?? "").trim().toLowerCase();
+    if (!normalized) return "";
+    const words = normalized.split(/[^a-z0-9]+/).filter(Boolean);
+    if (!words.length) return "";
+    return words
+      .map((word) => (word.length <= 2 ? word.toUpperCase() : word[0].toUpperCase() + word.slice(1)))
+      .join(" ");
+  }
+
   function renderAutoChoiceEditorsForEntity(entry, sourceKey, character, catalogs) {
     const blocks = [];
     const sourceLabel = getAutoChoiceSourceLabel(sourceKey);
@@ -959,6 +969,38 @@ export function createRenderers(deps) {
               getToolCategoryTitle(key, count)
             )}</p>
             ${renderChoiceCheckboxes(sourceKey, choiceId, count, pool, selected, (toolName) => toolName)}
+          </div>
+        `);
+      });
+    });
+
+    const defenseChoiceSpecs = [
+      { key: "resist", singular: "resistance" },
+      { key: "immune", singular: "immunity" },
+      { key: "conditionImmune", singular: "condition immunity" },
+      { key: "vulnerable", singular: "vulnerability" },
+    ];
+    defenseChoiceSpecs.forEach((spec) => {
+      const defenseEntries = Array.isArray(entry?.[spec.key]) ? entry[spec.key] : [];
+      defenseEntries.forEach((defenseEntry, optionIndex) => {
+        if (!defenseEntry || typeof defenseEntry !== "object" || Array.isArray(defenseEntry)) return;
+        const choose = defenseEntry.choose && typeof defenseEntry.choose === "object" ? defenseEntry.choose : null;
+        if (!choose) return;
+        const from = (Array.isArray(choose.from) ? choose.from : [])
+          .map((entryValue) => formatDefenseTypeLabel(entryValue))
+          .filter(Boolean)
+          .filter(
+            (defenseType, index, list) =>
+              list.findIndex((entryName) => normalizeChoiceToken(entryName) === normalizeChoiceToken(defenseType)) === index
+          );
+        const count = Math.max(1, Math.min(from.length, toNumber(choose.count, 1)));
+        if (!from.length || count < 1) return;
+        const choiceId = `d:${spec.key}:${optionIndex}:choose`;
+        const selected = getSelectedChoiceValues(character, sourceKey, choiceId, from, count);
+        blocks.push(`
+          <div class="auto-choice-card">
+            <p class="muted"><strong>${esc(sourceLabel)} ${esc(spec.singular)} choice</strong></p>
+            ${renderChoiceCheckboxes(sourceKey, choiceId, count, from, selected, (defenseType) => defenseType)}
           </div>
         `);
       });

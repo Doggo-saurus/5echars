@@ -3620,8 +3620,11 @@ function formatDefenseTypeLabel(value) {
 
 function addDefenseEntries(collector, entries, sourceLabel = "", options = {}) {
   const singular = String(options?.singular ?? "type").trim();
+  const sourceKey = String(options?.sourceKey ?? "").trim();
+  const play = isRecordObject(options?.play) ? options.play : null;
+  const entryKey = String(options?.entryKey ?? "").trim();
   if (!Array.isArray(entries)) return;
-  entries.forEach((entry) => {
+  entries.forEach((entry, optionIndex) => {
     if (typeof entry === "string") {
       const label = formatDefenseTypeLabel(entry);
       if (label) collector.add(label, sourceLabel);
@@ -3635,6 +3638,17 @@ function addDefenseEntries(collector, entries, sourceLabel = "", options = {}) {
       .filter(Boolean);
     const count = Math.max(1, toNumber(choose.count, 1));
     if (!from.length) return;
+    if (sourceKey && play && entryKey) {
+      const choiceId = `d:${entryKey}:${optionIndex}:choose`;
+      const selected = getStoredAutoChoiceSelectedValues(play, sourceKey, choiceId, from, count, {
+        allowDuplicates: false,
+        preserveStoredOrder: false,
+      });
+      if (selected.length) {
+        selected.forEach((selectedType) => collector.add(selectedType, sourceLabel));
+        return;
+      }
+    }
     collector.add(`Choose ${count} ${singular}${count > 1 ? "s" : ""}: ${from.join(", ")}`, sourceLabel);
   });
 }
@@ -3734,10 +3748,30 @@ function getCharacterToolAndDefenseSummary(catalogs, character) {
     addDefenseEntries(vulnerabilityCollector, entry?.vulnerable, "Optional Feature", { singular: "vulnerability" });
   });
 
-  addDefenseEntries(resistanceCollector, raceEntry?.resist, "Race", { singular: "resistance" });
-  addDefenseEntries(immunityCollector, raceEntry?.immune, "Race", { singular: "immunity" });
-  addDefenseEntries(conditionImmunityCollector, raceEntry?.conditionImmune, "Race", { singular: "condition immunity" });
-  addDefenseEntries(vulnerabilityCollector, raceEntry?.vulnerable, "Race", { singular: "vulnerability" });
+  addDefenseEntries(resistanceCollector, raceEntry?.resist, "Race", {
+    singular: "resistance",
+    sourceKey: "race",
+    play: character?.play,
+    entryKey: "resist",
+  });
+  addDefenseEntries(immunityCollector, raceEntry?.immune, "Race", {
+    singular: "immunity",
+    sourceKey: "race",
+    play: character?.play,
+    entryKey: "immune",
+  });
+  addDefenseEntries(conditionImmunityCollector, raceEntry?.conditionImmune, "Race", {
+    singular: "condition immunity",
+    sourceKey: "race",
+    play: character?.play,
+    entryKey: "conditionImmune",
+  });
+  addDefenseEntries(vulnerabilityCollector, raceEntry?.vulnerable, "Race", {
+    singular: "vulnerability",
+    sourceKey: "race",
+    play: character?.play,
+    entryKey: "vulnerable",
+  });
 
   return {
     tools: toolCollector.list(),
