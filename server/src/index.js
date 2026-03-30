@@ -67,6 +67,29 @@ function mergeCharacterForPersist(existingCharacter, incomingCharacter, id) {
   };
 }
 
+function isPlainObject(value) {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function applyCharacterMergePatch(existingCharacter, patchCharacter) {
+  if (!isPlainObject(existingCharacter)) return normalizeCharacterInput(existingCharacter);
+  if (!isPlainObject(patchCharacter)) return { ...existingCharacter };
+
+  const next = { ...existingCharacter };
+  for (const [key, value] of Object.entries(patchCharacter)) {
+    if (value === null) {
+      delete next[key];
+      continue;
+    }
+    if (isPlainObject(value) && isPlainObject(next[key])) {
+      next[key] = applyCharacterMergePatch(next[key], value);
+      continue;
+    }
+    next[key] = value;
+  }
+  return next;
+}
+
 async function listRelativeFiles(rootDir, subDir, includeFile) {
   const startDir = path.join(rootDir, subDir);
   const stack = [startDir];
@@ -113,7 +136,7 @@ app.use(express.json({ limit: "2mb" }));
 app.use((req, res, next) => {
   res.setHeader("Access-Control-Allow-Origin", process.env.CORS_ALLOW_ORIGIN ?? "*");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,OPTIONS");
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,OPTIONS");
   if (req.method === "OPTIONS") {
     res.status(204).end();
     return;
@@ -167,7 +190,13 @@ app.put("/api/characters/:id", async (req, res) => {
   try {
     const existing = await repository.getById(id);
     if (!existing) {
-      res.status(404).json({ error: "Character not found" });
+      if (req.body?.validateEditPasswordOnly === true) {
+        res.json({ id, ok: true, storage });
+        return;
+      }
+      const character = normalizeCharacterInput(req.body?.character, id);
+      await repository.create(id, character);
+      res.status(201).json({ id, character: toPublicCharacter(character, id), storage });
       return;
     }
 
@@ -188,6 +217,53 @@ app.put("/api/characters/:id", async (req, res) => {
     res.json({ id, character: toPublicCharacter(character, id), storage });
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : "Failed to save character" });
+  }
+});
+
+app.patch("/api/characters/:id", async (req, res) => {
+  const id = String(req.params.id ?? "");
+  if (!isUuid(id)) {
+    res.status(400).json({ error: "Invalid character id" });
+    return;
+  }
+
+  try {
+    const existing = await repository.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Character not found" });
+      return;
+    }
+
+    const existingCharacter = normalizeCharacterInput(existing, id);
+    const editPasswordAttempt = getEditPasswordAttempt(req.body);
+    if (!isValidEditPasswordAttempt(existingCharacter, editPasswordAttempt)) {
+      res.status(403).json({ error: "Invalid edit password", code: INVALID_EDIT_PASSWORD_CODE });
+      return;
+    }
+
+    if (req.body?.validateEditPasswordOnly === true) {
+      res.json({ id, ok: true, storage });
+      return;
+    }
+
+    const incomingPatch = isPlainObject(req.body?.character) ? req.body.character : {};
+    const mergedCharacter = applyCharacterMergePatch(existingCharacter, incomingPatch);
+    const normalizedMergedCharacter = normalizeCharacterInput(mergedCharacter, id);
+    const character = hasOwnEditPassword(incomingPatch)
+      ? normalizedMergedCharacter
+      : {
+          ...normalizedMergedCharacter,
+          [EDIT_PASSWORD_FIELD]: getStoredEditPassword(existingCharacter),
+        };
+
+    await repository.save(id, character);
+    if (req.body?.returnCharacter === false) {
+      res.json({ id, storage });
+      return;
+    }
+    res.json({ id, character: toPublicCharacter(character, id), storage });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : "Failed to patch character" });
   }
 });
 

@@ -62,6 +62,7 @@ function getDefaultPlayState() {
     autoPreparedSpells: {},
     autoSpellGrantTypes: {},
     showAllPreparedCasterSpells: false,
+    showAllPreparedCasterSpellsByLevel: {},
     preparedSpells: {},
     spellSlots: getDefaultSpellSlots(),
     spellSlotMaxOverrides: {},
@@ -242,6 +243,11 @@ function normalizeCharacter(character) {
         ? { ...character.play.autoSpellGrantTypes }
         : {},
     showAllPreparedCasterSpells: Boolean(character.play?.showAllPreparedCasterSpells),
+    showAllPreparedCasterSpellsByLevel:
+      character.play?.showAllPreparedCasterSpellsByLevel && typeof character.play.showAllPreparedCasterSpellsByLevel === "object"
+      && !Array.isArray(character.play.showAllPreparedCasterSpellsByLevel)
+        ? { ...character.play.showAllPreparedCasterSpellsByLevel }
+        : {},
     autoSaveProficiencies:
       character.play?.autoSaveProficiencies && typeof character.play.autoSaveProficiencies === "object"
         ? { ...character.play.autoSaveProficiencies }

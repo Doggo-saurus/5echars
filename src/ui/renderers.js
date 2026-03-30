@@ -20,6 +20,7 @@ export function createRenderers(deps) {
     getSpellSlotValues,
     getSpellByName,
     getSpellCombatContext,
+    getSpellPrimaryDiceNotation,
     getSpellLevelLabel,
     spellSchoolLabels,
     getRuleDescriptionLines,
@@ -1208,7 +1209,22 @@ export function createRenderers(deps) {
   `;
   }
 
-  function renderBuildSpellListImpl(character, catalogs) {
+  function renderBuildSpellListImpl(state) {
+    const { character, catalogs } = state;
+    const play = character?.play ?? {};
+    const usesPreparedSpells = doesClassUsePreparedSpells(catalogs, character);
+    const canTogglePreparedVisibility = usesPreparedSpells;
+    const levelVisibilityMap =
+      play?.showAllPreparedCasterSpellsByLevel && typeof play.showAllPreparedCasterSpellsByLevel === "object" && !Array.isArray(play.showAllPreparedCasterSpellsByLevel)
+        ? play.showAllPreparedCasterSpellsByLevel
+        : {};
+    const getShowAllForLevel = (level) => {
+      if (!canTogglePreparedVisibility) return true;
+      const key = String(level);
+      const levelValue = levelVisibilityMap[key];
+      if (typeof levelValue === "boolean") return levelValue;
+      return Boolean(play.showAllPreparedCasterSpells);
+    };
     const selectedSpells = Array.isArray(character?.spells) ? character.spells : [];
     if (!selectedSpells.length) return "<span class='muted'>No spells selected.</span>";
 
@@ -1218,30 +1234,69 @@ export function createRenderers(deps) {
     selectedSpells.forEach((spellName) => {
       const spell = spellByName.get(spellName);
       const level = spell ? Math.max(0, toNumber(spell.level, 0)) : 99;
+      const isCantrip = level === 0;
+      const alwaysPrepared = usesPreparedSpells ? isSpellAlwaysPrepared(state, spellName, play) : false;
+      const isPrepared = usesPreparedSpells ? (isCantrip ? true : alwaysPrepared || Boolean(play.preparedSpells?.[spellName])) : true;
       const list = groupedByLevel.get(level) ?? [];
-      list.push(spellName);
+      list.push({ name: spellName, isPrepared });
       groupedByLevel.set(level, list);
     });
 
+    if (!groupedByLevel.size) return "<span class='muted'>No spells selected.</span>";
+
     return [...groupedByLevel.entries()]
       .sort(([a], [b]) => a - b)
-      .map(([level, names]) => {
+      .map(([level, rows]) => {
         const levelLabel = level === 99 ? "Unknown Level" : getSpellLevelLabel(level);
-        const sortedNames = [...names].sort((a, b) => a.localeCompare(b));
-        return `
-        <section class="build-spell-level-card">
-          <div class="build-spell-level-head">
-            <h5 class="build-spell-level-title">${esc(levelLabel)}</h5>
-            <span class="pill build-spell-count">${sortedNames.length}</span>
+        const showAllPreparedCasterSpells = getShowAllForLevel(level);
+        const showPreparedOnly = canTogglePreparedVisibility && !showAllPreparedCasterSpells;
+        const visibleRows = showPreparedOnly ? rows.filter((row) => row.isPrepared) : rows;
+        const levelToggleHtml = canTogglePreparedVisibility
+          ? `
+          <div class="spell-visibility-toggle" role="group" aria-label="Spell list visibility for ${esc(levelLabel)}">
+            <button
+              type="button"
+              class="spell-visibility-btn ${showAllPreparedCasterSpells ? "" : "is-active"}"
+              data-spell-list-visibility="prepared"
+              data-spell-list-level="${esc(level)}"
+              aria-pressed="${showAllPreparedCasterSpells ? "false" : "true"}"
+            >
+              Prepared
+            </button>
+            <button
+              type="button"
+              class="spell-visibility-btn ${showAllPreparedCasterSpells ? "is-active" : ""}"
+              data-spell-list-visibility="all"
+              data-spell-list-level="${esc(level)}"
+              aria-pressed="${showAllPreparedCasterSpells ? "true" : "false"}"
+            >
+              All Spells
+            </button>
           </div>
-          <div class="build-spell-chip-row">
-            ${sortedNames
+        `
+          : "";
+        const sortedNames = visibleRows.map((row) => row.name).sort((a, b) => a.localeCompare(b));
+        const hasVisibleSpells = sortedNames.length > 0;
+        const emptyInlineNote = hasVisibleSpells
+          ? ""
+          : "<span class='spell-level-empty-note muted'>No prepared spells at this level.</span>";
+        const bodyHtml = hasVisibleSpells
+          ? sortedNames
               .map(
                 (name) =>
                   `<button type="button" class="pill pill-btn build-spell-pill-btn" data-build-spell-open="${esc(name)}" title="View spell details">${esc(name)}</button>`
               )
-              .join("")}
+              .join("")
+          : "";
+        return `
+        <section class="build-spell-level-card">
+          <div class="build-spell-level-head">
+            <h5 class="build-spell-level-title">${esc(levelLabel)}</h5>
+            ${emptyInlineNote}
+            <span class="pill build-spell-count">${sortedNames.length}</span>
+            ${levelToggleHtml}
           </div>
+          ${hasVisibleSpells ? `<div class="build-spell-chip-row">${bodyHtml}</div>` : ""}
         </section>
       `;
       })
@@ -1261,10 +1316,18 @@ export function createRenderers(deps) {
     const play = state.character.play ?? {};
     const defaultSpellSlots = getCharacterSpellSlotDefaults(state.catalogs, state.character);
     const usesPreparedSpells = doesClassUsePreparedSpells(state.catalogs, state.character);
-    const hasAutoClassListSpells = Array.isArray(play?.autoClassListSpells) && play.autoClassListSpells.length > 0;
-    const canTogglePreparedVisibility = usesPreparedSpells && hasAutoClassListSpells;
-    const showAllPreparedCasterSpells = canTogglePreparedVisibility ? Boolean(play.showAllPreparedCasterSpells) : true;
-    const showPreparedOnly = canTogglePreparedVisibility && !showAllPreparedCasterSpells;
+    const canTogglePreparedVisibility = usesPreparedSpells;
+    const levelVisibilityMap =
+      play?.showAllPreparedCasterSpellsByLevel && typeof play.showAllPreparedCasterSpellsByLevel === "object" && !Array.isArray(play.showAllPreparedCasterSpellsByLevel)
+        ? play.showAllPreparedCasterSpellsByLevel
+        : {};
+    const getShowAllForLevel = (level) => {
+      if (!canTogglePreparedVisibility) return true;
+      const key = String(level);
+      const levelValue = levelVisibilityMap[key];
+      if (typeof levelValue === "boolean") return levelValue;
+      return Boolean(play.showAllPreparedCasterSpells);
+    };
     const preparedLimit = usesPreparedSpells ? getPreparedSpellLimit(state) : Infinity;
     const preparedCount = usesPreparedSpells ? countPreparedSpells(state) : 0;
     const grouped = new Map();
@@ -1278,7 +1341,6 @@ export function createRenderers(deps) {
       const existing = play.preparedSpells?.[name];
       const alwaysPrepared = usesPreparedSpells ? isSpellAlwaysPrepared(state, name, play) : false;
       const isPrepared = usesPreparedSpells ? (isCantrip ? true : alwaysPrepared || Boolean(existing)) : true;
-      if (showPreparedOnly && !isPrepared) return;
       const slotInfo = level > 0 ? getSpellSlotValues(play, defaultSpellSlots, level) : { max: Infinity, used: 0 };
       const hasSlotsAvailable = level === 0 || toNumber(slotInfo.max, 0) - toNumber(slotInfo.used, 0) > 0;
       const stateClass = !isPrepared ? "is-unprepared" : hasSlotsAvailable ? "is-prepared-available" : "is-prepared-unavailable";
@@ -1289,18 +1351,40 @@ export function createRenderers(deps) {
       grouped.set(level, list);
     });
 
-    if (!grouped.size) {
-      if (showPreparedOnly) {
-        return "<span class='muted'>No prepared spells right now. Switch to All Spells to review your full class list.</span>";
-      }
-      return "<span class='muted'>No spells selected.</span>";
-    }
+    if (!grouped.size) return "<span class='muted'>No spells selected.</span>";
 
     return [...grouped.entries()]
       .sort(([a], [b]) => a - b)
       .map(([level, rows]) => {
         const title = level === 99 ? "Unknown Level" : getSpellLevelLabel(level);
-        const body = rows
+        const showAllPreparedCasterSpells = getShowAllForLevel(level);
+        const showPreparedOnly = canTogglePreparedVisibility && !showAllPreparedCasterSpells;
+        const levelToggleHtml = canTogglePreparedVisibility
+          ? `
+          <div class="spell-visibility-toggle" role="group" aria-label="Spell list visibility for ${esc(title)}">
+            <button
+              type="button"
+              class="spell-visibility-btn ${showAllPreparedCasterSpells ? "" : "is-active"}"
+              data-spell-list-visibility="prepared"
+              data-spell-list-level="${esc(level)}"
+              aria-pressed="${showAllPreparedCasterSpells ? "false" : "true"}"
+            >
+              Prepared
+            </button>
+            <button
+              type="button"
+              class="spell-visibility-btn ${showAllPreparedCasterSpells ? "is-active" : ""}"
+              data-spell-list-visibility="all"
+              data-spell-list-level="${esc(level)}"
+              aria-pressed="${showAllPreparedCasterSpells ? "true" : "false"}"
+            >
+              All Spells
+            </button>
+          </div>
+        `
+          : "";
+        const visibleRows = showPreparedOnly ? rows.filter((row) => row.isPrepared) : rows;
+        const body = visibleRows
           .sort((a, b) => String(a?.name ?? "").localeCompare(String(b?.name ?? "")))
           .map(({ name, spell, isPrepared, stateClass, hasSlotsAvailable, canTogglePrepared, isCantrip, alwaysPrepared }) => {
             const spellCombat = getSpellCombatContext(state, spell);
@@ -1328,13 +1412,18 @@ export function createRenderers(deps) {
                 ? "Preparation limit reached"
                 : "Toggle prepared";
             const castDisabled = usesPreparedSpells && toNumber(spell?.level, 0) > 0 && !isPrepared;
+            const spellDamageNotation = extractSimpleNotation(getSpellPrimaryDiceNotation(spell));
             const spellAttackButtonHtml =
               spellCombat.hasSpellAttack && spellCombat.attackBonus != null
                 ? `<button type="button" class="btn secondary spell-cast-btn" data-spell-attack-roll="${esc(name)}" ${castDisabled ? "disabled" : ""}>To Hit ${esc(
                     signed(spellCombat.attackBonus)
                   )}</button>`
                 : "";
-            const castLabel = spellCombat.hasSpellAttack ? "Damage" : "Cast";
+            const castLabel = spellCombat.hasSpellAttack
+              ? spellDamageNotation
+                ? `Damage ${spellDamageNotation}`
+                : "Damage"
+              : "Cast";
             const ritualBadgeHtml = isSpellRitualCast(spell)
               ? '<span class="spell-ritual-pill" title="Can be cast as a ritual">R</span>'
               : "";
@@ -1368,10 +1457,18 @@ export function createRenderers(deps) {
           `;
           })
           .join("");
+        const hasVisibleSpells = body.length > 0;
+        const emptyInlineNote = hasVisibleSpells
+          ? ""
+          : "<span class='spell-level-empty-note muted'>No prepared spells at this level.</span>";
         return `
         <section class="spell-level-group">
-          <h5 class="spell-level-title">${esc(title)}</h5>
-          <div class="spell-level-list">${body}</div>
+          <div class="spell-level-head">
+            <h5 class="spell-level-title">${esc(title)}</h5>
+            ${emptyInlineNote}
+            ${levelToggleHtml}
+          </div>
+          ${hasVisibleSpells ? `<div class="spell-level-list">${body}</div>` : ""}
         </section>
       `;
       })
@@ -1918,36 +2015,12 @@ export function createRenderers(deps) {
     const selectedSpells = Array.isArray(character?.spells) ? character.spells.filter(Boolean) : [];
     const hasSelectedSpells = selectedSpells.length > 0;
     const usesPreparedSpells = doesClassUsePreparedSpells(state.catalogs, character);
-    const hasAutoClassListSpells = Array.isArray(play?.autoClassListSpells) && play.autoClassListSpells.length > 0;
-    const canTogglePreparedVisibility = usesPreparedSpells && hasAutoClassListSpells;
-    const showAllPreparedCasterSpells = canTogglePreparedVisibility ? Boolean(play.showAllPreparedCasterSpells) : true;
+    const canTogglePreparedVisibility = usesPreparedSpells;
     const spellHelpText = canTogglePreparedVisibility
-      ? "Prepared view keeps your combat list clean. Switch to All Spells whenever you want to review and change your prepared picks."
+      ? ""
       : usesPreparedSpells
         ? "Toggle P to mark prepared. Auto-granted spells are always prepared and do not count against your preparation limit."
         : "Known casters track known spells here. Click a spell name to view details and roll from its description.";
-    const spellVisibilityToggleHtml = canTogglePreparedVisibility
-      ? `
-      <div class="spell-visibility-toggle" role="group" aria-label="Spell list visibility">
-        <button
-          type="button"
-          class="spell-visibility-btn ${showAllPreparedCasterSpells ? "" : "is-active"}"
-          data-spell-list-visibility="prepared"
-          aria-pressed="${showAllPreparedCasterSpells ? "false" : "true"}"
-        >
-          Prepared
-        </button>
-        <button
-          type="button"
-          class="spell-visibility-btn ${showAllPreparedCasterSpells ? "is-active" : ""}"
-          data-spell-list-visibility="all"
-          aria-pressed="${showAllPreparedCasterSpells ? "true" : "false"}"
-        >
-          All Spells
-        </button>
-      </div>
-    `
-      : "";
     const visibleSpellSlotLevels = spellSlotLevels.filter((level) => {
       const values = getSpellSlotValues(play, defaultSpellSlots, level);
       return toNumber(values.max, 0) > 0;
@@ -2098,8 +2171,7 @@ export function createRenderers(deps) {
               : "<p class='muted'>No spell slots available yet.</p>"}
           </div>
           <h4>Prepared/Known Spells</h4>
-          ${spellVisibilityToggleHtml}
-          <p class="muted spell-prep-help">${esc(spellHelpText)}</p>
+          ${spellHelpText ? `<p class="muted spell-prep-help">${esc(spellHelpText)}</p>` : ""}
           <div id="spell-cast-status" class="spell-cast-status ${spellStatus.isError ? "is-error" : ""}" ${spellStatus.message ? "" : "hidden"}>${esc(
               spellStatus.message
             )}</div>
@@ -2482,9 +2554,12 @@ export function createRenderers(deps) {
     if (stepIndex === 6) {
       const play = character.play ?? {};
       const defaultSpellSlots = getCharacterSpellSlotDefaults(catalogs, character);
+      const usesPreparedSpells = doesClassUsePreparedSpells(catalogs, character);
       const hasAutoClassListSpells = Array.isArray(play?.autoClassListSpells) && play.autoClassListSpells.length > 0;
       const subtitle = hasAutoClassListSpells
         ? "Your class spell list is auto-managed for this caster. Use the picker to browse details or add non-class extras."
+        : usesPreparedSpells
+          ? "Manage your spell list here, then use Prepared or All Spells to control what you see during play."
         : "Search and add spells to your spell list.";
       const pickerLabel = hasAutoClassListSpells ? "Browse Spells" : "Pick Spells";
       return `
@@ -2494,7 +2569,7 @@ export function createRenderers(deps) {
         <button class="btn secondary" id="open-spells">${esc(pickerLabel)}</button>
       </div>
       <div class="build-spell-list">
-        ${renderBuildSpellListImpl(character, catalogs)}
+        ${renderBuildSpellListImpl(state)}
       </div>
       <h4>Spell Slots (Edit Max)</h4>
       <p class="muted spell-prep-help">Spell slots are auto-calculated from your classes. Change these only if your table uses house rules.</p>

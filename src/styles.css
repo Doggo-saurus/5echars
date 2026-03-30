@@ -627,9 +627,13 @@ button:is(
 .build-spell-level-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 0.5rem;
   margin-bottom: 0.45rem;
+}
+
+.build-spell-level-head:last-child {
+  margin-bottom: 0;
 }
 
 .build-spell-level-title {
@@ -2036,7 +2040,7 @@ body.play-mode #dice-overlay {
   display: inline-flex;
   gap: 0.18rem;
   padding: 0.18rem;
-  margin: 0.35rem 0 0.5rem;
+  margin: 0;
   border-radius: 999px;
   border: 1px solid rgba(255, 255, 255, 0.18);
   background: rgba(255, 255, 255, 0.03);
@@ -2061,9 +2065,19 @@ body.play-mode #dice-overlay {
 }
 
 .spell-visibility-btn.is-active {
-  background: rgba(52, 211, 153, 0.18);
-  border-color: rgba(52, 211, 153, 0.55);
-  color: #d1fae5;
+  color: var(--text);
+}
+
+.spell-visibility-btn[data-spell-list-visibility="prepared"].is-active {
+  background: rgba(245, 158, 11, 0.2);
+  border-color: rgba(245, 158, 11, 0.6);
+  color: #fef3c7;
+}
+
+.spell-visibility-btn[data-spell-list-visibility="all"].is-active {
+  background: rgba(59, 130, 246, 0.2);
+  border-color: rgba(59, 130, 246, 0.6);
+  color: #dbeafe;
 }
 
 .spell-cast-status {
@@ -2093,12 +2107,36 @@ body.play-mode #dice-overlay {
   background: rgba(255, 255, 255, 0.02);
 }
 
+.spell-level-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.45rem;
+}
+
+.spell-level-head:last-child {
+  margin-bottom: 0;
+}
+
+.spell-level-empty-note {
+  font-size: 0.78rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
 .spell-level-title {
-  margin: 0 0 0.45rem;
+  margin: 0;
   font-size: 0.82rem;
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: rgba(229, 231, 235, 0.86);
+}
+
+.spell-level-head .spell-visibility-toggle,
+.build-spell-level-head .spell-visibility-toggle {
+  margin-left: auto;
 }
 
 .spell-level-list {
@@ -2159,9 +2197,9 @@ body.play-mode #dice-overlay {
 }
 
 .spell-prep-btn.is-active {
-  border-color: var(--accent);
-  color: #111827;
-  background: var(--accent);
+  border-color: rgba(245, 158, 11, 0.62);
+  color: #fef3c7;
+  background: rgba(245, 158, 11, 0.24);
 }
 
 .spell-prep-btn {

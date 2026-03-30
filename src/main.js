@@ -13,6 +13,7 @@ import {
   flushPendingCharacterSync,
   getCharacter,
   getCharacterEditPassword,
+  patchCharacter,
   saveCharacter,
   validateCharacterEditPassword,
 } from "./character-api.js";
@@ -5444,6 +5445,7 @@ const persistence = createPersistence({
   loadAppState,
   getCharacter,
   saveCharacter,
+  patchCharacter,
   createCharacter,
   flushPendingCharacterSync,
   isUuid,
@@ -5556,6 +5558,7 @@ const renderers = createRenderers({
   getSpellSlotValues,
   getSpellByName,
   getSpellCombatContext,
+  getSpellPrimaryDiceNotation,
   getSpellLevelLabel,
   spellSchoolLabels: SPELL_SCHOOL_LABELS,
   getRuleDescriptionLines,

@@ -53,6 +53,28 @@ function normalizeCharacterForId(id, character) {
   return { ...next, id };
 }
 
+function isPlainObject(value) {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function applyCharacterMergePatch(existingCharacter, patchCharacter) {
+  const base = isPlainObject(existingCharacter) ? { ...existingCharacter } : {};
+  if (!isPlainObject(patchCharacter)) return base;
+
+  for (const [key, value] of Object.entries(patchCharacter)) {
+    if (value === null) {
+      delete base[key];
+      continue;
+    }
+    if (isPlainObject(value) && isPlainObject(base[key])) {
+      base[key] = applyCharacterMergePatch(base[key], value);
+      continue;
+    }
+    base[key] = value;
+  }
+  return base;
+}
+
 function hasOwnEditPassword(character) {
   return Boolean(
     character &&
@@ -215,15 +237,19 @@ async function parseJsonResponse(response) {
 }
 
 async function saveCharacterToRemote(id, character, options = {}) {
+  const method = options.method === "PATCH" ? "PATCH" : "PUT";
   const requestBody = {
     character: character ?? null,
     editPasswordAttempt: typeof options.editPasswordAttempt === "string" ? options.editPasswordAttempt : "",
   };
+  if (options.returnCharacter === false) {
+    requestBody.returnCharacter = false;
+  }
   if (options.validateOnly === true) {
     requestBody.validateEditPasswordOnly = true;
   }
   const response = await fetch(`${getApiBase()}/characters/${encodeURIComponent(id)}`, {
-    method: "PUT",
+    method,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(requestBody),
   });
@@ -388,4 +414,46 @@ export async function saveCharacter(id, character) {
   setLocalCharacter(parsedId, nextCharacter);
   enqueueSyncCharacter(parsedId, nextCharacter);
   return toOfflinePayload(parsedId, nextCharacter, "offline-save-queued");
+}
+
+export async function patchCharacter(id, partialCharacter) {
+  const parsedId = String(id ?? "").trim();
+  if (!isUuid(parsedId)) {
+    throw createNotFoundError("Invalid character id");
+  }
+
+  const localCharacter = getLocalCharacter(parsedId);
+  const patchPayload = isPlainObject(partialCharacter) ? partialCharacter : {};
+  const editPasswordAttempt = getCharacterEditPassword(localCharacter) || getCharacterEditPassword(patchPayload);
+
+  try {
+    if (isOnline()) {
+      const payload = await saveCharacterToRemote(parsedId, patchPayload, {
+        editPasswordAttempt,
+        method: "PATCH",
+        returnCharacter: false,
+      });
+      const fallbackCharacter = normalizeCharacterForId(
+        parsedId,
+        applyCharacterMergePatch(localCharacter ?? { id: parsedId }, patchPayload)
+      );
+      const remoteCharacter = preserveLocalEditPassword(
+        normalizeCharacterForId(parsedId, payload?.character ?? fallbackCharacter),
+        localCharacter ?? patchPayload
+      );
+      setLocalCharacter(parsedId, remoteCharacter);
+      dequeueSyncCharacter(parsedId);
+      return { ...payload, id: parsedId, character: remoteCharacter };
+    }
+  } catch (error) {
+    if (!shouldUseOfflineFallback(error)) throw error;
+  }
+
+  const nextCharacter = normalizeCharacterForId(
+    parsedId,
+    applyCharacterMergePatch(localCharacter ?? { id: parsedId }, patchPayload)
+  );
+  setLocalCharacter(parsedId, nextCharacter);
+  enqueueSyncCharacter(parsedId, nextCharacter);
+  return toOfflinePayload(parsedId, nextCharacter, "offline-patch-queued");
 }

@@ -663,6 +663,25 @@ export function createEvents(deps) {
       });
     });
 
+    app.querySelectorAll("[data-spell-list-visibility]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const mode = String(button.dataset.spellListVisibility ?? "").trim().toLowerCase();
+        const levelKey = String(button.dataset.spellListLevel ?? "").trim();
+        if (!doesClassUsePreparedSpells(state.catalogs, state.character)) return;
+        withUpdatedPlay(state, (play) => {
+          const nextByLevel =
+            play.showAllPreparedCasterSpellsByLevel
+            && typeof play.showAllPreparedCasterSpellsByLevel === "object"
+            && !Array.isArray(play.showAllPreparedCasterSpellsByLevel)
+              ? { ...play.showAllPreparedCasterSpellsByLevel }
+              : {};
+          if (levelKey) nextByLevel[levelKey] = mode === "all";
+          play.showAllPreparedCasterSpellsByLevel = nextByLevel;
+          play.showAllPreparedCasterSpells = mode === "all";
+        });
+      });
+    });
+
     app.querySelector("#open-spells")?.addEventListener("click", () => openSpellModal(state));
     app.querySelector("#open-items")?.addEventListener("click", () => openItemModal(state));
     app.querySelectorAll("[data-toggle-item-equipped]").forEach((button) => {
@@ -1441,10 +1460,17 @@ export function createEvents(deps) {
     app.querySelectorAll("[data-spell-list-visibility]").forEach((button) => {
       button.addEventListener("click", () => {
         const mode = String(button.dataset.spellListVisibility ?? "").trim().toLowerCase();
-        const hasAutoClassListSpells =
-          Array.isArray(state.character?.play?.autoClassListSpells) && state.character.play.autoClassListSpells.length > 0;
-        if (!doesClassUsePreparedSpells(state.catalogs, state.character) || !hasAutoClassListSpells) return;
+        const levelKey = String(button.dataset.spellListLevel ?? "").trim();
+        if (!doesClassUsePreparedSpells(state.catalogs, state.character)) return;
         withUpdatedPlay(state, (play) => {
+          const nextByLevel =
+            play.showAllPreparedCasterSpellsByLevel
+            && typeof play.showAllPreparedCasterSpellsByLevel === "object"
+            && !Array.isArray(play.showAllPreparedCasterSpellsByLevel)
+              ? { ...play.showAllPreparedCasterSpellsByLevel }
+              : {};
+          if (levelKey) nextByLevel[levelKey] = mode === "all";
+          play.showAllPreparedCasterSpellsByLevel = nextByLevel;
           play.showAllPreparedCasterSpells = mode === "all";
         });
       });
@@ -1567,12 +1593,22 @@ export function createEvents(deps) {
         setSpellCastStatus("", false);
 
         const notation = getSpellPrimaryDiceNotation(spell);
+        const simpleNotation = extractSimpleNotation(notation);
+        const spellCombat = getSpellCombatContext(state, spell);
+        if (spellCombat.hasSpellAttack) {
+          if (!simpleNotation) {
+            setDiceResult(`${spell.name}: invalid damage dice notation.`, true);
+            return;
+          }
+          await rollVisualNotation(`${spell.name} damage`, simpleNotation);
+          return;
+        }
+
         if (notation) {
           await rollVisualNotation(`Cast ${spell.name}`, notation);
           return;
         }
 
-        const spellCombat = getSpellCombatContext(state, spell);
         const spentText = slotSpent ? "slot spent." : "cast.";
 
         if (spellCombat.saveDc != null && spellCombat.saveText) {
