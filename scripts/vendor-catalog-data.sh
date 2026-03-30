@@ -39,8 +39,12 @@ if [ -d "${TARGET_DIR}/.git" ]; then
   git -C "${TARGET_DIR}" checkout --force FETCH_HEAD
 else
   echo "Cloning ${REPO_URL} into ${TARGET_DIR}"
-  git clone --quiet --skip-checks --depth 1 --filter=blob:none --sparse --branch "${PIN_REF}" "${REPO_URL}" "${TARGET_DIR}"
+  git clone --quiet --depth 1 --filter=blob:none --sparse --branch "${PIN_REF}" "${REPO_URL}" "${TARGET_DIR}"
 fi
+
+# We need file-level sparse patterns (e.g. data/races.json), which only work
+# in non-cone mode across Git versions.
+git -C "${TARGET_DIR}" sparse-checkout init --no-cone
 
 git -C "${TARGET_DIR}" sparse-checkout set \
   "data/class" \
