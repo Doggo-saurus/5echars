@@ -5143,38 +5143,43 @@ async function applyRemoteCharacterPayload(payload, fallbackId = null, defaultMo
 function renderOnboardingHome() {
   const lastCharacterId = getLastCharacterId();
   const hasLastCharacter = Boolean(lastCharacterId);
+  const openLastButtonClass = hasLastCharacter ? "btn onboarding-create-btn" : "btn secondary";
+  const createButtonClass = hasLastCharacter ? "btn secondary" : "btn onboarding-create-btn";
   const lastCharacterSummary = hasLastCharacter
     ? formatCharacterHistoryEntrySummary(loadCharacterHistory().find((entry) => entry.id === lastCharacterId))
     : "";
   return `
     <main class="layout layout-onboarding">
-      <section class="card">
-        <div class="title-with-history">
-          <a class="app-brand-link" href="/" aria-label="Go to home">
-            <img class="app-brand-logo" src="/icons/icon.svg" alt="Action Surge logo" />
-          </a>
-          <h1 class="title">Action Surge</h1>
+      <section class="card onboarding-hero-card">
+        <div class="onboarding-hero-head">
+          <div class="title-with-history">
+            <a class="app-brand-link" href="/" aria-label="Go to home">
+              <img class="app-brand-logo" src="/icons/icon.svg" alt="Action Surge logo" />
+            </a>
+            <h1 class="title">Action Surge</h1>
+          </div>
           ${renderCharacterHistorySelector("home-character-history-select", null, {
-            className: "character-history-control character-history-control-inline",
+            className: "character-history-control onboarding-history-select",
           })}
         </div>
-        <p class="subtitle">
-          Saved characters use shareable links. <strong>Create one, then bookmark it in your browser.</strong>
-        </p>
+        <p class="onboarding-kicker">Built for quick and simple play.</p>
+        <h2 class="onboarding-tagline">Spend less time prepping your sheet and more time playing your turn.</h2>
         ${
           appState.startupErrorMessage
             ? `<p class="muted onboarding-warning">Could not load requested character. ${esc(appState.startupErrorMessage)}</p>`
             : ""
         }
         ${renderPersistenceNotice()}
+      </section>
+      <section class="card onboarding-cta-card">
         <div class="onboarding-actions">
-          <button class="btn" id="home-create-character" type="button">Create New Character</button>
-          <button class="btn secondary" id="home-open-last" type="button" ${hasLastCharacter ? "" : "disabled"}>
+          <button class="${openLastButtonClass}" id="home-open-last" type="button" ${hasLastCharacter ? "" : "disabled"}>
             Open Last Character
           </button>
+          <button class="${createButtonClass}" id="home-create-character" type="button">Create New Character</button>
           <button class="btn secondary" id="home-import-json" type="button">Import Character JSON</button>
         </div>
-        <p class="muted">
+        <p class="muted onboarding-last-character">
           ${
             hasLastCharacter
               ? `Last character: ${esc(lastCharacterSummary)}`
