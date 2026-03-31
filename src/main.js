@@ -32,6 +32,7 @@ import {
 } from "./ui/formatters.js";
 
 const app = document.getElementById("app");
+const MANUAL_BASE_URL = String(window.__MANUAL_BASE_URL__ ?? "").trim().replace(/\/+$/g, "");
 const persistedState = loadAppState();
 const store = createStore(persistedState?.character ?? createInitialCharacter());
 const DICE_MODULE_SOURCES = [
@@ -791,8 +792,32 @@ async function rollVisualD20(label, modifier = 0, rollMode = "normal") {
   const mode = normalizeD20RollMode(rollMode);
   const notationBase = mode === "advantage" || mode === "disadvantage" ? "2d20" : "1d20";
   const notation = modifier === 0 ? notationBase : `${notationBase}${signed(modifier)}`;
-  const physicalNotation = notationBase;
   setDiceResult(`${label}: rolling ${notation}...`, false, { record: false });
+  if (!isDiceTrayEnabled(store.getState().character ?? {})) {
+    const rollCount = mode === "normal" ? 1 : 2;
+    const resolvedRollValues = Array.from({ length: rollCount }, () => rollDie(20));
+    const resolvedDieValue = selectD20ResultFromRolls(resolvedRollValues, mode);
+    const total = resolvedDieValue != null ? resolvedDieValue + modifier : null;
+    setDiceResult(formatD20ResultMessage(label, modifier, resolvedDieValue, total, mode, resolvedRollValues));
+    appendDiceRollLog({
+      label,
+      notation,
+      total,
+      rollValues: resolvedRollValues,
+      rollMode: mode,
+    });
+    lastRollAction = { type: "d20", label, modifier, rollMode: mode };
+    return {
+      label,
+      notation,
+      modifier,
+      rollMode: mode,
+      rollValues: resolvedRollValues,
+      dieValue: resolvedDieValue,
+      total,
+    };
+  }
+  const physicalNotation = notationBase;
   const box = await getDiceBox();
   if (!box) return null;
   await applyDiceStyle(box);
@@ -850,6 +875,38 @@ async function rollVisualNotation(label, notation) {
     : normalizedNotation;
 
   setDiceResult(`${label}: rolling ${normalizedNotation}...`, false, { record: false });
+  if (!isDiceTrayEnabled(store.getState().character ?? {})) {
+    if (!parsedNotation) {
+      setDiceResult(`${label}: invalid dice notation.`, true);
+      return null;
+    }
+    const rollValues = [];
+    let total = parsedNotation.modifierTotal;
+    parsedNotation.diceTerms.forEach((term) => {
+      const count = Math.max(0, Math.floor(toNumber(term?.count, 0)));
+      const faces = Math.max(1, Math.floor(toNumber(term?.faces, 0)));
+      const sign = toNumber(term?.sign, 1) < 0 ? -1 : 1;
+      for (let index = 0; index < count; index += 1) {
+        const value = rollDie(faces);
+        rollValues.push(sign < 0 ? -value : value);
+        total += sign * value;
+      }
+    });
+    setDiceResult(formatNotationResultMessage(label, normalizedNotation, total, rollValues));
+    appendDiceRollLog({
+      label,
+      notation: normalizedNotation,
+      total,
+      rollValues,
+      rollMode: "normal",
+    });
+    lastRollAction = { type: "notation", label, notation: normalizedNotation };
+    return {
+      notation: normalizedNotation,
+      total: Number.isFinite(total) ? total : null,
+      rollValues,
+    };
+  }
   const box = await getDiceBox();
   if (!box) return null;
   await applyDiceStyle(box);
@@ -1172,6 +1229,116 @@ function loadCharacterChangeLog(character) {
   return raw.map((entry) => sanitizeCharacterLogEntry(entry)).filter(Boolean).slice(0, CHARACTER_CHANGE_LOG_LIMIT);
 }
 
+function extractDiceLogLabelAndMode(entry) {
+  const summaryParts = Array.isArray(entry?.summaryParts) ? entry.summaryParts : [];
+  const highlighted = summaryParts.find((part) => part?.style === "highlight");
+  const fallback = summaryParts.map((part) => String(part?.text ?? "")).join("");
+  const sourceText = String(highlighted?.text ?? fallback).trim();
+  const modeMatch = sourceText.match(/\s+\((advantage|disadvantage)\)\s*$/i);
+  const mode = modeMatch?.[1]?.toLowerCase() === "advantage"
+    ? "advantage"
+    : modeMatch?.[1]?.toLowerCase() === "disadvantage"
+      ? "disadvantage"
+      : "normal";
+  const label = sourceText.replace(/\s+\((advantage|disadvantage)\)\s*$/i, "").trim() || "Roll";
+  return { label, mode };
+}
+
+function parseDiceLogRollValues(entry) {
+  const details = Array.isArray(entry?.details) ? entry.details : [];
+  const diceRow = details.find((row) => String(row?.label ?? "").trim().toLowerCase() === "dice");
+  if (!diceRow) return [];
+  return String(diceRow.after ?? "")
+    .split(",")
+    .map((value) => toNumber(value.trim(), Number.NaN))
+    .filter((value) => Number.isFinite(value));
+}
+
+function parseDiceLogTotal(entry) {
+  const details = Array.isArray(entry?.details) ? entry.details : [];
+  const rollRow = details.find((row) => String(row?.label ?? "").trim().toLowerCase() === "roll");
+  const totalRow = details.find((row) => String(row?.label ?? "").trim().toLowerCase() === "total");
+  const candidate = rollRow?.after ?? totalRow?.after;
+  const parsed = toNumber(candidate, Number.NaN);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function parseDiceLogNotation(entry) {
+  const details = Array.isArray(entry?.details) ? entry.details : [];
+  const rollRow = details.find((row) => String(row?.label ?? "").trim().toLowerCase() === "roll");
+  return String(rollRow?.before ?? "").replace(/\s+/g, "").trim();
+}
+
+function parseD20ActionFromLoggedNotation(notation, rollMode) {
+  const cleaned = String(notation ?? "").replace(/\s+/g, "").trim().toLowerCase();
+  if (!cleaned) return null;
+  const parseModifier = (token) => {
+    if (!token) return 0;
+    const parsed = toNumber(token, Number.NaN);
+    return Number.isFinite(parsed) ? parsed : 0;
+  };
+  const d20NormalMatch = cleaned.match(/^1d20([+\-]\d+)?$/);
+  if (d20NormalMatch) {
+    return { type: "d20", modifier: parseModifier(d20NormalMatch[1]), rollMode: "normal" };
+  }
+  const d20AdvDisMatch = cleaned.match(/^2d20([+\-]\d+)?$/);
+  if (d20AdvDisMatch && (rollMode === "advantage" || rollMode === "disadvantage")) {
+    return { type: "d20", modifier: parseModifier(d20AdvDisMatch[1]), rollMode };
+  }
+  const d20KeepHighMatch = cleaned.match(/^2d20kh1([+\-]\d+)?$/);
+  if (d20KeepHighMatch) {
+    return { type: "d20", modifier: parseModifier(d20KeepHighMatch[1]), rollMode: "advantage" };
+  }
+  const d20KeepLowMatch = cleaned.match(/^2d20kl1([+\-]\d+)?$/);
+  if (d20KeepLowMatch) {
+    return { type: "d20", modifier: parseModifier(d20KeepLowMatch[1]), rollMode: "disadvantage" };
+  }
+  return null;
+}
+
+function restoreDiceStateFromCharacterLog(entries) {
+  lastRollAction = null;
+  uiState.latestDiceResultMessage = DEFAULT_DICE_RESULT_MESSAGE;
+  uiState.latestDiceResultIsError = false;
+  uiState.rollHistory = [];
+
+  const latestDiceEntry = Array.isArray(entries) ? entries.find((entry) => entry?.sectionKey === "dice") : null;
+  if (!latestDiceEntry) return;
+
+  const { label, mode } = extractDiceLogLabelAndMode(latestDiceEntry);
+  const notation = parseDiceLogNotation(latestDiceEntry);
+  const total = parseDiceLogTotal(latestDiceEntry);
+  const rollValues = parseDiceLogRollValues(latestDiceEntry);
+  const parsedD20 = parseD20ActionFromLoggedNotation(notation, mode);
+
+  let message = "";
+  if (parsedD20) {
+    const resolvedRollMode = normalizeD20RollMode(parsedD20.rollMode);
+    const selectedDieValue = selectD20ResultFromRolls(rollValues, resolvedRollMode);
+    message = formatD20ResultMessage(label, parsedD20.modifier, selectedDieValue, total, resolvedRollMode, rollValues);
+    lastRollAction = { type: "d20", label, modifier: parsedD20.modifier, rollMode: resolvedRollMode };
+  } else if (notation) {
+    message = formatNotationResultMessage(label, notation, total, rollValues);
+    lastRollAction = { type: "notation", label, notation };
+  } else {
+    message = `${label}: roll completed.`;
+  }
+
+  uiState.latestDiceResultMessage = message;
+  uiState.latestDiceResultIsError = false;
+  const entryDate = new Date(latestDiceEntry.at);
+  const timeLabel = Number.isNaN(entryDate.getTime())
+    ? ""
+    : entryDate.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  uiState.rollHistory = [
+    {
+      message,
+      isError: false,
+      timeLabel,
+    },
+  ];
+}
+
 function withCharacterChangeLog(character) {
   const nextCharacter = character && typeof character === "object" && !Array.isArray(character) ? { ...character } : {};
   const nextPlay = nextCharacter.play && typeof nextCharacter.play === "object" && !Array.isArray(nextCharacter.play)
@@ -1184,6 +1351,7 @@ function withCharacterChangeLog(character) {
 
 function seedCharacterLogState(character) {
   uiState.characterChangeLog = loadCharacterChangeLog(character);
+  restoreDiceStateFromCharacterLog(uiState.characterChangeLog);
   uiState.lastCharacterSnapshot = stripSyncMeta(character) ?? null;
   uiState.lastCharacterLogFingerprint = buildCharacterFingerprint(character);
 }
@@ -1198,6 +1366,8 @@ function getCharacterLogSectionLabel(sectionKey) {
   const labels = {
     id: "Character ID",
     name: "Name",
+    critStyle: "Crit Style",
+    showDiceTray: "Dice Tray",
     level: "Level",
     sourcePreset: "Source Preset",
     race: "Race",
@@ -1494,6 +1664,8 @@ function buildCharacterChangeEntries(previousCharacter, nextCharacter) {
   const ignoredLogKeys = new Set([CHARACTER_SYNC_META_KEY, "editPassword"]);
   const keyOrder = [
     "name",
+    "critStyle",
+    "showDiceTray",
     "level",
     "race",
     "background",
@@ -5877,6 +6049,7 @@ const pickers = createPickers({
   formatSpellDuration,
   formatSpellComponents,
   getSpellDescriptionLines,
+  getRuleDescriptionLines,
   renderTextWithInlineDiceButtons,
   rollVisualNotation,
   setDiceResult,
@@ -5976,6 +6149,7 @@ const events = createEvents({
   rollVisualD20,
   extractSimpleNotation,
   getArmorClassBreakdown,
+  getHitPointBreakdown,
   uiState,
   diceStylePresets: DICE_STYLE_PRESETS,
 });
@@ -6031,6 +6205,7 @@ const renderers = createRenderers({
   getAutoAttacks,
   getCharacterChangeLog: () => uiState.characterChangeLog,
   extractSimpleNotation,
+  manualBaseUrl: MANUAL_BASE_URL,
 });
 
 const {
@@ -6609,6 +6784,18 @@ function dockDiceOverlay(isPlayMode) {
   overlay.classList.remove("in-header");
 }
 
+function isDiceTrayEnabled(character) {
+  return character?.showDiceTray !== false;
+}
+
+function syncDiceOverlayVisibility(state) {
+  const overlay = document.getElementById("dice-overlay");
+  if (!overlay) return;
+  const isPlayMode = state?.mode === "play";
+  overlay.hidden = !isPlayMode;
+  overlay.classList.toggle("dice-tray-disabled", !isDiceTrayEnabled(state?.character));
+}
+
 let persistentBrandLogoLink = null;
 
 function ensurePersistentBrandLogoLink() {
@@ -6639,6 +6826,7 @@ function render(state) {
     uiState.selectedDiceStyle = DEFAULT_DICE_STYLE;
     document.body.classList.remove("play-mode");
     applyDiceStyle();
+    syncDiceOverlayVisibility(state);
     app.innerHTML = renderOnboardingHome();
     bindOnboardingEvents();
     return;
@@ -6661,6 +6849,7 @@ function render(state) {
   app.innerHTML = state.mode === "play" ? renderPlayMode(state) : renderBuildMode(state);
   hydratePersistentBrandLogo();
   dockDiceOverlay(isPlayMode);
+  syncDiceOverlayVisibility(state);
   applyDiceStyle();
   syncDiceResultElements();
   syncSpellCastStatusElements();

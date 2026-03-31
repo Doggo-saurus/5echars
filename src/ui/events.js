@@ -52,6 +52,7 @@ export function createEvents(deps) {
     rollVisualD20,
     extractSimpleNotation,
     getArmorClassBreakdown,
+    getHitPointBreakdown,
     uiState,
     diceStylePresets,
   } = deps;
@@ -83,6 +84,124 @@ export function createEvents(deps) {
       .replaceAll(">", "&gt;")
       .replaceAll("\"", "&quot;")
       .replaceAll("'", "&#39;");
+  }
+
+  function openArmorClassBreakdownModal(snapshot) {
+    const dexMod = toNumber(snapshot.derived?.mods?.dex, 0);
+    const breakdown = getArmorClassBreakdown(
+      snapshot.character,
+      dexMod,
+      getCharacterFightingStyleSet(snapshot.character, snapshot.catalogs)
+    );
+    const rowsHtml = breakdown.components
+      .map((entry) => {
+        const value = toNumber(entry?.value, 0);
+        const signedValue = value > 0 ? `+${value}` : `${value}`;
+        return `
+          <div class="ac-breakdown-row">
+            <span class="ac-breakdown-label">${esc(entry?.label ?? "Modifier")}</span>
+            <span class="ac-breakdown-value">${esc(signedValue)}</span>
+          </div>
+        `;
+      })
+      .join("");
+    openModal({
+      title: "Armor Class Modifiers",
+      bodyHtml: `
+        <div class="ac-breakdown-shell">
+          <div class="ac-breakdown-list">
+            ${rowsHtml || "<p class='muted'>No AC modifiers found.</p>"}
+          </div>
+          <div class="ac-breakdown-total-row">
+            <span>Total AC</span>
+            <strong>${esc(toNumber(breakdown.total, toNumber(snapshot.derived?.ac, 10)))}</strong>
+          </div>
+        </div>
+      `,
+      actions: [{ label: "Close", secondary: true, onClick: (close) => close() }],
+    });
+  }
+
+  function openHitPointBreakdownModal(snapshot) {
+    const breakdown = getHitPointBreakdown(snapshot.catalogs, snapshot.character);
+    const additionalLevels = Math.max(0, toNumber(breakdown.totalLevel, 1) - 1);
+    const fixedHitPointGain = (faces) => Math.max(1, Math.floor(Math.max(1, toNumber(faces, 1)) / 2) + 1);
+    const character = snapshot.character ?? {};
+    const rawOverrides =
+      character.hitPointRollOverrides && typeof character.hitPointRollOverrides === "object" && !Array.isArray(character.hitPointRollOverrides)
+        ? character.hitPointRollOverrides
+        : {};
+    const { primaryLevel, multiclass } = getCharacterClassLevels(character);
+    const primaryClassName = String(character.class ?? "").trim() || "Class";
+    const primaryFaces = getClassHitDieFaces(snapshot.catalogs, primaryClassName);
+    const primaryClassKey = getClassKey(primaryClassName) || "primary";
+    const levelRows = [];
+    const createLevelRow = (className, classKey, level, faces) => {
+      const rowKey = `${classKey}:${level}`;
+      const rolledValue = Math.floor(toNumber(rawOverrides?.[rowKey], Number.NaN));
+      const hasRolledValue = Number.isFinite(rolledValue) && rolledValue >= 1 && rolledValue <= faces;
+      const gain = hasRolledValue ? rolledValue : fixedHitPointGain(faces);
+      return {
+        label: `${className} Lv ${level} hit die (d${faces}; ${hasRolledValue ? `rolled ${rolledValue}` : `fixed ${gain}`})`,
+        value: gain,
+      };
+    };
+    for (let level = 2; level <= primaryLevel; level += 1) {
+      levelRows.push(createLevelRow(primaryClassName, primaryClassKey, level, primaryFaces));
+    }
+    multiclass.forEach((entry) => {
+      const className = String(entry?.class ?? "").trim() || "Class";
+      const faces = getClassHitDieFaces(snapshot.catalogs, className);
+      const classKey = getClassKey(className) || "multiclass";
+      for (let level = 1; level <= toNumber(entry?.level, 0); level += 1) {
+        levelRows.push(createLevelRow(className, classKey, level, faces));
+      }
+    });
+    const rows = [
+      { label: "Level 1 hit points", value: toNumber(breakdown.firstLevelHp, 0) },
+      ...levelRows,
+      { label: `CON from levels 2+ (${additionalLevels} levels)`, value: toNumber(breakdown.conFromAdditionalLevels, 0) },
+    ];
+    if (toNumber(breakdown.featBonusHp, 0) !== 0) {
+      rows.push({ label: "Feat bonuses", value: toNumber(breakdown.featBonusHp, 0) });
+    }
+    const rowsHtml = rows
+      .map((entry) => {
+        const value = toNumber(entry?.value, 0);
+        const signedValue = value > 0 ? `+${value}` : `${value}`;
+        return `
+          <div class="ac-breakdown-row">
+            <span class="ac-breakdown-label">${esc(entry?.label ?? "Modifier")}</span>
+            <span class="ac-breakdown-value">${esc(signedValue)}</span>
+          </div>
+        `;
+      })
+      .join("");
+    openModal({
+      title: "Hit Point Breakdown",
+      bodyHtml: `
+        <div class="ac-breakdown-shell">
+          <p class="muted">CON modifier: ${esc(toNumber(breakdown.conMod, 0))} - Character level: ${esc(toNumber(breakdown.totalLevel, 1))}</p>
+          <div class="ac-breakdown-list">
+            ${rowsHtml || "<p class='muted'>No HP breakdown found.</p>"}
+          </div>
+          <div class="ac-breakdown-total-row">
+            <span>Total HP</span>
+            <strong>${esc(toNumber(breakdown.total, toNumber(snapshot.derived?.hp, 1)))}</strong>
+          </div>
+        </div>
+      `,
+      actions: [{ label: "Close", secondary: true, onClick: (close) => close() }],
+    });
+  }
+
+  function bindCoreStatBreakdownButtons() {
+    app.querySelectorAll("[data-open-ac-breakdown]").forEach((button) => {
+      button.addEventListener("click", () => openArmorClassBreakdownModal(store.getState()));
+    });
+    app.querySelectorAll("[data-open-hp-breakdown]").forEach((button) => {
+      button.addEventListener("click", () => openHitPointBreakdownModal(store.getState()));
+    });
   }
 
   function getClassKey(className) {
@@ -318,6 +437,7 @@ export function createEvents(deps) {
 
   function bindBuildEvents(state) {
     clearPlayManualMenuOutsideClickHandler();
+    bindCoreStatBreakdownButtons();
     app.querySelectorAll("[data-step]").forEach((btn) => {
       btn.addEventListener("click", () => store.setStep(Number(btn.dataset.step)));
     });
@@ -402,13 +522,19 @@ export function createEvents(deps) {
       renderCustomizeModal();
     });
 
-    [["#name", "name"], ["#notes", "notes"]].forEach(([sel, field]) => {
+    [["#name", "name"], ["#notes", "notes"], ["#crit-style", "critStyle"]].forEach(([sel, field]) => {
       const el = app.querySelector(sel);
       if (!el) return;
       const handler = () => store.updateCharacter({ [field]: el.value });
       el.addEventListener("input", handler);
       el.addEventListener("change", handler);
     });
+    const showDiceTrayEl = app.querySelector("#show-dice-tray");
+    if (showDiceTrayEl) {
+      const handler = () => store.updateCharacter({ showDiceTray: Boolean(showDiceTrayEl.checked) });
+      showDiceTrayEl.addEventListener("input", handler);
+      showDiceTrayEl.addEventListener("change", handler);
+    }
     const editPasswordEl = app.querySelector("#edit-password");
     const editPasswordConfirmEl = app.querySelector("#edit-password-confirm");
     if (editPasswordEl && editPasswordConfirmEl) {
@@ -538,6 +664,75 @@ export function createEvents(deps) {
 
     app.querySelectorAll("[data-ability]").forEach((input) => {
       input.addEventListener("input", () => store.updateAbility(input.dataset.ability, input.value));
+    });
+    const pointBuyAbilityKeys = ["str", "dex", "con", "int", "wis", "cha"];
+    const pointBuyCostByScore = {
+      8: 0,
+      9: 1,
+      10: 2,
+      11: 3,
+      12: 4,
+      13: 5,
+      14: 7,
+      15: 9,
+    };
+    const pointBuyMin = 8;
+    const pointBuyMax = 15;
+    const pointBuyBudget = 27;
+    const getPointBuyBase = (character) => {
+      const rawBase = character?.abilityBase && typeof character.abilityBase === "object" ? character.abilityBase : {};
+      return pointBuyAbilityKeys.reduce((acc, ability) => {
+        const raw = toNumber(rawBase?.[ability], toNumber(character?.abilities?.[ability], pointBuyMin));
+        acc[ability] = Math.max(pointBuyMin, Math.min(pointBuyMax, Math.floor(raw)));
+        return acc;
+      }, {});
+    };
+    const getPointBuySpent = (scores) =>
+      pointBuyAbilityKeys.reduce((sum, ability) => {
+        const score = Math.max(pointBuyMin, Math.min(pointBuyMax, toNumber(scores?.[ability], pointBuyMin)));
+        return sum + toNumber(pointBuyCostByScore[score], 0);
+      }, 0);
+    app.querySelectorAll("[data-point-buy-mode]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const mode = String(button.dataset.pointBuyMode ?? "").trim().toLowerCase();
+        withUpdatedPlay(state, (play) => {
+          play.pointBuyEnabled = mode === "pointbuy";
+        });
+      });
+    });
+    app.querySelectorAll("[data-point-buy-delta]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const ability = String(button.dataset.pointBuyAbility ?? "").trim().toLowerCase();
+        const delta = Math.floor(toNumber(button.dataset.pointBuyDelta, 0));
+        if (!pointBuyAbilityKeys.includes(ability) || !delta) return;
+        const currentCharacter = store.getState().character;
+        if (!Boolean(currentCharacter?.play?.pointBuyEnabled)) {
+          const autoBonus = toNumber(currentCharacter?.play?.autoAbilityBonuses?.[ability], 0);
+          const currentRaw = Math.max(
+            1,
+            Math.min(
+              30,
+              toNumber(currentCharacter?.abilityBase?.[ability], toNumber(currentCharacter?.abilities?.[ability], 10) - autoBonus)
+            )
+          );
+          const nextRaw = Math.max(1, Math.min(30, currentRaw + delta));
+          if (nextRaw === currentRaw) return;
+          const nextFinal = Math.max(1, Math.min(30, nextRaw + autoBonus));
+          store.updateAbility(ability, nextFinal);
+          return;
+        }
+        const nextBase = getPointBuyBase(currentCharacter);
+        const current = toNumber(nextBase?.[ability], pointBuyMin);
+        const target = Math.max(pointBuyMin, Math.min(pointBuyMax, current + delta));
+        if (target === current) return;
+        const currentSpent = getPointBuySpent(nextBase);
+        const currentCost = toNumber(pointBuyCostByScore[current], 0);
+        const nextCost = toNumber(pointBuyCostByScore[target], currentCost);
+        const nextSpent = currentSpent - currentCost + nextCost;
+        if (nextSpent > pointBuyBudget) return;
+        nextBase[ability] = target;
+        updateCharacterWithRequiredSettings(state, { abilityBase: nextBase }, { preserveUserOverrides: true });
+      });
     });
     app.querySelectorAll("[data-auto-choice-input]").forEach((input) => {
       input.addEventListener("change", () => {
@@ -908,6 +1103,7 @@ export function createEvents(deps) {
   }
 
   function bindPlayEvents(state) {
+    bindCoreStatBreakdownButtons();
     clearPlayManualMenuOutsideClickHandler();
     const LONG_PRESS_CHOOSER_DELAY_MS = 500;
     const longPressRollChooser = (() => {
@@ -915,6 +1111,7 @@ export function createEvents(deps) {
       let hintEl = null;
       let advantageButtonEl = null;
       let disadvantageButtonEl = null;
+      let critButtonEl = null;
       let hideTimer = null;
       let pendingHandlers = null;
 
@@ -972,7 +1169,11 @@ export function createEvents(deps) {
         disadvantageButtonEl.type = "button";
         disadvantageButtonEl.className = "long-press-roll-overlay-btn";
         disadvantageButtonEl.textContent = "Disadvantage";
-        actionsEl.append(advantageButtonEl, disadvantageButtonEl);
+        critButtonEl = document.createElement("button");
+        critButtonEl.type = "button";
+        critButtonEl.className = "long-press-roll-overlay-btn";
+        critButtonEl.textContent = "Crit";
+        actionsEl.append(advantageButtonEl, disadvantageButtonEl, critButtonEl);
         overlayEl.append(hintEl, actionsEl);
         advantageButtonEl.addEventListener("click", (event) => {
           event.preventDefault();
@@ -983,6 +1184,11 @@ export function createEvents(deps) {
           event.preventDefault();
           event.stopPropagation();
           choose("disadvantage");
+        });
+        critButtonEl.addEventListener("click", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          choose("crit");
         });
         document.addEventListener(
           "pointerdown",
@@ -1018,8 +1224,21 @@ export function createEvents(deps) {
           pendingHandlers = {
             advantage: typeof handlers.advantage === "function" ? handlers.advantage : null,
             disadvantage: typeof handlers.disadvantage === "function" ? handlers.disadvantage : null,
+            crit: typeof handlers.crit === "function" ? handlers.crit : null,
           };
-          if (hintEl) hintEl.textContent = "Choose roll mode";
+          if (advantageButtonEl) {
+            advantageButtonEl.textContent = String(handlers.advantageLabel ?? "Advantage");
+          }
+          if (disadvantageButtonEl) {
+            disadvantageButtonEl.textContent = String(handlers.disadvantageLabel ?? "Disadvantage");
+          }
+          if (critButtonEl) {
+            critButtonEl.textContent = String(handlers.critLabel ?? "Crit");
+          }
+          if (advantageButtonEl) advantageButtonEl.hidden = !pendingHandlers.advantage;
+          if (disadvantageButtonEl) disadvantageButtonEl.hidden = !pendingHandlers.disadvantage;
+          if (critButtonEl) critButtonEl.hidden = !pendingHandlers.crit;
+          if (hintEl) hintEl.textContent = String(handlers.hint ?? "Choose roll mode");
           positionNearElement(targetEl);
           overlayEl?.classList.add("is-visible", "is-ready");
         },
@@ -1027,8 +1246,35 @@ export function createEvents(deps) {
       };
     })();
 
-    const bindClickAndLongPress = (element, onClick, onLongPress) => {
+    const bindClickAndLongPress = (element, onClick, onLongPress, options = {}) => {
       if (!element || typeof onClick !== "function") return;
+      const onCrit = typeof options.onCrit === "function" ? options.onCrit : null;
+      const longPressHandlers =
+        options.longPressHandlers && typeof options.longPressHandlers === "object" ? options.longPressHandlers : null;
+      const advantageLongPressHandler =
+        typeof longPressHandlers?.advantage === "function"
+          ? longPressHandlers.advantage
+          : typeof onLongPress === "function"
+            ? () => onLongPress("advantage")
+            : null;
+      const disadvantageLongPressHandler =
+        typeof longPressHandlers?.disadvantage === "function"
+          ? longPressHandlers.disadvantage
+          : typeof onLongPress === "function"
+            ? () => onLongPress("disadvantage")
+            : null;
+      const chooserHint = typeof options.chooserHint === "string" && options.chooserHint.trim()
+        ? options.chooserHint.trim()
+        : "Choose roll mode";
+      const advantageLabel = typeof options.advantageLabel === "string" && options.advantageLabel.trim()
+        ? options.advantageLabel.trim()
+        : "Advantage";
+      const disadvantageLabel = typeof options.disadvantageLabel === "string" && options.disadvantageLabel.trim()
+        ? options.disadvantageLabel.trim()
+        : "Disadvantage";
+      const critLabel = typeof options.critLabel === "string" && options.critLabel.trim()
+        ? options.critLabel.trim()
+        : "Crit";
       let chooserTimer = null;
       let pressPointerId = null;
       let isPressing = false;
@@ -1058,7 +1304,7 @@ export function createEvents(deps) {
       };
 
       element.addEventListener("pointerdown", (event) => {
-        if (typeof onLongPress !== "function") return;
+        if (!advantageLongPressHandler && !disadvantageLongPressHandler && !onCrit) return;
         if (event.button !== 0) return;
         isPressing = true;
         longPressTriggered = false;
@@ -1075,8 +1321,13 @@ export function createEvents(deps) {
             suppressTimer = null;
           }, 700);
           longPressRollChooser.showChooser(element, {
-            advantage: () => onLongPress("advantage"),
-            disadvantage: () => onLongPress("disadvantage"),
+            advantage: advantageLongPressHandler,
+            disadvantage: disadvantageLongPressHandler,
+            crit: onCrit ?? null,
+            hint: chooserHint,
+            advantageLabel,
+            disadvantageLabel,
+            critLabel,
           });
         }, LONG_PRESS_CHOOSER_DELAY_MS);
       });
@@ -1147,6 +1398,102 @@ export function createEvents(deps) {
         return;
       }
       rollVisualD20(`${attackName} to-hit`, modifier, rollMode);
+    };
+
+    const parseDamageNotationTerms = (notation) => {
+      const normalized = String(notation ?? "").trim().replace(/\s+/g, "");
+      if (!normalized) return null;
+      const tokens = normalized.match(/[+\-]?[^+\-]+/g);
+      if (!tokens || !tokens.length) return null;
+      const diceTerms = [];
+      let flatModifier = 0;
+      for (let index = 0; index < tokens.length; index += 1) {
+        const token = tokens[index];
+        const sign = token.startsWith("-") ? -1 : 1;
+        const body = token.replace(/^[+\-]/, "");
+        if (!body) return null;
+        const diceMatch = body.match(/^(\d*)d(\d+)$/i);
+        if (diceMatch) {
+          const count = toNumber(diceMatch[1] || "1", 0);
+          const faces = toNumber(diceMatch[2], 0);
+          if (count <= 0 || faces <= 0) return null;
+          diceTerms.push({ count, faces, sign });
+          continue;
+        }
+        if (!/^\d+$/.test(body)) return null;
+        flatModifier += sign * toNumber(body, 0);
+      }
+      return { diceTerms, flatModifier };
+    };
+
+    const buildNotationFromTerms = (diceTerms, flatModifier) => {
+      const parts = [];
+      const pushPart = (sign, valueText) => {
+        if (!valueText) return;
+        if (!parts.length) {
+          parts.push(sign < 0 ? `-${valueText}` : valueText);
+          return;
+        }
+        parts.push(`${sign < 0 ? "-" : "+"}${valueText}`);
+      };
+      (Array.isArray(diceTerms) ? diceTerms : []).forEach((term) => {
+        const count = Math.max(1, Math.floor(toNumber(term?.count, 1)));
+        const faces = Math.max(1, Math.floor(toNumber(term?.faces, 1)));
+        const sign = toNumber(term?.sign, 1) < 0 ? -1 : 1;
+        pushPart(sign, `${count}d${faces}`);
+      });
+      const flat = Math.floor(toNumber(flatModifier, 0));
+      if (flat !== 0 || !parts.length) {
+        pushPart(flat < 0 ? -1 : 1, String(Math.abs(flat)));
+      }
+      return parts.join("");
+    };
+
+    const getCritNotation = (notation, critStyleRaw) => {
+      const parsed = parseDamageNotationTerms(notation);
+      if (!parsed) return null;
+      const critStyle = String(critStyleRaw ?? "standard").trim() || "standard";
+      const baseMaxDice = parsed.diceTerms.reduce(
+        (sum, term) => sum + (term.sign > 0 ? term.count * term.faces : 0),
+        0
+      );
+      if (critStyle === "none") return buildNotationFromTerms(parsed.diceTerms, parsed.flatModifier);
+      if (critStyle === "doubleTotal" || critStyle === "doubleAll") {
+        return buildNotationFromTerms(
+          parsed.diceTerms.map((term) => ({ ...term, count: term.count * 2 })),
+          parsed.flatModifier * 2
+        );
+      }
+      if (critStyle === "maxPlusRoll") {
+        return buildNotationFromTerms(parsed.diceTerms, parsed.flatModifier + baseMaxDice);
+      }
+      if (critStyle === "maxDamage") {
+        return buildNotationFromTerms([], parsed.flatModifier + baseMaxDice * 2);
+      }
+      return buildNotationFromTerms(
+        parsed.diceTerms.map((term) => ({ ...term, count: term.count * 2 })),
+        parsed.flatModifier
+      );
+    };
+
+    const rollDamageValue = (attackName, value, options = {}) => {
+      const notation = extractSimpleNotation(value);
+      if (!notation) {
+        setDiceResult(`${attackName}: invalid damage dice notation.`, true);
+        return;
+      }
+      if (!options.crit) {
+        rollVisualNotation(`${attackName} damage`, notation);
+        return;
+      }
+      const latestCharacter = store.getState().character ?? state.character ?? {};
+      const critStyle = String(latestCharacter?.critStyle ?? "standard").trim() || "standard";
+      const critNotation = getCritNotation(notation, critStyle);
+      if (!critNotation) {
+        setDiceResult(`${attackName}: unsupported crit notation. Use terms like 2d6+3.`, true);
+        return;
+      }
+      rollVisualNotation(`${attackName} damage (crit)`, critNotation);
     };
 
     app.querySelectorAll("[data-open-levelup]").forEach((button) => {
@@ -1461,42 +1808,6 @@ export function createEvents(deps) {
       );
     }
 
-    const armorClassButton = app.querySelector("[data-open-ac-breakdown]");
-    if (armorClassButton) {
-      armorClassButton.addEventListener("click", () => {
-        const latestState = store.getState();
-        const dexMod = toNumber(latestState.derived?.mods?.dex, 0);
-        const breakdown = getArmorClassBreakdown(latestState.character, dexMod, getCharacterFightingStyleSet(latestState.character, latestState.catalogs));
-        const rowsHtml = breakdown.components
-          .map((entry) => {
-            const value = toNumber(entry?.value, 0);
-            const signedValue = value > 0 ? `+${value}` : `${value}`;
-            return `
-              <div class="ac-breakdown-row">
-                <span class="ac-breakdown-label">${esc(entry?.label ?? "Modifier")}</span>
-                <span class="ac-breakdown-value">${esc(signedValue)}</span>
-              </div>
-            `;
-          })
-          .join("");
-        openModal({
-          title: "Armor Class Modifiers",
-          bodyHtml: `
-            <div class="ac-breakdown-shell">
-              <div class="ac-breakdown-list">
-                ${rowsHtml || "<p class='muted'>No AC modifiers found.</p>"}
-              </div>
-              <div class="ac-breakdown-total-row">
-                <span>Total AC</span>
-                <strong>${esc(toNumber(breakdown.total, toNumber(latestState.derived?.ac, 10)))}</strong>
-              </div>
-            </div>
-          `,
-          actions: [{ label: "Close", secondary: true, onClick: (close) => close() }],
-        });
-      });
-    }
-
     const proficiencyButton = app.querySelector("[data-roll-proficiency]");
     if (proficiencyButton) {
       bindClickAndLongPress(
@@ -1777,16 +2088,31 @@ export function createEvents(deps) {
         );
         return;
       }
-      button.addEventListener("click", () => {
-        const context = getAttackContext();
-        if (!context) return;
-        const notation = extractSimpleNotation(context.value);
-        if (!notation) {
-          setDiceResult(`${context.attackName}: invalid damage dice notation.`, true);
-          return;
+      bindClickAndLongPress(
+        button,
+        () => {
+          const context = getAttackContext();
+          if (!context) return;
+          rollDamageValue(context.attackName, context.value);
+        },
+        null,
+        {
+          longPressHandlers: {
+            advantage: () => {
+              const context = getAttackContext();
+              if (!context) return;
+              rollDamageValue(context.attackName, context.value);
+            },
+          },
+          advantageLabel: "Normal",
+          onCrit: () => {
+            const context = getAttackContext();
+            if (!context) return;
+            rollDamageValue(context.attackName, context.value, { crit: true });
+          },
+          chooserHint: "Choose damage roll",
         }
-        rollVisualNotation(`${context.attackName} damage`, notation);
-      });
+      );
     });
 
     app.querySelectorAll("[data-auto-attack-roll]").forEach((button) => {
@@ -1818,16 +2144,31 @@ export function createEvents(deps) {
         );
         return;
       }
-      button.addEventListener("click", () => {
-        const context = getAttackContext();
-        if (!context) return;
-        const notation = extractSimpleNotation(context.value);
-        if (!notation) {
-          setDiceResult(`${context.attackName}: invalid damage dice notation.`, true);
-          return;
+      bindClickAndLongPress(
+        button,
+        () => {
+          const context = getAttackContext();
+          if (!context) return;
+          rollDamageValue(context.attackName, context.value);
+        },
+        null,
+        {
+          longPressHandlers: {
+            advantage: () => {
+              const context = getAttackContext();
+              if (!context) return;
+              rollDamageValue(context.attackName, context.value);
+            },
+          },
+          advantageLabel: "Normal",
+          onCrit: () => {
+            const context = getAttackContext();
+            if (!context) return;
+            rollDamageValue(context.attackName, context.value, { crit: true });
+          },
+          chooserHint: "Choose damage roll",
         }
-        rollVisualNotation(`${context.attackName} damage`, notation);
-      });
+      );
     });
 
     app.querySelectorAll("[data-remove-attack]").forEach((button) => {

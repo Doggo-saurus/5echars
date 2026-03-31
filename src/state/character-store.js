@@ -14,6 +14,7 @@ export const STEPS = [
 
 const ABILITIES = ["str", "dex", "con", "int", "wis", "cha"];
 const SPELL_SLOT_LEVELS = [1, 2, 3, 4, 5, 6, 7, 8, 9];
+const CRIT_STYLE_KEYS = new Set(["none", "standard", "doubleTotal", "maxPlusRoll", "maxDamage", "doubleAll"]);
 
 function toNumber(value, fallback = 0) {
   const out = Number(value);
@@ -290,6 +291,14 @@ function normalizeCharacter(character) {
     ...character,
     id: typeof character.id === "string" && character.id.trim() ? character.id.trim() : null,
     diceStyle: typeof character.diceStyle === "string" && character.diceStyle.trim() ? character.diceStyle.trim() : base.diceStyle,
+    critStyle:
+      typeof character.critStyle === "string" && CRIT_STYLE_KEYS.has(character.critStyle.trim())
+        ? character.critStyle.trim()
+        : base.critStyle,
+    showDiceTray:
+      typeof character.showDiceTray === "boolean"
+        ? character.showDiceTray
+        : base.showDiceTray,
     abilities: { ...base.abilities, ...(character.abilities ?? {}) },
     abilityBase:
       character.abilityBase && typeof character.abilityBase === "object"
@@ -417,6 +426,8 @@ export function createInitialCharacter() {
     id: null,
     name: "",
     diceStyle: "arcane",
+    critStyle: "standard",
+    showDiceTray: true,
     level: 1,
     sourcePreset: DEFAULT_SOURCE_PRESET,
     customSources: [],

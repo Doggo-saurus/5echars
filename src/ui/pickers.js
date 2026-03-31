@@ -17,6 +17,7 @@ export function createPickers(deps) {
     formatSpellDuration,
     formatSpellComponents,
     getSpellDescriptionLines,
+    getRuleDescriptionLines,
     renderTextWithInlineDiceButtons,
     rollVisualNotation,
     setDiceResult,
@@ -840,6 +841,30 @@ export function createPickers(deps) {
     updateCharacterWithRequiredSettings(state, { feats: nextFeats }, { preserveUserOverrides: true });
   }
 
+  function buildFeatInlineDetails(featEntry) {
+    const lines = getRuleDescriptionLines(featEntry);
+    const descriptionHtml = lines.length
+      ? lines
+          .map((line) => {
+            const body = renderTextWithInlineDiceButtons(line);
+            return `<p>${body}</p>`;
+          })
+          .join("")
+      : "<p class='muted'>No description is available for this feat.</p>";
+    const categories = normalizeFeatCategoryList(featEntry.category);
+    const prerequisites = Array.isArray(featEntry?.prerequisite) ? featEntry.prerequisite : [];
+    return `
+      <div class="feat-inline-details">
+        <div class="feat-inline-meta muted">
+          <span><strong>Source:</strong> ${esc(featEntry.sourceLabel ?? featEntry.source ?? "Unknown Source")}</span>
+          ${categories.length ? `<span><strong>Category:</strong> ${esc(categories.join(", "))}</span>` : ""}
+          ${prerequisites.length ? `<span><strong>Prerequisites:</strong> ${esc(String(prerequisites.length))}</span>` : ""}
+        </div>
+        <div class="spell-description">${descriptionHtml}</div>
+      </div>
+    `;
+  }
+
   function openFeatModal(state, slotId) {
     const slot = getFeatSlotById(state.character, slotId);
     if (!slot) return;
@@ -868,6 +893,7 @@ export function createPickers(deps) {
     const sourceEl = document.getElementById("feat-source");
     const listEl = document.getElementById("feat-list");
     const selectedFeatId = (state.character.feats ?? []).find((feat) => feat.slotId === slot.id)?.id ?? "";
+    const expandedFeatIds = new Set();
 
     function renderFeatRows() {
       const searchValue = String(searchEl?.value ?? "").trim();
@@ -884,11 +910,19 @@ export function createPickers(deps) {
               const featId = buildEntityId(["feat", feat.name, feat.source]);
               const isSelected = selectedFeatId === featId;
               const meetsPrereq = doesCharacterMeetFeatPrerequisites(state.character, feat);
+              const isExpanded = expandedFeatIds.has(featId);
+              const detailsHtml = isExpanded ? buildFeatInlineDetails(feat) : "";
               return `
               <div class="option-row">
                 <div>
-                  <strong>${esc(feat.name)}</strong>
+                  <div class="feat-picker-title-row">
+                    <strong>${esc(feat.name)}</strong>
+                    <button type="button" class="btn secondary feat-inline-toggle-btn" data-toggle-feat="${esc(featId)}">
+                      ${isExpanded ? "Hide" : "Show"}
+                    </button>
+                  </div>
                   <div class="muted">${esc(feat.sourceLabel ?? feat.source ?? "Unknown Source")}${meetsPrereq ? "" : " - prerequisites not met"}</div>
+                  ${detailsHtml}
                 </div>
                 <div class="option-row-actions">
                   <button type="button" class="btn secondary" data-pick-feat="${esc(featId)}" ${meetsPrereq ? "" : "disabled"}>
@@ -900,6 +934,26 @@ export function createPickers(deps) {
             })
             .join("")
         : "<p class='muted'>No feats match these filters.</p>";
+
+      listEl.querySelectorAll("[data-toggle-feat]").forEach((button) => {
+        button.addEventListener("click", () => {
+          const featId = button.dataset.toggleFeat;
+          if (!featId) return;
+          if (expandedFeatIds.has(featId)) expandedFeatIds.delete(featId);
+          else expandedFeatIds.add(featId);
+          renderFeatRows();
+        });
+      });
+
+      listEl.querySelectorAll("[data-spell-roll]").forEach((button) => {
+        button.addEventListener("click", () => {
+          const notation = button.dataset.spellRoll;
+          if (!notation) return;
+          const row = button.closest(".option-row");
+          const featName = row?.querySelector(".feat-picker-title-row strong")?.textContent ?? "Feat";
+          rollVisualNotation(featName, notation);
+        });
+      });
 
       listEl.querySelectorAll("[data-pick-feat]").forEach((button) => {
         button.addEventListener("click", () => {

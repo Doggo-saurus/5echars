@@ -92,6 +92,7 @@ Update `.env` with real values:
 - `DOMAIN` (for example `mybuilder.duckdns.org`)
 - `ACME_EMAIL`
 - `REDIS_PASSWORD` (use a strong random value)
+- `MANUAL_BASE_URL` (manual link host to your favourite 5e tools)
 
 ### 2) Router + firewall
 

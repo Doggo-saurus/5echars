@@ -45,7 +45,13 @@ export function createRenderers(deps) {
     getAutoAttacks,
     getCharacterChangeLog,
     extractSimpleNotation,
+    manualBaseUrl,
   } = deps;
+
+  function getManualBaseUrl() {
+    const normalized = String(manualBaseUrl ?? "").trim().replace(/\/+$/g, "");
+    return normalized;
+  }
 
   function getPlayManualLinks(state) {
     const character = state?.character ?? {};
@@ -66,34 +72,37 @@ export function createRenderers(deps) {
       selectedSubclassSource,
       preferredSources
     );
+    const baseUrl = getManualBaseUrl();
     const links = [];
-    if (classEntry?.name && classEntry?.source) {
+    if (baseUrl && classEntry?.name && classEntry?.source) {
       links.push({
         href: buildClassesManualUrl(classEntry),
         label: `${classEntry.name} class`,
         meta: formatSourceMeta(classEntry.source),
       });
     }
-    if (classEntry?.name && classEntry?.source && subclassEntry?.name && subclassEntry?.source) {
+    if (baseUrl && classEntry?.name && classEntry?.source && subclassEntry?.name && subclassEntry?.source) {
       links.push({
         href: buildClassesManualUrl(classEntry, subclassEntry),
         label: `${subclassEntry.name} subclass`,
         meta: formatSourceMeta(subclassEntry.source),
       });
     }
-    const allowedSources = getCharacterAllowedSources(character).map((source) => normalizeSourceTag(source)).filter(Boolean);
-    allowedSources.forEach((source) => {
-      links.push({
-        href: `https://5e.tools/book.html#${source.toLowerCase()}`,
-        label: sourceLabels?.[source] ?? source,
-        meta: "Source book",
+    if (baseUrl) {
+      const allowedSources = getCharacterAllowedSources(character).map((source) => normalizeSourceTag(source)).filter(Boolean);
+      allowedSources.forEach((source) => {
+        links.push({
+          href: `${baseUrl}/book.html#${source.toLowerCase()}`,
+          label: sourceLabels?.[source] ?? source,
+          meta: "Source book",
+        });
       });
-    });
-    links.push({
-      href: "https://5e.tools/conditionsdiseases.html",
-      label: "Status conditions",
-      meta: "Conditions reference",
-    });
+      links.push({
+        href: `${baseUrl}/conditionsdiseases.html`,
+        label: "Status conditions",
+        meta: "Conditions reference",
+      });
+    }
     const deduped = [];
     const seen = new Set();
     links.forEach((entry) => {
@@ -124,16 +133,18 @@ export function createRenderers(deps) {
   }
 
   function buildClassesManualUrl(classEntry, subclassEntry = null) {
+    const baseUrl = getManualBaseUrl();
+    if (!baseUrl) return "";
     const classNameSlug = toManualSlug(classEntry?.name);
     const classSourceSlug = toManualSlug(normalizeSourceTag(classEntry?.source));
     const classHash = `${classNameSlug}_${classSourceSlug}`;
     if (!subclassEntry?.name || !subclassEntry?.source) {
-      return `https://5e.tools/classes.html#${classHash}`;
+      return `${baseUrl}/classes.html#${classHash}`;
     }
     const subclassName = String(subclassEntry?.shortName ?? subclassEntry?.name ?? "").trim();
     const subclassNameSlug = toManualSlug(subclassName);
     const subclassSourceSlug = toManualSlug(normalizeSourceTag(subclassEntry?.source));
-    return `https://5e.tools/classes.html#${classHash},state:sub_${subclassNameSlug}_${subclassSourceSlug}=b1`;
+    return `${baseUrl}/classes.html#${classHash},state:sub_${subclassNameSlug}_${subclassSourceSlug}=b1`;
   }
 
   function formatCharacterLogTime(isoTimestamp) {
@@ -166,6 +177,61 @@ export function createRenderers(deps) {
       label: `${timeLabel} · ${dateLabel}`,
       title,
     };
+  }
+
+  function renderCritStyleOptions(selectedStyle = "standard") {
+    const options = [
+      ["none", "None"],
+      ["standard", "Standard (double damage dice)"],
+      ["doubleTotal", "Double total (double rolled damage result)"],
+      ["maxPlusRoll", "Max + roll (max normal dice plus rolled dice)"],
+      ["maxDamage", "Max damage (all damage dice maximized)"],
+      ["doubleAll", "Double all (including static modifiers)"],
+    ];
+    return options
+      .map(
+        ([value, label]) =>
+          `<option value="${esc(value)}" ${selectedStyle === value ? "selected" : ""}>${esc(label)}</option>`
+      )
+      .join("");
+  }
+
+  const POINT_BUY_BUDGET = 27;
+  const POINT_BUY_MIN_SCORE = 8;
+  const POINT_BUY_MAX_SCORE = 15;
+  const POINT_BUY_COST_BY_SCORE = {
+    8: 0,
+    9: 1,
+    10: 2,
+    11: 3,
+    12: 4,
+    13: 5,
+    14: 7,
+    15: 9,
+  };
+
+  function normalizePointBuyBaseScores(character) {
+    const rawBase = character?.abilityBase && typeof character.abilityBase === "object" ? character.abilityBase : {};
+    return saveAbilities.reduce((acc, ability) => {
+      const raw = toNumber(rawBase?.[ability], toNumber(character?.abilities?.[ability], POINT_BUY_MIN_SCORE));
+      acc[ability] = Math.max(POINT_BUY_MIN_SCORE, Math.min(POINT_BUY_MAX_SCORE, Math.floor(raw)));
+      return acc;
+    }, {});
+  }
+
+  function getPointBuySpent(baseScores) {
+    return saveAbilities.reduce((sum, ability) => {
+      const score = Math.max(POINT_BUY_MIN_SCORE, Math.min(POINT_BUY_MAX_SCORE, toNumber(baseScores?.[ability], POINT_BUY_MIN_SCORE)));
+      return sum + toNumber(POINT_BUY_COST_BY_SCORE[score], 0);
+    }, 0);
+  }
+
+  function hasPointBuyOverrideOutOfRange(character) {
+    const rawBase = character?.abilityBase && typeof character.abilityBase === "object" ? character.abilityBase : {};
+    return saveAbilities.some((ability) => {
+      const raw = toNumber(rawBase?.[ability], NaN);
+      return Number.isFinite(raw) && (raw < POINT_BUY_MIN_SCORE || raw > POINT_BUY_MAX_SCORE);
+    });
   }
 
   function getCharacterLogToneClass(sectionKey) {
@@ -2272,6 +2338,20 @@ export function createRenderers(deps) {
       <label>Notes
         <textarea id="notes" rows="5">${esc(character.notes)}</textarea>
       </label>
+      <label>Crit style
+        <select id="crit-style">
+          ${renderCritStyleOptions(String(character.critStyle ?? "standard").trim() || "standard")}
+        </select>
+      </label>
+      <div class="option-row">
+        <div>
+          <strong>Dice tray</strong>
+          <div class="muted">Show the visual dice tray in play mode.</div>
+        </div>
+        <div class="option-row-actions">
+          <input id="show-dice-tray" type="checkbox" ${character.showDiceTray === false ? "" : "checked"}>
+        </div>
+      </div>
     `;
     }
     if (stepIndex === 2) {
@@ -2486,32 +2566,78 @@ export function createRenderers(deps) {
       const proficiencyEditMeta = getProficiencyEditMeta(character);
       const saveRows = renderSaveRowsImpl(state, { canToggle: true, includeRollButtons: false, proficiencyEditMeta });
       const skillRows = renderSkillRowsImpl(state, { canToggle: true, includeRollButtons: false, proficiencyEditMeta });
+      const pointBuyBase = normalizePointBuyBaseScores(character);
+      const pointBuySpent = getPointBuySpent(pointBuyBase);
+      const pointBuyRemaining = POINT_BUY_BUDGET - pointBuySpent;
+      const hasOutOfRangeOverride = hasPointBuyOverrideOutOfRange(character);
+      const pointBuyEnabled = Boolean(character?.play?.pointBuyEnabled);
+      const manualModeClass = pointBuyEnabled ? "mode-toggle-btn" : "mode-toggle-btn is-active";
+      const pointBuyModeClass = pointBuyEnabled ? "mode-toggle-btn is-active" : "mode-toggle-btn";
       return `
       <h2 class="title">Abilities</h2>
-      <div class="row ability-edit-grid">
-        ${Object.entries(character.abilities)
-          .map(
-            ([key, val]) => `
-          <label class="ability-edit-field">${esc(key.toUpperCase())}${toNumber(character.play?.autoAbilityBonuses?.[key], 0) > 0 ? ` <span class="muted">(auto +${esc(
-            toNumber(character.play?.autoAbilityBonuses?.[key], 0)
-          )})</span>` : ""}
-            <div class="num-input-wrap">
-              <input id="ability-${esc(key)}" type="number" min="1" max="30" data-ability="${esc(key)}" value="${esc(val)}">
-              <div class="num-stepper">
-                <button type="button" class="num-step-btn" data-ability-step="${esc(key)}" data-step-delta="1" aria-label="Increase ${esc(
-                  key.toUpperCase()
-                )}">+</button>
-                <button type="button" class="num-step-btn" data-ability-step="${esc(key)}" data-step-delta="-1" aria-label="Decrease ${esc(
-                  key.toUpperCase()
-                )}">-</button>
-              </div>
+      <section class="card point-buy-panel">
+        <div class="point-buy-head">
+          <div class="point-buy-head-main">
+            <div class="mode-toggle point-buy-mode-toggle" role="group" aria-label="Point buy mode">
+              <button type="button" class="${manualModeClass}" data-point-buy-mode="manual" data-mode="manual">Manual</button>
+              <button type="button" class="${pointBuyModeClass}" data-point-buy-mode="pointbuy" data-mode="pointbuy">Point Buy</button>
             </div>
-          </label>
-        `
-          )
-          .join("")}
-      </div>
-      <p class="muted">Ability scores shown here include automatic race/background bonuses.</p>
+          </div>
+          ${
+            pointBuyEnabled
+              ? `
+          <div class="point-buy-budget ${pointBuyRemaining < 0 ? "is-over" : ""}">
+            <span>Spent ${esc(pointBuySpent)} / ${esc(POINT_BUY_BUDGET)}</span>
+            <strong>${pointBuyRemaining >= 0 ? `${esc(pointBuyRemaining)} left` : `${esc(Math.abs(pointBuyRemaining))} over`}</strong>
+          </div>
+          `
+              : ""
+          }
+        </div>
+        ${
+          pointBuyEnabled && hasOutOfRangeOverride
+            ? `<p class="muted ability-rules-note is-warning">Base overrides outside 8-15 detected.</p>`
+            : ""
+        }
+        <div class="point-buy-grid">
+          ${saveAbilities
+            .map((ability) => {
+              const autoBonus = toNumber(character.play?.autoAbilityBonuses?.[ability], 0);
+              const rawScore = pointBuyEnabled
+                ? toNumber(pointBuyBase?.[ability], POINT_BUY_MIN_SCORE)
+                : Math.max(
+                  1,
+                  Math.min(
+                    30,
+                    toNumber(
+                      character?.abilityBase?.[ability],
+                      toNumber(character?.abilities?.[ability], 10) - autoBonus
+                    )
+                  )
+                );
+              const score = rawScore;
+              const finalScore = Math.max(1, Math.min(30, score + autoBonus));
+              const cost = toNumber(POINT_BUY_COST_BY_SCORE[score], 0);
+              const canDecrease = pointBuyEnabled ? score > POINT_BUY_MIN_SCORE : score > 1;
+              const nextScore = pointBuyEnabled ? Math.min(POINT_BUY_MAX_SCORE, score + 1) : Math.min(30, score + 1);
+              const increaseCost = pointBuyEnabled ? toNumber(POINT_BUY_COST_BY_SCORE[nextScore], cost) - cost : 0;
+              const canIncrease = pointBuyEnabled ? (score < POINT_BUY_MAX_SCORE && pointBuyRemaining >= increaseCost) : score < 30;
+              const abilityLabel = abilityLabels?.[ability] ?? String(ability ?? "").toUpperCase();
+              return `
+            <div class="point-buy-row">
+              <span class="point-buy-ability">${esc(abilityLabel)}${autoBonus !== 0 ? ` <span class="muted">${esc(signed(autoBonus))}</span>` : ""}</span>
+              <div class="point-buy-controls">
+                <button type="button" class="btn secondary point-buy-adjust" data-point-buy-ability="${esc(ability)}" data-point-buy-delta="-1" ${canDecrease ? "" : "disabled"} aria-label="Decrease ${esc(abilityLabel)}">-</button>
+                <span class="point-buy-score">${esc(score)}</span>
+                <button type="button" class="btn secondary point-buy-adjust" data-point-buy-ability="${esc(ability)}" data-point-buy-delta="1" ${canIncrease ? "" : "disabled"} aria-label="Increase ${esc(abilityLabel)}">+</button>
+              </div>
+              <span class="point-buy-cost">${pointBuyEnabled ? `Cost ${esc(cost)}` : `${esc(finalScore)}`}</span>
+            </div>
+          `;
+            })
+            .join("")}
+        </div>
+      </section>
       <h3 class="title">Proficiencies</h3>
       <p class="subtitle">Toggle skill and save proficiencies for your character sheet.</p>
       <div class="play-grid">
@@ -2605,10 +2731,9 @@ export function createRenderers(deps) {
     <h3 class="title">Character Snapshot</h3>
     <p class="subtitle">${esc(character.name || "Unnamed Hero")} - Level ${esc(character.level)} ${esc(character.class || "Adventurer")}</p>
     <div class="summary-grid">
-      <div class="pill">AC ${derived.ac}</div>
-      <div class="pill">HP ${derived.hp}</div>
+      <button type="button" class="pill pill-btn" data-open-ac-breakdown title="View AC modifiers">AC ${derived.ac}</button>
+      <button type="button" class="pill pill-btn" data-open-hp-breakdown title="View HP calculation">HP ${derived.hp}</button>
       <div class="pill">Prof +${derived.proficiencyBonus}</div>
-      <div class="pill">Passive Perception ${derived.passivePerception}</div>
     </div>
     <h4>Ability Mods</h4>
     <div class="summary-grid">
@@ -2632,7 +2757,7 @@ export function createRenderers(deps) {
         const isCogStep = i === 7;
         const label = isCogStep ? "⚙" : `${i + 1}. ${esc(step)}`;
         const ariaLabel = isCogStep ? ` aria-label="${i + 1}. ${esc(step)}" title="${i + 1}. ${esc(step)}"` : "";
-        const className = `${i === stepIndex ? "active " : ""}${isCogStep ? "stepper-cog-btn" : ""}`.trim();
+        const className = `btn secondary stepper-btn ${i === stepIndex ? "is-active" : ""} ${isCogStep ? "stepper-cog-btn" : ""}`.trim();
         return `<button data-step="${i}" class="${className}"${ariaLabel}>${label}</button>`;
       }).join("")}
     </div>
@@ -3005,7 +3130,7 @@ export function createRenderers(deps) {
         <div id="editor">${renderBuildEditorImpl(state)}</div>
         <div class="toolbar">
           <button class="btn secondary" id="prev-step" ${state.stepIndex === 0 ? "disabled" : ""}>Previous</button>
-          <button class="btn" id="next-step" ${state.stepIndex === STEPS.length - 1 ? "disabled" : ""}>Next</button>
+          <button class="btn secondary btn-accent-soft" id="next-step" ${state.stepIndex === STEPS.length - 1 ? "disabled" : ""}>Next</button>
         </div>
       </section>
       <aside class="card sticky">
@@ -3054,6 +3179,7 @@ export function createRenderers(deps) {
       : getPassiveSkillValue("perception", "wis");
     const passiveInsight = getPassiveSkillValue("insight", "wis");
     const passiveInvestigation = getPassiveSkillValue("investigation", "int");
+    const hasDiceTray = character?.showDiceTray !== false;
     const className = String(state.character.class ?? "").trim();
     const subclassName = String(state.character.classSelection?.subclass?.name ?? state.character.subclass ?? "").trim();
     const classHtml = className
@@ -3096,7 +3222,7 @@ export function createRenderers(deps) {
       <section>
         <div class="card">
           <div class="play-header">
-            <div class="title-with-history">
+            <div class="title-with-history play-title-with-actions">
               ${renderTopLogoLink()}
               <h1 class="title">Character Sheet</h1>
               ${renderCharacterHistorySelector("play-character-history-select", state.character?.id ?? null, {
@@ -3130,7 +3256,7 @@ export function createRenderers(deps) {
               </details>
             </div>
             ${renderPersistenceNotice()}
-            <div class="play-header-lower">
+            <div class="play-header-lower${hasDiceTray ? "" : " no-dice-tray"}">
               <div class="play-header-main">
                 <div class="play-character-summary">
                   <div class="play-character-summary-top">
@@ -3202,7 +3328,7 @@ export function createRenderers(deps) {
                   </div>
                 </div>
               </div>
-              <div id="play-header-dice-slot" class="play-header-dice-slot"></div>
+              <div id="play-header-dice-slot" class="play-header-dice-slot${hasDiceTray ? "" : " is-result-only"}"></div>
             </div>
           </div>
         </div>

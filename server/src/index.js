@@ -130,8 +130,14 @@ function keepCatalogDataAsset(relativePath) {
   return /\.json$/i.test(String(relativePath ?? ""));
 }
 
+function normalizeManualBaseUrl(value) {
+  const normalized = String(value ?? "").trim().replace(/\/+$/g, "");
+  return normalized;
+}
+
 const app = express();
 app.use(express.json({ limit: "2mb" }));
+const manualBaseUrl = normalizeManualBaseUrl(process.env.MANUAL_BASE_URL);
 
 app.use((req, res, next) => {
   res.setHeader("Access-Control-Allow-Origin", process.env.CORS_ALLOW_ORIGIN ?? "*");
@@ -301,6 +307,11 @@ app.use(express.static(path.join(repoRoot, "public")));
 
 app.get("/api/offline-assets", (_req, res) => {
   res.json({ assets: offlineAssets });
+});
+
+app.get("/config.js", (_req, res) => {
+  res.type("application/javascript; charset=utf-8");
+  res.send(`window.__MANUAL_BASE_URL__ = ${JSON.stringify(manualBaseUrl)};`);
 });
 
 app.get("/JSON_FORMAT_REFERENCE", (_req, res) => {

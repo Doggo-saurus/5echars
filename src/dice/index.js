@@ -18,9 +18,22 @@ export function createDiceUi(deps) {
     panel.setAttribute("role", "status");
     panel.setAttribute("aria-live", "polite");
     panel.innerHTML = `
-      <div class="dice-offscreen-panel-title">Roll Result</div>
+      <div class="dice-offscreen-panel-head">
+        <div class="dice-offscreen-panel-title">Roll Result</div>
+        <button type="button" class="dice-offscreen-panel-close" aria-label="Close roll result overlay">
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M6 6 L18 18 M18 6 L6 18"></path>
+          </svg>
+        </button>
+      </div>
       <div class="dice-offscreen-panel-message"></div>
     `;
+    const closeButton = panel.querySelector(".dice-offscreen-panel-close");
+    if (closeButton) {
+      closeButton.addEventListener("click", () => {
+        hideOffscreenRollPanel();
+      });
+    }
     document.body.appendChild(panel);
     return panel;
   }
@@ -40,6 +53,10 @@ export function createDiceUi(deps) {
   }
 
   function isDiceTrayOffscreen() {
+    const overlay = document.getElementById("dice-overlay");
+    const trayDisabled = Boolean(overlay && !overlay.hidden && overlay.classList.contains("dice-tray-disabled"));
+    if (trayDisabled) return true;
+
     const tray = document.getElementById("dice-tray");
     if (!tray || tray.offsetParent === null) return false;
 

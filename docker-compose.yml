@@ -46,6 +46,7 @@ services:
       NODE_ENV: "production"
       HOST: "127.0.0.1"
       PORT: "3000"
+      MANUAL_BASE_URL: "${MANUAL_BASE_URL:-https://link to your favourite 5e tools}"
       REDIS_ENABLED: "true"
       REDIS_URL: "redis://:${REDIS_PASSWORD}@127.0.0.1:6379"
     entrypoint: ["node"]
