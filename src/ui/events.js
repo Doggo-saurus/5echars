@@ -1980,15 +1980,9 @@ export function createEvents(deps) {
         const notation = getSpellPrimaryDiceNotation(spell);
         const simpleNotation = extractSimpleNotation(notation);
         const spellCombat = getSpellCombatContext(state, spell);
-        if (spellCombat.hasSpellAttack) {
-          if (simpleNotation) {
-            await rollVisualNotation(`${spell.name} damage`, simpleNotation);
-            return;
-          }
-        }
-
-        if (notation) {
-          await rollVisualNotation(`Cast ${spell.name}`, notation);
+        if (simpleNotation) {
+          const rollLabel = spellCombat.hasSpellAttack ? `${spell.name} damage` : `Cast ${spell.name}`;
+          await rollVisualNotation(rollLabel, simpleNotation);
           return;
         }
 
@@ -2006,11 +2000,11 @@ export function createEvents(deps) {
         }
 
         if (spellLevel === 0) {
-          setDiceResult(`Cast ${spell.name}: no roll found in the spell text.`, false);
+          setDiceResult(`Cast ${spell.name}: cast.`, false);
           return;
         }
 
-        setDiceResult(`Cast ${spell.name}: ${spentText} No roll found in the spell text.`, false);
+        setDiceResult(`Cast ${spell.name}: ${spentText}`, false);
       });
     });
 
