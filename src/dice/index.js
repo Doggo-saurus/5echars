@@ -160,19 +160,58 @@ export function createDiceUi(deps) {
   }
 
   function applyDiceStyle(box = uiState.diceBox) {
+    const selectedStyleKey = uiState.selectedDiceStyle in diceStylePresets ? uiState.selectedDiceStyle : "arcane";
+    uiState.selectedDiceStyle = selectedStyleKey;
+    const preset = diceStylePresets[selectedStyleKey] ?? diceStylePresets.arcane ?? Object.values(diceStylePresets)[0];
+
     const overlay = document.getElementById("dice-overlay");
     if (overlay) {
-      overlay.dataset.diceStyle = uiState.selectedDiceStyle;
+      overlay.dataset.diceStyle = selectedStyleKey;
     }
 
-    if (!box || typeof box.updateConfig !== "function") return;
-    const preset = diceStylePresets[uiState.selectedDiceStyle] ?? diceStylePresets.ember;
-    box.updateConfig({
-      theme: "default",
+    if (document.body) {
+      document.body.dataset.diceStyle = selectedStyleKey;
+    }
+
+    const rootStyle = document.documentElement?.style;
+    if (rootStyle && preset) {
+      rootStyle.setProperty("--dice-theme-accent", String(preset.pageAccent ?? preset.themeColor ?? "#22d3ee"));
+      rootStyle.setProperty("--dice-theme-glow", String(preset.pageGlow ?? "rgba(34, 211, 238, 0.22)"));
+      rootStyle.setProperty("--dice-theme-bg-top", String(preset.pageBgTop ?? "rgba(30, 58, 138, 0.32)"));
+      rootStyle.setProperty("--dice-theme-bg-bottom", String(preset.pageBgBottom ?? "rgba(15, 118, 110, 0.26)"));
+      rootStyle.setProperty("--dice-theme-tray-border", String(preset.trayBorder ?? "rgba(34, 211, 238, 0.55)"));
+      rootStyle.setProperty("--dice-theme-tray-glow", String(preset.trayGlow ?? "rgba(34, 211, 238, 0.24)"));
+    }
+
+    if (!box || typeof box.updateConfig !== "function") return Promise.resolve();
+    if (!preset) return Promise.resolve();
+    const requestedTheme = String(preset.diceTheme ?? "default");
+    const buildConfig = (theme) => ({
+      theme,
       themeColor: preset.themeColor,
       lightIntensity: preset.lightIntensity,
       shadowTransparency: preset.shadowTransparency,
     });
+    const updateTheme = (theme) => Promise.resolve(box.updateConfig(buildConfig(theme)));
+
+    const applyPromise = updateTheme(requestedTheme).catch((error) => {
+      if (requestedTheme === "default") throw error;
+      console.warn(`Dice theme "${requestedTheme}" failed; falling back to default theme.`, error);
+      return updateTheme("default");
+    });
+
+    const trackedPromise = applyPromise
+      .catch((error) => {
+        console.error("Dice theme application failed", error);
+      })
+      .finally(() => {
+        if (uiState.diceStyleApplyPromise === trackedPromise) {
+          uiState.diceStyleApplyPromise = null;
+        }
+      });
+
+    uiState.diceStyleApplyPromise = trackedPromise;
+    return trackedPromise;
   }
 
   function renderDiceStyleOptions() {

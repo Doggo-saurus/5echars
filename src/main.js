@@ -36,20 +36,110 @@ const persistedState = loadAppState();
 const store = createStore(persistedState?.character ?? createInitialCharacter());
 const DICE_MODULE_SOURCES = [
   {
-    moduleUrl: "https://unpkg.com/@3d-dice/dice-box@1.1.4/dist/dice-box.es.min.js",
-    assetOrigin: "https://unpkg.com/@3d-dice/dice-box@1.1.4/dist/",
+    moduleUrl: "/vendor/dice-box/dice-box.es.min.js",
+    assetPath: "/vendor/dice-box/assets/",
+    assetOrigin: window.location.origin,
   },
   {
     moduleUrl: "/src/vendor/local-dice-box.js",
+    assetPath: "assets/",
     assetOrigin: window.location.origin,
   },
 ];
 const DICE_STYLE_PRESETS = {
-  ember: { label: "Ember Gold", themeColor: "#f59e0b", lightIntensity: 1.05, shadowTransparency: 0.75 },
-  arcane: { label: "Arcane Cyan", themeColor: "#0891b2", lightIntensity: 1.05, shadowTransparency: 0.78 },
-  forest: { label: "Forest Jade", themeColor: "#15803d", lightIntensity: 0.9, shadowTransparency: 0.68 },
-  ruby: { label: "Ruby Red", themeColor: "#ef4444", lightIntensity: 1.2, shadowTransparency: 0.8 },
+  arcane: {
+    label: "Arcane Cyan",
+    diceTheme: "blueGreenMetal",
+    themeColor: "#22d3ee",
+    lightIntensity: 1.15,
+    shadowTransparency: 0.8,
+    pageAccent: "#22d3ee",
+    pageGlow: "rgba(34, 211, 238, 0.22)",
+    pageBgTop: "rgba(14, 116, 144, 0.34)",
+    pageBgBottom: "rgba(8, 145, 178, 0.26)",
+    trayBorder: "rgba(34, 211, 238, 0.55)",
+    trayGlow: "rgba(34, 211, 238, 0.24)",
+  },
+  ember: {
+    label: "Ember Gold",
+    diceTheme: "rust",
+    themeColor: "#f59e0b",
+    lightIntensity: 1.12,
+    shadowTransparency: 0.82,
+    pageAccent: "#fbbf24",
+    pageGlow: "rgba(251, 191, 36, 0.2)",
+    pageBgTop: "rgba(146, 64, 14, 0.32)",
+    pageBgBottom: "rgba(180, 83, 9, 0.24)",
+    trayBorder: "rgba(245, 158, 11, 0.55)",
+    trayGlow: "rgba(245, 158, 11, 0.25)",
+  },
+  forest: {
+    label: "Forest Jade",
+    diceTheme: "wooden",
+    themeColor: "#34d399",
+    lightIntensity: 1.02,
+    shadowTransparency: 0.76,
+    pageAccent: "#34d399",
+    pageGlow: "rgba(52, 211, 153, 0.2)",
+    pageBgTop: "rgba(5, 150, 105, 0.28)",
+    pageBgBottom: "rgba(22, 163, 74, 0.24)",
+    trayBorder: "rgba(52, 211, 153, 0.55)",
+    trayGlow: "rgba(52, 211, 153, 0.24)",
+  },
+  ruby: {
+    label: "Ruby Red",
+    diceTheme: "rock",
+    themeColor: "#dc2626",
+    lightIntensity: 1.12,
+    shadowTransparency: 0.78,
+    pageAccent: "#f87171",
+    pageGlow: "rgba(248, 113, 113, 0.22)",
+    pageBgTop: "rgba(153, 27, 27, 0.34)",
+    pageBgBottom: "rgba(190, 24, 93, 0.24)",
+    trayBorder: "rgba(239, 68, 68, 0.55)",
+    trayGlow: "rgba(239, 68, 68, 0.24)",
+  },
+  prismatic: {
+    label: "Prismatic Nebula",
+    diceTheme: "rock",
+    themeColor: "#6d28d9",
+    lightIntensity: 1.12,
+    shadowTransparency: 0.8,
+    pageAccent: "#c084fc",
+    pageGlow: "rgba(192, 132, 252, 0.2)",
+    pageBgTop: "rgba(79, 70, 229, 0.33)",
+    pageBgBottom: "rgba(217, 70, 239, 0.24)",
+    trayBorder: "rgba(192, 132, 252, 0.58)",
+    trayGlow: "rgba(56, 189, 248, 0.24)",
+  },
+  glass: {
+    label: "Ghost Glass",
+    diceTheme: "smooth",
+    themeColor: "#9ec5eb",
+    lightIntensity: 1.06,
+    shadowTransparency: 0.92,
+    pageAccent: "#bfdbfe",
+    pageGlow: "rgba(191, 219, 254, 0.18)",
+    pageBgTop: "rgba(148, 163, 184, 0.24)",
+    pageBgBottom: "rgba(125, 211, 252, 0.2)",
+    trayBorder: "rgba(191, 219, 254, 0.56)",
+    trayGlow: "rgba(191, 219, 254, 0.2)",
+  },
+  obsidian: {
+    label: "Obsidian Smoke",
+    diceTheme: "rock",
+    themeColor: "#64748b",
+    lightIntensity: 0.96,
+    shadowTransparency: 0.7,
+    pageAccent: "#94a3b8",
+    pageGlow: "rgba(148, 163, 184, 0.16)",
+    pageBgTop: "rgba(15, 23, 42, 0.44)",
+    pageBgBottom: "rgba(30, 41, 59, 0.3)",
+    trayBorder: "rgba(148, 163, 184, 0.42)",
+    trayGlow: "rgba(100, 116, 139, 0.18)",
+  },
 };
+const DEFAULT_DICE_STYLE = "arcane";
 const DEFAULT_DICE_RESULT_MESSAGE = "Roll a save or skill to throw dice.";
 const ROLL_HISTORY_LIMIT = 10;
 const CHARACTER_CHANGE_LOG_LIMIT = 200;
@@ -66,7 +156,7 @@ let currentUrlCharacterId = null;
 let persistenceNoticeMessage = "";
 let lastPersistedCharacterFingerprint = "";
 const uiState = {
-  selectedDiceStyle: "arcane",
+  selectedDiceStyle: DEFAULT_DICE_STYLE,
   diceBox: null,
   latestDiceResultMessage: DEFAULT_DICE_RESULT_MESSAGE,
   latestDiceResultIsError: false,
@@ -663,7 +753,7 @@ async function getDiceBox() {
 
           const box = new DiceBox({
             container: "#dice-tray",
-            assetPath: "assets/",
+            assetPath: source.assetPath ?? "assets/",
             origin: source.assetOrigin,
             theme: "default",
             scale: 12,
@@ -678,7 +768,7 @@ async function getDiceBox() {
           });
           await box.init();
           uiState.diceBox = box;
-          applyDiceStyle(box);
+          await applyDiceStyle(box);
           return box;
         } catch (error) {
           lastError = error;
@@ -705,6 +795,7 @@ async function rollVisualD20(label, modifier = 0, rollMode = "normal") {
   setDiceResult(`${label}: rolling ${notation}...`, false, { record: false });
   const box = await getDiceBox();
   if (!box) return null;
+  await applyDiceStyle(box);
 
   try {
     const rollGroups = await box.roll(physicalNotation);
@@ -761,6 +852,7 @@ async function rollVisualNotation(label, notation) {
   setDiceResult(`${label}: rolling ${normalizedNotation}...`, false, { record: false });
   const box = await getDiceBox();
   if (!box) return null;
+  await applyDiceStyle(box);
 
   try {
     const rollGroups = await box.roll(diceOnlyNotation);
@@ -5158,6 +5250,66 @@ function getClassFeatureRows(classEntry) {
     .filter(Boolean);
 }
 
+function getSubclassFeatureRows(subclassEntry) {
+  const features = Array.isArray(subclassEntry?.subclassFeatures) ? subclassEntry.subclassFeatures : [];
+  return features
+    .map((feature) => {
+      const token = typeof feature === "string" ? feature : feature?.subclassFeature;
+      const parsed = parseSubclassFeatureToken(
+        token,
+        subclassEntry?.source,
+        subclassEntry?.className,
+        subclassEntry?.shortName ?? subclassEntry?.name
+      );
+      if (!parsed) return null;
+      return { name: parsed.name, level: parsed.level };
+    })
+    .filter(Boolean);
+}
+
+function renderEntryDescriptionHtml(entry, emptyMessage) {
+  const lines = getRuleDescriptionLines(entry);
+  if (!lines.length) return `<p class='muted'>${esc(emptyMessage)}</p>`;
+  const maxLines = 14;
+  const clipped = lines.slice(0, maxLines);
+  const lineHtml = clipped
+    .map((line) => `<p>${renderTextWithInlineDiceButtons(line)}</p>`)
+    .join("");
+  const overflowNote = lines.length > maxLines ? "<p class='muted'>Additional rules text omitted for brevity.</p>" : "";
+  return `${lineHtml}${overflowNote}`;
+}
+
+function renderFeatureTimelineHtml(rows, currentLevel, emptyMessage) {
+  const sortedRows = [...(Array.isArray(rows) ? rows : [])].sort((a, b) => {
+    const levelDelta = toNumber(a?.level, 999) - toNumber(b?.level, 999);
+    if (levelDelta !== 0) return levelDelta;
+    return String(a?.name ?? "").localeCompare(String(b?.name ?? ""));
+  });
+  const deduped = sortedRows.filter(
+    (row, idx, list) =>
+      list.findIndex(
+        (other) =>
+          String(other?.name ?? "").trim().toLowerCase() === String(row?.name ?? "").trim().toLowerCase()
+          && toNumber(other?.level, -1) === toNumber(row?.level, -1)
+      ) === idx
+  );
+  if (!deduped.length) return `<p class='muted'>${esc(emptyMessage)}</p>`;
+  return `
+    <ul class="class-feature-list">
+      ${deduped
+        .map((row) => {
+          const rowLevel = Math.max(0, toNumber(row?.level, 0));
+          const unlocked = rowLevel > 0 && rowLevel <= currentLevel;
+          const statusPill = unlocked ? '<span class="pill">Unlocked</span>' : '<span class="pill">Locked</span>';
+          return `<li class="feature-row"><span class="class-feature-level">Lv ${esc(rowLevel || "?")}</span><span class="feature-main"><span>${esc(
+            String(row?.name ?? "")
+          )}</span>${statusPill}</span></li>`;
+        })
+        .join("")}
+    </ul>
+  `;
+}
+
 function openClassDetailsModal(state) {
   const className = state.character?.class;
   if (!className) {
@@ -5198,16 +5350,23 @@ function openClassDetailsModal(state) {
   ].filter((row) => row.value);
 
   const progression = recomputeCharacterProgression(state.catalogs, state.character);
-  const featureRows = progression.unlockedFeatures
+  const unlockedRows = progression.unlockedFeatures
     .filter((row) => row.level == null || row.level <= currentLevel)
     .map((row) => {
       const subtype = row.type === "subclass" ? ` (${row.subclassName || "Subclass"})` : "";
       return `<li><span class="class-feature-level">Lv ${row.level ?? "?"}</span><span>${esc(`${row.name}${subtype}`)}</span></li>`;
     })
     .join("");
+  const classFeatureRows = getClassFeatureRows(classEntry);
+  const classOverviewHtml = renderEntryDescriptionHtml(classEntry, "No class description is available for this entry.");
+  const classTimelineHtml = renderFeatureTimelineHtml(
+    classFeatureRows,
+    currentLevel,
+    "No class feature progression list is available for this entry."
+  );
   const subclassEntry = getSelectedSubclassEntry(state.catalogs, state.character);
 
-  openModal({
+  const close = openModal({
     title: `${classEntry.name} Details`,
     bodyHtml: `
       <div class="spell-meta-grid">
@@ -5218,14 +5377,83 @@ function openClassDetailsModal(state) {
           ? `<p class="muted">Subclass: <strong>${esc(subclassEntry.name)}</strong> (${esc(subclassEntry.sourceLabel ?? subclassEntry.source ?? "Unknown source")})</p>`
           : ""
       }
-      <h4>Class Features Through Level ${currentLevel}</h4>
+      <h4>Overview</h4>
+      <div class="spell-description">${classOverviewHtml}</div>
+      <h4>Class Feature Progression</h4>
+      ${classTimelineHtml}
+      <h4>Current Features Through Level ${currentLevel}</h4>
       ${
-        featureRows
-          ? `<ul class="class-feature-list">${featureRows}</ul>`
+        unlockedRows
+          ? `<ul class="class-feature-list">${unlockedRows}</ul>`
           : "<p class='muted'>No class feature list available for this entry.</p>"
       }
     `,
     actions: [{ label: "Close", secondary: true, onClick: (done) => done() }],
+  });
+  document.querySelectorAll("[data-spell-roll]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const notation = button.dataset.spellRoll;
+      if (!notation) return;
+      close();
+      rollVisualNotation(classEntry.name, notation);
+    });
+  });
+}
+
+function openSubclassDetailsModal(state) {
+  const subclassEntry = getSelectedSubclassEntry(state.catalogs, state.character);
+  if (!subclassEntry) {
+    setDiceResult("Subclass details unavailable: no subclass selected.", true);
+    return;
+  }
+  const currentLevel = Math.max(1, Math.min(20, toNumber(state.character?.level, 1)));
+  const className = String(subclassEntry?.className ?? state.character?.class ?? "").trim();
+  const classSourceLabel = SOURCE_LABELS[normalizeSourceTag(subclassEntry?.classSource)] ?? subclassEntry?.classSource ?? "";
+  const metaRows = [
+    { label: "Source", value: subclassEntry.sourceLabel ?? subclassEntry.source ?? "" },
+    { label: "Class", value: className },
+    { label: "Class Source", value: classSourceLabel },
+  ].filter((row) => row.value);
+  const progression = recomputeCharacterProgression(state.catalogs, state.character);
+  const unlockedRows = progression.unlockedFeatures
+    .filter((row) => row.type === "subclass")
+    .filter((row) => String(row?.subclassName ?? "").trim().toLowerCase() === String(subclassEntry?.name ?? "").trim().toLowerCase())
+    .filter((row) => row.level == null || row.level <= currentLevel)
+    .map((row) => `<li><span class="class-feature-level">Lv ${row.level ?? "?"}</span><span>${esc(String(row?.name ?? "").trim())}</span></li>`)
+    .join("");
+  const subclassFeatureRows = getSubclassFeatureRows(subclassEntry);
+  const subclassOverviewHtml = renderEntryDescriptionHtml(subclassEntry, "No subclass description is available for this entry.");
+  const subclassTimelineHtml = renderFeatureTimelineHtml(
+    subclassFeatureRows,
+    currentLevel,
+    "No subclass feature progression list is available for this entry."
+  );
+  const close = openModal({
+    title: `${subclassEntry.name} Details`,
+    bodyHtml: `
+      <div class="spell-meta-grid">
+        ${metaRows.map((row) => `<div><strong>${esc(row.label)}:</strong> ${esc(row.value)}</div>`).join("")}
+      </div>
+      <h4>Overview</h4>
+      <div class="spell-description">${subclassOverviewHtml}</div>
+      <h4>Subclass Feature Progression</h4>
+      ${subclassTimelineHtml}
+      <h4>Current Subclass Features Through Level ${currentLevel}</h4>
+      ${
+        unlockedRows
+          ? `<ul class="class-feature-list">${unlockedRows}</ul>`
+          : "<p class='muted'>No subclass feature list available for this entry.</p>"
+      }
+    `,
+    actions: [{ label: "Close", secondary: true, onClick: (done) => done() }],
+  });
+  document.querySelectorAll("[data-spell-roll]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const notation = button.dataset.spellRoll;
+      if (!notation) return;
+      close();
+      rollVisualNotation(subclassEntry.name, notation);
+    });
   });
 }
 
@@ -5644,6 +5872,7 @@ const events = createEvents({
   importCharacterFromJsonFile,
   exportCharacterToJsonFile,
   openClassDetailsModal,
+  openSubclassDetailsModal,
   openFeatureDetailsModal,
   openFeatDetailsModal,
   openOptionalFeatureDetailsModal,
@@ -6323,8 +6552,12 @@ function hydratePersistentBrandLogo() {
 }
 
 function render(state) {
+  const selectedDiceStyle = state.character?.diceStyle;
+  uiState.selectedDiceStyle = selectedDiceStyle in DICE_STYLE_PRESETS ? selectedDiceStyle : DEFAULT_DICE_STYLE;
+
   if (appState.showOnboardingHome) {
     document.body.classList.remove("play-mode");
+    applyDiceStyle();
     app.innerHTML = renderOnboardingHome();
     bindOnboardingEvents();
     return;

@@ -1420,7 +1420,7 @@ export function createRenderers(deps) {
             const castLabel = spellCombat.hasSpellAttack
               ? spellDamageNotation
                 ? `Damage ${spellDamageNotation}`
-                : "Damage"
+                : "Cast"
               : "Cast";
             const ritualBadgeHtml = isSpellRitualCast(spell)
               ? '<span class="spell-ritual-pill" title="Can be cast as a ritual">R</span>'
@@ -3141,7 +3141,13 @@ export function createRenderers(deps) {
                         Level ${esc(state.character.level)}
                       </button>
                       ${classHtml}
-                      ${subclassName ? `<span class="pill play-character-chip-btn is-static">${esc(subclassName)}</span>` : ""}
+                      ${
+                        subclassName
+                          ? `<button type="button" class="pill pill-btn play-character-chip-btn" data-open-subclass-info title="View subclass details">${esc(
+                              subclassName
+                            )}</button>`
+                          : ""
+                      }
                     </p>
                   </div>
                   <div class="play-character-summary-main">

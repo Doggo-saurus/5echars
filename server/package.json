@@ -1,12 +1,16 @@
 {
-  "name": "fivee-character-api",
+  "name": "action-surge",
   "version": "1.0.0",
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node src/index.js"
+    "start": "node src/index.js",
+    "sync:dice-assets": "node ./scripts/sync-dice-assets.mjs",
+    "postinstall": "npm run sync:dice-assets"
   },
   "dependencies": {
+    "@3d-dice/dice-box": "^1.1.4",
+    "@3d-dice/dice-themes": "^0.2.1",
     "express": "^4.22.1",
     "redis": "^4.7.1",
     "uuid": "^11.1.0"

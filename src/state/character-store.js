@@ -289,6 +289,7 @@ function normalizeCharacter(character) {
     ...base,
     ...character,
     id: typeof character.id === "string" && character.id.trim() ? character.id.trim() : null,
+    diceStyle: typeof character.diceStyle === "string" && character.diceStyle.trim() ? character.diceStyle.trim() : base.diceStyle,
     abilities: { ...base.abilities, ...(character.abilities ?? {}) },
     abilityBase:
       character.abilityBase && typeof character.abilityBase === "object"
@@ -415,6 +416,7 @@ export function createInitialCharacter() {
   return {
     id: null,
     name: "",
+    diceStyle: "arcane",
     level: 1,
     sourcePreset: DEFAULT_SOURCE_PRESET,
     customSources: [],

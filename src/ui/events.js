@@ -29,6 +29,7 @@ export function createEvents(deps) {
     importCharacterFromJsonFile,
     exportCharacterToJsonFile,
     openClassDetailsModal,
+    openSubclassDetailsModal,
     openFeatureDetailsModal,
     openFeatDetailsModal,
     openOptionalFeatureDetailsModal,
@@ -1152,7 +1153,9 @@ export function createEvents(deps) {
     const diceStyleEl = app.querySelector("#dice-style-select");
     if (diceStyleEl) {
       diceStyleEl.addEventListener("change", () => {
-        uiState.selectedDiceStyle = diceStyleEl.value in diceStylePresets ? diceStyleEl.value : "arcane";
+        const nextDiceStyle = diceStyleEl.value in diceStylePresets ? diceStyleEl.value : "arcane";
+        uiState.selectedDiceStyle = nextDiceStyle;
+        store.updateCharacter({ diceStyle: nextDiceStyle });
         applyDiceStyle();
       });
     }
@@ -1164,6 +1167,9 @@ export function createEvents(deps) {
     });
     app.querySelector("[data-open-class-info]")?.addEventListener("click", () => {
       openClassDetailsModal(state);
+    });
+    app.querySelector("[data-open-subclass-info]")?.addEventListener("click", () => {
+      openSubclassDetailsModal(state);
     });
     const manualMenuEl = app.querySelector(".play-manual-menu");
     const characterLogMenuEl = app.querySelector(".play-character-log-menu");
@@ -1626,12 +1632,10 @@ export function createEvents(deps) {
         const simpleNotation = extractSimpleNotation(notation);
         const spellCombat = getSpellCombatContext(state, spell);
         if (spellCombat.hasSpellAttack) {
-          if (!simpleNotation) {
-            setDiceResult(`${spell.name}: invalid damage dice notation.`, true);
+          if (simpleNotation) {
+            await rollVisualNotation(`${spell.name} damage`, simpleNotation);
             return;
           }
-          await rollVisualNotation(`${spell.name} damage`, simpleNotation);
-          return;
         }
 
         if (notation) {
