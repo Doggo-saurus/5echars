@@ -55,6 +55,7 @@ export function createEvents(deps) {
     getHitPointBreakdown,
     uiState,
     diceStylePresets,
+    forgetActiveCharacterAndRedirectHome,
   } = deps;
   let playManualMenuOutsideClickHandler = null;
   let playCharacterLogMenuOutsideClickHandler = null;
@@ -443,6 +444,14 @@ export function createEvents(deps) {
     });
     app.querySelector("#prev-step")?.addEventListener("click", () => store.setStep(state.stepIndex - 1));
     app.querySelector("#next-step")?.addEventListener("click", () => store.setStep(state.stepIndex + 1));
+    app.querySelector("#build-forget-active")?.addEventListener("click", () => {
+      const activeName = String(store.getState().character?.name ?? "").trim() || "this character";
+      const confirmed = window.confirm(
+        `Forget "${activeName}" on this browser? This only removes local history and returns to home.`
+      );
+      if (!confirmed) return;
+      forgetActiveCharacterAndRedirectHome();
+    });
 
     const sourcePreset = app.querySelector("#source-preset");
     if (sourcePreset) {

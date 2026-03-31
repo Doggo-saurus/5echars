@@ -3,11 +3,13 @@ import { readdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { v4 as uuidv4 } from "uuid";
-import { createCharacterRepository } from "./bootstrap.js";
+import { createCharacterRepository, createPartyRepository } from "./bootstrap.js";
 
 const UUID_V4_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const EDIT_PASSWORD_FIELD = "editPassword";
 const INVALID_EDIT_PASSWORD_CODE = "INVALID_EDIT_PASSWORD";
+const PARTY_PASSWORD_FIELD = "password";
+const INVALID_PARTY_PASSWORD_CODE = "INVALID_PARTY_PASSWORD";
 
 function isUuid(value) {
   return UUID_V4_REGEX.test(String(value ?? "").trim());
@@ -48,6 +50,106 @@ function getEditPasswordAttempt(body) {
   if (typeof body?.editPasswordAttempt === "string") return body.editPasswordAttempt;
   if (typeof body?.character?.[EDIT_PASSWORD_FIELD] === "string") return body.character[EDIT_PASSWORD_FIELD];
   return "";
+}
+
+function normalizePartyInput(input, fallbackId = null) {
+  const source = input && typeof input === "object" && !Array.isArray(input) ? input : {};
+  const id = isUuid(source.id) ? source.id : fallbackId;
+  const rawName = String(source.name ?? "").trim();
+  const rawNotes = String(source.notes ?? "");
+  const rawVisibility = String(source.visibility ?? "").trim().toLowerCase();
+  const normalizedVisibility = rawVisibility === "public" ? "public" : "unlisted";
+  const rawVersion = Number(source.version);
+  const version = Number.isFinite(rawVersion) && rawVersion >= 1 ? Math.floor(rawVersion) : 1;
+  const members = Array.isArray(source.members)
+    ? source.members
+        .map((member) => {
+          if (!member || typeof member !== "object" || Array.isArray(member)) return null;
+          const characterId = String(member.characterId ?? "").trim();
+          if (!isUuid(characterId)) return null;
+          const nicknameRaw = member.nickname;
+          const nickname = typeof nicknameRaw === "string" ? nicknameRaw.trim() : "";
+          const pinned = member.pinned === true;
+          return nickname ? { characterId, nickname, pinned } : { characterId, pinned };
+        })
+        .filter(Boolean)
+    : [];
+  const uniqueMembers = [];
+  const seen = new Set();
+  for (const member of members) {
+    if (seen.has(member.characterId)) continue;
+    seen.add(member.characterId);
+    uniqueMembers.push(member);
+  }
+  const password = typeof source[PARTY_PASSWORD_FIELD] === "string" ? source[PARTY_PASSWORD_FIELD] : "";
+  return {
+    id,
+    name: rawName || "Untitled Party",
+    members: uniqueMembers,
+    notes: rawNotes,
+    visibility: normalizedVisibility,
+    version,
+    createdAt: typeof source.createdAt === "string" ? source.createdAt : new Date().toISOString(),
+    updatedAt: typeof source.updatedAt === "string" ? source.updatedAt : new Date().toISOString(),
+    [PARTY_PASSWORD_FIELD]: password,
+  };
+}
+
+function hasOwnPartyPassword(party) {
+  return Boolean(
+    party &&
+      typeof party === "object" &&
+      !Array.isArray(party) &&
+      Object.prototype.hasOwnProperty.call(party, PARTY_PASSWORD_FIELD)
+  );
+}
+
+function getStoredPartyPassword(party) {
+  const value = party?.[PARTY_PASSWORD_FIELD];
+  return typeof value === "string" ? value : "";
+}
+
+function isPartyPasswordConfigured(party) {
+  return getStoredPartyPassword(party).length > 0;
+}
+
+function isValidPartyPasswordAttempt(party, attempt) {
+  if (!isPartyPasswordConfigured(party)) return true;
+  return getStoredPartyPassword(party) === String(attempt ?? "");
+}
+
+function getPartyPasswordAttempt(body) {
+  if (typeof body?.passwordAttempt === "string") return body.passwordAttempt;
+  if (typeof body?.party?.[PARTY_PASSWORD_FIELD] === "string") return body.party[PARTY_PASSWORD_FIELD];
+  return "";
+}
+
+function toPublicParty(input, fallbackId = null) {
+  const normalized = normalizePartyInput(input, fallbackId);
+  const next = { ...normalized };
+  delete next[PARTY_PASSWORD_FIELD];
+  return next;
+}
+
+function mergePartyForPersist(existingParty, incomingParty, id) {
+  const normalizedExisting = normalizePartyInput(existingParty, id);
+  const normalizedIncoming = normalizePartyInput(incomingParty, id);
+  const nextVersion = Math.max(1, Number(normalizedExisting.version) || 1, Number(normalizedIncoming.version) || 1) + 1;
+  if (hasOwnPartyPassword(normalizedIncoming)) {
+    return {
+      ...normalizedIncoming,
+      version: nextVersion,
+      createdAt: normalizedExisting.createdAt || normalizedIncoming.createdAt,
+      updatedAt: new Date().toISOString(),
+    };
+  }
+  return {
+    ...normalizedIncoming,
+    version: nextVersion,
+    createdAt: normalizedExisting.createdAt || normalizedIncoming.createdAt,
+    updatedAt: new Date().toISOString(),
+    [PARTY_PASSWORD_FIELD]: getStoredPartyPassword(normalizedExisting),
+  };
 }
 
 function toPublicCharacter(input, fallbackId = null) {
@@ -135,6 +237,15 @@ function normalizeManualBaseUrl(value) {
   return normalized;
 }
 
+const JSON_CACHE_CONTROL_DEFAULT = "public, max-age=86400, stale-while-revalidate=604800";
+
+function applyJsonCacheHeaders(res, absoluteFilePath) {
+  const normalizedPath = String(absoluteFilePath ?? "").split(path.sep).join("/");
+  if (!normalizedPath.toLowerCase().endsWith(".json")) return;
+
+  res.setHeader("Cache-Control", JSON_CACHE_CONTROL_DEFAULT);
+}
+
 const app = express();
 app.use(express.json({ limit: "2mb" }));
 const manualBaseUrl = normalizeManualBaseUrl(process.env.MANUAL_BASE_URL);
@@ -151,6 +262,7 @@ app.use((req, res, next) => {
 });
 
 const { repository, mode, storage, close } = await createCharacterRepository();
+const { repository: partyRepository, close: closePartyRepository } = await createPartyRepository();
 
 app.get("/api/health", (_req, res) => {
   res.json({ ok: true, storage });
@@ -164,6 +276,127 @@ app.post("/api/characters", async (req, res) => {
     res.status(201).json({ id, character: toPublicCharacter(character, id), storage });
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : "Failed to create character" });
+  }
+});
+
+app.post("/api/parties", async (req, res) => {
+  try {
+    const id = uuidv4();
+    const now = new Date().toISOString();
+    const party = normalizePartyInput(
+      {
+        ...(req.body?.party && typeof req.body.party === "object" ? req.body.party : {}),
+        createdAt: now,
+        updatedAt: now,
+      },
+      id
+    );
+    await partyRepository.create(id, party);
+    res.status(201).json({ id, party: toPublicParty(party, id), storage });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : "Failed to create party" });
+  }
+});
+
+app.get("/api/parties/:id", async (req, res) => {
+  const id = String(req.params.id ?? "");
+  if (!isUuid(id)) {
+    res.status(400).json({ error: "Invalid party id" });
+    return;
+  }
+
+  try {
+    const party = await partyRepository.getById(id);
+    if (!party) {
+      res.status(404).json({ error: "Party not found" });
+      return;
+    }
+    res.json({ id, party: toPublicParty(party, id), storage });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : "Failed to load party" });
+  }
+});
+
+app.put("/api/parties/:id", async (req, res) => {
+  const id = String(req.params.id ?? "");
+  if (!isUuid(id)) {
+    res.status(400).json({ error: "Invalid party id" });
+    return;
+  }
+
+  try {
+    const existing = await partyRepository.getById(id);
+    if (!existing) {
+      const now = new Date().toISOString();
+      const party = normalizePartyInput(
+        {
+          ...(req.body?.party && typeof req.body.party === "object" ? req.body.party : {}),
+          createdAt: now,
+          updatedAt: now,
+        },
+        id
+      );
+      await partyRepository.create(id, party);
+      res.status(201).json({ id, party: toPublicParty(party, id), storage });
+      return;
+    }
+
+    const existingParty = normalizePartyInput(existing, id);
+    const passwordAttempt = getPartyPasswordAttempt(req.body);
+    if (!isValidPartyPasswordAttempt(existingParty, passwordAttempt)) {
+      res.status(403).json({ error: "Invalid party password", code: INVALID_PARTY_PASSWORD_CODE });
+      return;
+    }
+
+    const party = mergePartyForPersist(existingParty, req.body?.party, id);
+    await partyRepository.save(id, party);
+    res.json({ id, party: toPublicParty(party, id), storage });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : "Failed to save party" });
+  }
+});
+
+app.patch("/api/parties/:id", async (req, res) => {
+  const id = String(req.params.id ?? "");
+  if (!isUuid(id)) {
+    res.status(400).json({ error: "Invalid party id" });
+    return;
+  }
+
+  try {
+    const existing = await partyRepository.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Party not found" });
+      return;
+    }
+    const existingParty = normalizePartyInput(existing, id);
+    const passwordAttempt = getPartyPasswordAttempt(req.body);
+    if (!isValidPartyPasswordAttempt(existingParty, passwordAttempt)) {
+      res.status(403).json({ error: "Invalid party password", code: INVALID_PARTY_PASSWORD_CODE });
+      return;
+    }
+    const incomingPatch = isPlainObject(req.body?.party) ? req.body.party : {};
+    const merged = applyCharacterMergePatch(existingParty, incomingPatch);
+    const normalizedMerged = normalizePartyInput(merged, id);
+    const nextVersion = Math.max(1, Number(existingParty.version) || 1, Number(normalizedMerged.version) || 1) + 1;
+    const party = hasOwnPartyPassword(incomingPatch)
+      ? {
+          ...normalizedMerged,
+          version: nextVersion,
+          createdAt: existingParty.createdAt || normalizedMerged.createdAt,
+          updatedAt: new Date().toISOString(),
+        }
+      : {
+          ...normalizedMerged,
+          version: nextVersion,
+          createdAt: existingParty.createdAt || normalizedMerged.createdAt,
+          updatedAt: new Date().toISOString(),
+          [PARTY_PASSWORD_FIELD]: getStoredPartyPassword(existingParty),
+        };
+    await partyRepository.save(id, party);
+    res.json({ id, party: toPublicParty(party, id), storage });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : "Failed to patch party" });
   }
 });
 
@@ -300,12 +533,13 @@ dataAssets.forEach((assetPath) => {
 
 const offlineAssets = [...offlineAssetSet].sort((a, b) => a.localeCompare(b));
 
-app.use("/src", express.static(path.join(repoRoot, "src")));
-app.use("/data", express.static(path.join(repoRoot, "data")));
-app.use("/data/catalog-src", express.static(path.join(repoRoot, "data/catalog-src")));
-app.use(express.static(path.join(repoRoot, "public")));
+app.use("/src", express.static(path.join(repoRoot, "src"), { setHeaders: applyJsonCacheHeaders }));
+app.use("/data", express.static(path.join(repoRoot, "data"), { setHeaders: applyJsonCacheHeaders }));
+app.use("/data/catalog-src", express.static(path.join(repoRoot, "data/catalog-src"), { setHeaders: applyJsonCacheHeaders }));
+app.use(express.static(path.join(repoRoot, "public"), { setHeaders: applyJsonCacheHeaders }));
 
 app.get("/api/offline-assets", (_req, res) => {
+  res.setHeader("Cache-Control", "no-store");
   res.json({ assets: offlineAssets });
 });
 
@@ -340,10 +574,12 @@ app.listen(port, host, () => {
 
 process.on("SIGINT", async () => {
   await close();
+  await closePartyRepository();
   process.exit(0);
 });
 
 process.on("SIGTERM", async () => {
   await close();
+  await closePartyRepository();
   process.exit(0);
 });

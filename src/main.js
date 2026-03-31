@@ -18,6 +18,7 @@ import {
   validateCharacterEditPassword,
 } from "./character-api.js";
 import { createPersistence } from "./app/persistence.js";
+import { createPartyFeature } from "./app/party-feature.js";
 import { createDiceUi } from "./dice/index.js";
 import { openModal } from "./ui/modals/modal.js";
 import { createEvents } from "./ui/events.js";
@@ -176,6 +177,8 @@ const appState = {
   remoteSaveTimer: null,
   localCharacterVersion: 0,
   localCharacterUpdatedAt: "",
+  activePartyId: null,
+  activeParty: null,
 };
 const { srd: srdPresetSources = [], ...nonSrdSourcePresets } = SOURCE_PRESETS;
 const { srd: srdPresetLabel = "SRD", ...nonSrdSourcePresetLabels } = SOURCE_PRESET_LABELS;
@@ -389,7 +392,7 @@ function loadCharacterHistory() {
 
   return parsed
     .map((entry) => {
-      const id = typeof entry?.id === "string" ? entry.id.trim() : "";
+      const id = typeof entry?.id === "string" ? entry.id.trim().toLowerCase() : "";
       if (!isUuid(id)) return null;
       const name = getCharacterDisplayName(entry?.name);
       const level = Math.max(1, Math.min(20, toNumber(entry?.level, 1)));
@@ -408,7 +411,7 @@ function saveCharacterHistory(entries) {
 }
 
 function upsertCharacterHistory(character, options = {}) {
-  const id = typeof character?.id === "string" ? character.id.trim() : "";
+  const id = typeof character?.id === "string" ? character.id.trim().toLowerCase() : "";
   if (!isUuid(id)) return;
   const shouldTouchAccess = options.touchAccess !== false;
   const entries = loadCharacterHistory();
@@ -458,9 +461,63 @@ function upsertCharacterHistory(character, options = {}) {
   ]);
 }
 
+function removeCharacterFromHistory(characterId) {
+  const parsedCharacterId = String(characterId ?? "").trim().toLowerCase();
+  if (!isUuid(parsedCharacterId)) return;
+  const entries = loadCharacterHistory();
+  if (!entries.some((entry) => entry.id === parsedCharacterId)) return;
+  const nextEntries = entries.filter((entry) => entry.id !== parsedCharacterId);
+  saveCharacterHistory(nextEntries);
+  const nextLastCharacterId = String(nextEntries[0]?.id ?? "").trim();
+  if (isUuid(nextLastCharacterId)) rememberLastCharacterId(nextLastCharacterId);
+  else clearLastCharacterId();
+}
+
 function readFileText(file) {
   if (!file || typeof file.text !== "function") throw new Error("Choose a JSON file to import.");
   return file.text();
+}
+
+function isImportEnvelope(candidate) {
+  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return false;
+  if (!candidate.character || typeof candidate.character !== "object" || Array.isArray(candidate.character)) return false;
+  const keys = Object.keys(candidate);
+  return keys.every((key) =>
+    key === "id" ||
+    key === "character" ||
+    key === "storage" ||
+    key === "meta" ||
+    key === "updatedAt" ||
+    key === "version" ||
+    key === "createdAt"
+  );
+}
+
+function parseImportedCharacterPayload(parsed) {
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("Invalid JSON payload");
+  }
+
+  let candidate = parsed;
+  let envelopeId = isUuid(parsed.id) ? parsed.id : null;
+  let guard = 0;
+  while (isImportEnvelope(candidate) && guard < 3) {
+    if (!envelopeId && isUuid(candidate.id)) {
+      envelopeId = candidate.id;
+    }
+    candidate = candidate.character;
+    guard += 1;
+  }
+
+  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+    throw new Error("Invalid JSON payload");
+  }
+
+  const characterId = isUuid(candidate.id) ? candidate.id : envelopeId;
+  return {
+    id: characterId,
+    character: characterId ? { ...candidate, id: characterId } : candidate,
+  };
 }
 
 function sanitizeFileNamePart(value) {
@@ -514,15 +571,12 @@ function buildImportOverwriteMessage(importedId, options = {}) {
 }
 
 async function importCharacterFromParsedJson(parsed, options = {}) {
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error("Invalid JSON payload");
-  }
-
+  const importedPayload = parseImportedCharacterPayload(parsed);
   const sourceLabel = String(options.sourceLabel ?? "Import");
-  const importedId = isUuid(parsed.id) ? parsed.id : null;
+  const importedId = importedPayload.id;
   const currentId = isUuid(store.getState().character?.id) ? store.getState().character.id : null;
-  const nextVersion = Math.max(appState.localCharacterVersion, getCharacterVersion(parsed)) + 1;
-  const preparedCharacter = withSyncMeta(withCharacterChangeLog(parsed), nextVersion);
+  const nextVersion = Math.max(appState.localCharacterVersion, getCharacterVersion(importedPayload.character)) + 1;
+  const preparedCharacter = withSyncMeta(withCharacterChangeLog(importedPayload.character), nextVersion);
 
   if (importedId) {
     const isCurrentCharacter = importedId === currentId;
@@ -589,7 +643,23 @@ function renderCharacterHistorySelector(selectId, selectedCharacterId = null, op
   `;
 }
 
+const partyFeature = createPartyFeature({
+  app,
+  appState,
+  store,
+  isUuid,
+  esc,
+  toNumber,
+  openModal,
+  loadCharacterHistory,
+  loadCharacterById: (...args) => loadCharacterById(...args),
+  openClassDetailsModalForCharacter: (...args) => openClassDetailsModalForCharacter(...args),
+  openSubclassDetailsModalForCharacter: (...args) => openSubclassDetailsModalForCharacter(...args),
+  render: (...args) => render(...args),
+});
+
 async function createAndOpenNewCharacter() {
+  partyFeature.clearActiveParty();
   const character = createInitialCharacter();
   const nextVersion = Math.max(appState.localCharacterVersion, getCharacterVersion(character)) + 1;
   const payload = await createCharacter(withSyncMeta(withCharacterChangeLog(character), nextVersion));
@@ -598,10 +668,25 @@ async function createAndOpenNewCharacter() {
   await applyRemoteCharacterPayload(payload, parsed.id);
 }
 
+function forgetActiveCharacterAndRedirectHome() {
+  const characterId = String(store.getState().character?.id ?? "").trim();
+  if (!isUuid(characterId)) return;
+  removeCharacterFromHistory(characterId);
+  // Reset the in-memory/persisted character so startup subscription does not re-add it to history.
+  store.hydrate(createInitialCharacter());
+  appState.showOnboardingHome = true;
+  currentUrlCharacterId = null;
+  window.location.replace("/");
+}
+
 async function switchCharacterFromHistory(characterId) {
   if (!isUuid(characterId)) return;
   if (!appState.showOnboardingHome && store.getState().character?.id === characterId) return;
   try {
+    const isCharacterInActiveParty = partyFeature.isCharacterInActiveParty(characterId);
+    if (!isCharacterInActiveParty) {
+      partyFeature.clearActiveParty();
+    }
     await loadCharacterById(characterId);
     setCharacterIdInUrl(characterId, false);
     render(store.getState());
@@ -4874,6 +4959,35 @@ function getCharacterAllowedSources(character) {
   return [...new Set([...presetSources, ...customSources])];
 }
 
+const partyModalCatalogCache = new Map();
+
+function getPartyModalCatalogCacheKey(character) {
+  return getCharacterAllowedSources(character)
+    .map((source) => normalizeSourceTag(source))
+    .filter(Boolean)
+    .sort()
+    .join("|");
+}
+
+async function getCachedPartyModalCatalogs(character) {
+  const allowedSources = getCharacterAllowedSources(character);
+  const cacheKey = getPartyModalCatalogCacheKey(character);
+  if (!cacheKey) return loadCatalogs(allowedSources);
+  const cached = partyModalCatalogCache.get(cacheKey);
+  if (cached) return cached;
+  const pending = loadCatalogs(allowedSources)
+    .then((catalogs) => {
+      partyModalCatalogCache.set(cacheKey, catalogs);
+      return catalogs;
+    })
+    .catch((error) => {
+      partyModalCatalogCache.delete(cacheKey);
+      throw error;
+    });
+  partyModalCatalogCache.set(cacheKey, pending);
+  return pending;
+}
+
 function getSpellSaveAbilityKeys(spell, descriptionText = "") {
   const keys = [];
   const addKey = (value) => {
@@ -5653,6 +5767,20 @@ function openClassDetailsModal(state) {
   });
 }
 
+async function openClassDetailsModalForCharacter(character) {
+  const candidate = character && typeof character === "object" && !Array.isArray(character) ? character : null;
+  if (!candidate) {
+    setDiceResult("Class details unavailable: character not found.", true);
+    return;
+  }
+  const catalogs = await getCachedPartyModalCatalogs(candidate);
+  openClassDetailsModal({
+    ...store.getState(),
+    catalogs,
+    character: candidate,
+  });
+}
+
 function openSubclassDetailsModal(state) {
   const subclassEntry = getSelectedSubclassEntry(state.catalogs, state.character);
   if (!subclassEntry) {
@@ -5710,6 +5838,20 @@ function openSubclassDetailsModal(state) {
   });
 }
 
+async function openSubclassDetailsModalForCharacter(character) {
+  const candidate = character && typeof character === "object" && !Array.isArray(character) ? character : null;
+  if (!candidate) {
+    setDiceResult("Subclass details unavailable: character not found.", true);
+    return;
+  }
+  const catalogs = await getCachedPartyModalCatalogs(candidate);
+  openSubclassDetailsModal({
+    ...store.getState(),
+    catalogs,
+    character: candidate,
+  });
+}
+
 async function loadCatalogsForCharacter(character) {
   await ensureRuntimeSourcePresets();
   const resolvedPreset = resolveRuntimeSourcePreset(character?.sourcePreset ?? DEFAULT_SOURCE_PRESET);
@@ -5761,6 +5903,9 @@ function renderOnboardingHome() {
   const lastCharacterSummary = hasLastCharacter
     ? formatCharacterHistoryEntrySummary(loadCharacterHistory().find((entry) => entry.id === lastCharacterId))
     : "";
+  const lastPartyId = partyFeature.getLastPartyId();
+  const hasLastParty = Boolean(lastPartyId);
+  const lastPartySummary = partyFeature.getLastPartySummary();
   return `
     <main class="layout layout-onboarding">
       <section class="card onboarding-hero-card">
@@ -5771,9 +5916,6 @@ function renderOnboardingHome() {
             </a>
             <h1 class="title">Action Surge</h1>
           </div>
-          ${renderCharacterHistorySelector("home-character-history-select", null, {
-            className: "character-history-control onboarding-history-select",
-          })}
         </div>
         <p class="onboarding-kicker">Built for quick and simple play.</p>
         <h2 class="onboarding-tagline">Spend less time prepping your sheet and more time playing your turn.</h2>
@@ -5785,12 +5927,14 @@ function renderOnboardingHome() {
         ${renderPersistenceNotice()}
       </section>
       <section class="card onboarding-cta-card">
+        ${renderCharacterHistorySelector("home-character-history-select", null, {
+          className: "character-history-control onboarding-history-select",
+        })}
         <div class="onboarding-actions">
           <button class="${openLastButtonClass}" id="home-open-last" type="button" ${hasLastCharacter ? "" : "disabled"}>
             Open Last Character
           </button>
-          <button class="${createButtonClass}" id="home-create-character" type="button">Create New Character</button>
-          <button class="btn secondary" id="home-import-json" type="button">Import Character JSON</button>
+          <button class="${createButtonClass}" id="home-create-character" type="button">Create Character</button>
         </div>
         <p class="muted onboarding-last-character">
           ${
@@ -5799,6 +5943,13 @@ function renderOnboardingHome() {
               : "No recent character found in this browser."
           }
         </p>
+        <div class="onboarding-actions onboarding-party-actions">
+          <button class="btn onboarding-create-btn" id="home-open-last-party" type="button" ${hasLastParty ? "" : "disabled"}>
+            Open Last Party
+          </button>
+          <button class="btn secondary" id="home-create-party" type="button">Create Party</button>
+        </div>
+        <p class="muted onboarding-last-character">Recent party: ${esc(lastPartySummary)}</p>
       </section>
     </main>
   `;
@@ -5849,36 +6000,35 @@ function bindOnboardingEvents() {
     }
   });
 
-  app.querySelector("#home-import-json")?.addEventListener("click", () => {
-    openModal({
-      title: "Import Character JSON",
-      bodyHtml: `
-        <p class="subtitle">Choose a JSON backup file to import.</p>
-        <input id="home-import-json-file" type="file" accept=".json,application/json" />
-      `,
-      actions: [
-        {
-          label: "Import",
-          onClick: async (done) => {
-            const input = document.getElementById("home-import-json-file");
-            const file = input?.files?.[0] ?? null;
-            if (!file) {
-              alert("Choose a JSON file to import.");
-              return;
-            }
-            try {
-              const result = await importCharacterFromJsonFile(file, { sourceLabel: "Homepage import" });
-              if (result?.cancelled) return;
-              done();
-            } catch (error) {
-              alert(error instanceof Error ? error.message : "Invalid JSON payload");
-            }
-          },
-        },
-        { label: "Cancel", secondary: true, onClick: (done) => done() },
-      ],
-    });
+  app.querySelector("#home-create-party")?.addEventListener("click", async () => {
+    const button = app.querySelector("#home-create-party");
+    if (button) button.disabled = true;
+    try {
+      await partyFeature.createAndOpenNewParty();
+    } catch (error) {
+      appState.startupErrorMessage = error instanceof Error ? error.message : "Failed to create party";
+      appState.showOnboardingHome = true;
+      render(store.getState());
+    } finally {
+      if (button) button.disabled = false;
+    }
   });
+
+  app.querySelector("#home-open-last-party")?.addEventListener("click", async () => {
+    const partyId = partyFeature.getLastPartyId();
+    if (!isUuid(partyId)) return;
+    try {
+      await partyFeature.loadPartyIntoContext(partyId, { replaceUrl: false });
+    } catch (error) {
+      appState.startupErrorMessage = error instanceof Error ? error.message : "Failed to load last party";
+      appState.showOnboardingHome = true;
+      render(store.getState());
+    }
+  });
+}
+
+function bindPartyEvents() {
+  partyFeature.bindPartyEvents();
 }
 
 const EDIT_PASSWORD_PROMPT_INPUT_ID = "build-mode-edit-password-input";
@@ -6094,7 +6244,13 @@ const persistence = createPersistence({
   withCharacterChangeLog,
 });
 
-const { loadCharacterById, createOrSavePermanentCharacter, queueRemoteSave, bootstrap, flushPendingSaves } = persistence;
+const {
+  loadCharacterById,
+  createOrSavePermanentCharacter,
+  queueRemoteSave,
+  bootstrap: bootstrapPersistence,
+  flushPendingSaves,
+} = persistence;
 
 const events = createEvents({
   app,
@@ -6152,6 +6308,7 @@ const events = createEvents({
   getHitPointBreakdown,
   uiState,
   diceStylePresets: DICE_STYLE_PRESETS,
+  forgetActiveCharacterAndRedirectHome,
 });
 
 const { bindBuildEvents, bindPlayEvents } = events;
@@ -6206,6 +6363,7 @@ const renderers = createRenderers({
   getCharacterChangeLog: () => uiState.characterChangeLog,
   extractSimpleNotation,
   manualBaseUrl: MANUAL_BASE_URL,
+  isUuid,
 });
 
 const {
@@ -6822,6 +6980,16 @@ function hydratePersistentBrandLogo() {
 }
 
 function render(state) {
+  if (!appState.showOnboardingHome && partyFeature.getPartyIdFromUrl()) {
+    uiState.selectedDiceStyle = DEFAULT_DICE_STYLE;
+    document.body.classList.remove("play-mode");
+    applyDiceStyle();
+    syncDiceOverlayVisibility({ ...state, mode: "build" });
+    app.innerHTML = partyFeature.renderPartyPage();
+    bindPartyEvents();
+    return;
+  }
+
   if (appState.showOnboardingHome) {
     uiState.selectedDiceStyle = DEFAULT_DICE_STYLE;
     document.body.classList.remove("play-mode");
@@ -6936,6 +7104,43 @@ window.addEventListener("online", () => {
     console.error("Pending sync flush failed", error);
   });
 });
+
+async function syncAppRouteFromUrl() {
+  const requestedCharacterId = getCharacterIdFromUrl();
+  if (requestedCharacterId) {
+    try {
+      await loadCharacterById(requestedCharacterId);
+      appState.showOnboardingHome = false;
+      appState.startupErrorMessage = "";
+      render(store.getState());
+      return;
+    } catch (error) {
+      appState.startupErrorMessage = error instanceof Error ? error.message : "Failed to load character";
+      appState.showOnboardingHome = true;
+      render(store.getState());
+      return;
+    }
+  }
+
+  const requestedPartyId = partyFeature.getPartyIdFromUrl();
+  if (requestedPartyId) {
+    await partyFeature.loadPartyIntoContext(requestedPartyId, { replaceUrl: true });
+    return;
+  }
+
+  partyFeature.clearActiveParty();
+  await bootstrapPersistence();
+}
+
+window.addEventListener("popstate", () => {
+  syncAppRouteFromUrl().catch((error) => {
+    console.error("Navigation sync failed", error);
+  });
+});
+
+async function bootstrap() {
+  await syncAppRouteFromUrl();
+}
 
 bootstrap().catch((error) => {
   console.error("Bootstrap failed", error);

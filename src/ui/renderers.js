@@ -46,6 +46,7 @@ export function createRenderers(deps) {
     getCharacterChangeLog,
     extractSimpleNotation,
     manualBaseUrl,
+    isUuid,
   } = deps;
 
   function getManualBaseUrl() {
@@ -3112,6 +3113,8 @@ export function createRenderers(deps) {
   }
 
   function renderBuildMode(state) {
+    const isSettingsStep = state.stepIndex === STEPS.length - 1;
+    const canForgetActiveCharacter = isSettingsStep && isUuid(state.character?.id);
     return `
     <main class="layout layout-build">
       <section class="card">
@@ -3132,6 +3135,13 @@ export function createRenderers(deps) {
           <button class="btn secondary" id="prev-step" ${state.stepIndex === 0 ? "disabled" : ""}>Previous</button>
           <button class="btn secondary btn-accent-soft" id="next-step" ${state.stepIndex === STEPS.length - 1 ? "disabled" : ""}>Next</button>
         </div>
+        ${
+          canForgetActiveCharacter
+            ? `<div class="party-page-footer-actions">
+                 <button class="btn secondary danger" id="build-forget-active" type="button">Forget Character</button>
+               </div>`
+            : ""
+        }
       </section>
       <aside class="card sticky">
         ${renderSummaryImpl(state)}

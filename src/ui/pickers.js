@@ -122,9 +122,11 @@ export function createPickers(deps) {
       if (!classNames.length) return true;
       const spellSourceEntry = spell?.spellSourceEntry;
       const classLookup = spellSourceEntry?.class;
+      const classVariantLookup = spellSourceEntry?.classVariant;
       const subclassLookup = spellSourceEntry?.subclass;
-      if (!classLookup && !subclassLookup) return true;
+      if (!classLookup && !classVariantLookup && !subclassLookup) return true;
       if (classNames.some((className) => doesLookupListClass(classLookup, className))) return true;
+      if (classNames.some((className) => doesLookupListClass(classVariantLookup, className))) return true;
       const selectedSubclass = getSelectedSubclass(character);
       if (!selectedSubclass) return false;
       return doesLookupListSubclass(subclassLookup, selectedSubclass.className, selectedSubclass.subclassName);
