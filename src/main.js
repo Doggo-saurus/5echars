@@ -969,10 +969,12 @@ function restoreActiveInput(snapshot) {
 }
 
 function getModeToggle(mode) {
+  const playButtonClass = mode === "play" ? "mode-toggle-btn is-active" : "mode-toggle-btn";
+  const buildButtonClass = mode === "build" ? "mode-toggle-btn is-active" : "mode-toggle-btn";
   return `
-    <div class="stepper mode-toggle">
-      <button data-mode="play" class="${mode === "play" ? "active" : ""}">Play</button>
-      <button data-mode="build" class="${mode === "build" ? "active" : ""}">Edit</button>
+    <div class="mode-toggle" role="group" aria-label="Character mode">
+      <button type="button" data-mode="play" class="${playButtonClass}">Play</button>
+      <button type="button" data-mode="build" class="${buildButtonClass}">Edit</button>
     </div>
   `;
 }
@@ -2462,6 +2464,10 @@ function getAutoGrantedSpellData(catalogs, character) {
     if (!current || nextPriority >= currentPriority) grants.set(key, { name: canonical, grantType });
   };
   const tracks = getClassLevelTracks(character);
+  const raceEntry = getEffectiveRaceEntry(catalogs, character, getPreferredSourceOrder(character));
+  collectAdditionalSpellGrantsFromEntries(raceEntry?.additionalSpells, Math.max(1, toNumber(character?.level, 1))).forEach((grant) =>
+    addGrant(grant.name, grant.grantType)
+  );
   tracks.forEach((track) => {
     const classEntry = getClassCatalogEntry(catalogs, track.className);
     if (!classEntry) return;
@@ -2898,12 +2904,7 @@ function openSpeciesTraitDetailsModal(state, traitName) {
   const selectedTraitName = String(traitName ?? "").trim();
   if (!selectedTraitName) return;
   const sourceOrder = getPreferredSourceOrder(state.character);
-  const raceEntry = findCatalogEntryByNameWithSelectedSourcePreference(
-    state.catalogs?.races,
-    state.character?.race,
-    state.character?.raceSource,
-    sourceOrder
-  );
+  const raceEntry = getEffectiveRaceEntry(state.catalogs, state.character, sourceOrder);
   if (!raceEntry) return;
   const ignoredTraitNames = new Set(["age", "alignment", "size", "language", "languages", "creature type"]);
   const traitEntry = (Array.isArray(raceEntry?.entries) ? raceEntry.entries : []).find((entry) => {
@@ -3019,6 +3020,157 @@ function findCatalogEntryByNameAndSource(entries, selectedName, selectedSource =
   const source = normalizeSourceTag(selectedSource);
   if (!source) return byName.length === 1 ? byName[0] : null;
   return byName.find((entry) => normalizeSourceTag(entry?.source) === source) ?? null;
+}
+
+function getSubraceCatalogEntries(catalogs, raceName, raceSource = "", preferredSources = []) {
+  const subraces = Array.isArray(catalogs?.subraces) ? catalogs.subraces : [];
+  const normalizedRaceName = String(raceName ?? "").trim().toLowerCase();
+  if (!normalizedRaceName) return [];
+  const normalizedRaceSource = normalizeSourceTag(raceSource);
+  const filtered = subraces.filter((entry) => {
+    const entryRaceName = String(entry?.raceName ?? "").trim().toLowerCase();
+    if (!entryRaceName || entryRaceName !== normalizedRaceName) return false;
+    if (!normalizedRaceSource) return true;
+    return normalizeSourceTag(entry?.raceSource ?? entry?.source) === normalizedRaceSource;
+  });
+  if (!filtered.length) return [];
+  const sourceOrder = new Map(
+    (Array.isArray(preferredSources) ? preferredSources : [])
+      .map((source, index) => [normalizeSourceTag(source), index])
+      .filter(([source]) => source)
+  );
+  const fallbackOrder = sourceOrder.size + 1000;
+  return [...filtered].sort((a, b) => {
+    const nameDelta = String(a?.name ?? "").localeCompare(String(b?.name ?? ""));
+    if (nameDelta !== 0) return nameDelta;
+    const aSource = normalizeSourceTag(a?.source);
+    const bSource = normalizeSourceTag(b?.source);
+    const aOrder = sourceOrder.get(aSource) ?? fallbackOrder;
+    const bOrder = sourceOrder.get(bSource) ?? fallbackOrder;
+    if (aOrder !== bOrder) return aOrder - bOrder;
+    return aSource.localeCompare(bSource);
+  });
+}
+
+function getDefaultUnnamedSubraceEntry(entries) {
+  const list = Array.isArray(entries) ? entries : [];
+  return (
+    list.find((entry) => !String(entry?.name ?? "").trim())
+    ?? null
+  );
+}
+
+function mergeAbilityScoreData(baseAbility, subraceAbility, options = {}) {
+  const shouldOverride = options.override === true;
+  const baseOption = Array.isArray(baseAbility) ? baseAbility.find((entry) => isRecordObject(entry)) : null;
+  const subraceOption = Array.isArray(subraceAbility) ? subraceAbility.find((entry) => isRecordObject(entry)) : null;
+  if (shouldOverride || !baseOption) return subraceOption ? [structuredClone(subraceOption)] : [];
+  if (!subraceOption) return [structuredClone(baseOption)];
+  const mergedOption = {};
+  SAVE_ABILITIES.forEach((ability) => {
+    const total = Math.max(0, toNumber(baseOption?.[ability], 0) + toNumber(subraceOption?.[ability], 0));
+    if (total > 0) mergedOption[ability] = total;
+  });
+  const baseChoose = Array.isArray(baseOption?.choose)
+    ? baseOption.choose.filter((entry) => isRecordObject(entry))
+    : isRecordObject(baseOption?.choose)
+      ? [baseOption.choose]
+      : [];
+  const subraceChoose = Array.isArray(subraceOption?.choose)
+    ? subraceOption.choose.filter((entry) => isRecordObject(entry))
+    : isRecordObject(subraceOption?.choose)
+      ? [subraceOption.choose]
+      : [];
+  const combinedChoose = [...baseChoose, ...subraceChoose].map((entry) => structuredClone(entry));
+  if (combinedChoose.length === 1) mergedOption.choose = combinedChoose[0];
+  else if (combinedChoose.length > 1) mergedOption.choose = combinedChoose;
+  return Object.keys(mergedOption).length ? [mergedOption] : [];
+}
+
+function mergeRaceAndSubrace(baseRace, subrace) {
+  if (!isRecordObject(baseRace)) return null;
+  if (!isRecordObject(subrace)) return { ...baseRace };
+  const overwrite = isRecordObject(subrace?.overwrite) ? subrace.overwrite : {};
+  const merged = { ...baseRace };
+  const isHumanVariant =
+    String(subrace?.name ?? "").trim().toLowerCase() === "variant"
+    && String(subrace?.raceName ?? "").trim().toLowerCase() === "human";
+  const concatArrayKeys = new Set([
+    "entries",
+    "skillProficiencies",
+    "toolProficiencies",
+    "weaponProficiencies",
+    "armorProficiencies",
+    "languageProficiencies",
+    "resist",
+    "immune",
+    "conditionImmune",
+    "vulnerable",
+    "traitTags",
+    "feats",
+  ]);
+  Object.entries(subrace).forEach(([key, value]) => {
+    if ([
+      "name",
+      "source",
+      "raceName",
+      "raceSource",
+      "overwrite",
+      "_versions",
+      "hasFluff",
+      "hasFluffImages",
+    ].includes(key)) {
+      return;
+    }
+    if (key === "ability") {
+      const shouldOverride = overwrite?.ability === true || isHumanVariant;
+      merged.ability = mergeAbilityScoreData(baseRace?.ability, value, { override: shouldOverride });
+      return;
+    }
+    if (key === "additionalSpells") {
+      // Most subraces replace the base innate spell package when present.
+      merged.additionalSpells = Array.isArray(value) ? structuredClone(value) : [];
+      return;
+    }
+    if (overwrite?.[key] === true) {
+      merged[key] = Array.isArray(value) ? structuredClone(value) : isRecordObject(value) ? { ...value } : value;
+      return;
+    }
+    if (concatArrayKeys.has(key) && Array.isArray(value)) {
+      const baseValue = Array.isArray(baseRace?.[key]) ? baseRace[key] : [];
+      merged[key] = [...baseValue, ...value];
+      return;
+    }
+    if (isRecordObject(value) && isRecordObject(baseRace?.[key])) {
+      merged[key] = { ...baseRace[key], ...value };
+      return;
+    }
+    merged[key] = Array.isArray(value) ? structuredClone(value) : isRecordObject(value) ? { ...value } : value;
+  });
+  merged.subrace = String(subrace?.name ?? "").trim();
+  merged.subraceSource = normalizeSourceTag(subrace?.source);
+  merged.subraceSourceLabel = subrace?.sourceLabel ?? SOURCE_LABELS[normalizeSourceTag(subrace?.source)] ?? subrace?.source ?? "";
+  return merged;
+}
+
+function getEffectiveRaceEntry(catalogs, character, preferredSources = []) {
+  const sourceOrder = preferredSources.length ? preferredSources : getPreferredSourceOrder(character);
+  const baseRace = findCatalogEntryByNameWithSelectedSourcePreference(
+    catalogs?.races,
+    character?.race,
+    character?.raceSource,
+    sourceOrder
+  );
+  if (!baseRace) return null;
+  const subraceOptions = getSubraceCatalogEntries(catalogs, baseRace?.name, baseRace?.source, sourceOrder);
+  const selectedSubrace = findCatalogEntryByNameWithSelectedSourcePreference(
+    subraceOptions,
+    character?.subrace,
+    character?.subraceSource,
+    sourceOrder
+  );
+  const implicitBaseSubrace = getDefaultUnnamedSubraceEntry(subraceOptions);
+  return mergeRaceAndSubrace(baseRace, selectedSubrace ?? implicitBaseSubrace);
 }
 
 function resolveImportedFeats(catalogs, feats) {
@@ -3253,12 +3405,7 @@ function getSelectedFeatAndOptionalFeatureEntries(catalogs, character, sourceOrd
 
 function getAutomaticAbilityBonuses(catalogs, character, play) {
   const sourceOrder = getPreferredSourceOrder(character);
-  const raceEntry = findCatalogEntryByNameWithSelectedSourcePreference(
-    catalogs?.races,
-    character?.race,
-    character?.raceSource,
-    sourceOrder
-  );
+  const raceEntry = getEffectiveRaceEntry(catalogs, character, sourceOrder);
   const backgroundEntry = findCatalogEntryByNameWithSelectedSourcePreference(
     catalogs?.backgrounds,
     character?.background,
@@ -3452,12 +3599,7 @@ function collectSkillProficienciesFromClassEntry(classEntry, play, sourceKey = "
 function getAutomaticSaveProficiencies(catalogs, character) {
   const auto = { ...getClassSaveProficiencies(catalogs, character?.class) };
   const sourceOrder = getPreferredSourceOrder(character);
-  const raceEntry = findCatalogEntryByNameWithSelectedSourcePreference(
-    catalogs?.races,
-    character?.race,
-    character?.raceSource,
-    sourceOrder
-  );
+  const raceEntry = getEffectiveRaceEntry(catalogs, character, sourceOrder);
   const backgroundEntry = findCatalogEntryByNameWithSelectedSourcePreference(
     catalogs?.backgrounds,
     character?.background,
@@ -3484,12 +3626,7 @@ function getAutomaticSaveProficiencies(catalogs, character) {
 function getAutomaticSkillProficiencies(catalogs, character, play) {
   const sourceOrder = getPreferredSourceOrder(character);
   const classEntry = getClassCatalogEntry(catalogs, character?.class, character?.classSource, sourceOrder);
-  const raceEntry = findCatalogEntryByNameWithSelectedSourcePreference(
-    catalogs?.races,
-    character?.race,
-    character?.raceSource,
-    sourceOrder
-  );
+  const raceEntry = getEffectiveRaceEntry(catalogs, character, sourceOrder);
   const backgroundEntry = findCatalogEntryByNameWithSelectedSourcePreference(
     catalogs?.backgrounds,
     character?.background,
@@ -3776,12 +3913,7 @@ function addDefenseEntries(collector, entries, sourceLabel = "", options = {}) {
 
 function getCharacterToolAndDefenseSummary(catalogs, character) {
   const sourceOrder = getPreferredSourceOrder(character);
-  const raceEntry = findCatalogEntryByNameWithSelectedSourcePreference(
-    catalogs?.races,
-    character?.race,
-    character?.raceSource,
-    sourceOrder
-  );
+  const raceEntry = getEffectiveRaceEntry(catalogs, character, sourceOrder);
   const backgroundEntry = findCatalogEntryByNameWithSelectedSourcePreference(
     catalogs?.backgrounds,
     character?.background,
@@ -5552,6 +5684,8 @@ const renderers = createRenderers({
   getCharacterAllowedSources,
   sourceLabels: SOURCE_LABELS,
   optionList,
+  getSubraceCatalogEntries,
+  getEffectiveRaceEntry,
   getSubclassSelectOptions,
   getFeatSlotsWithSelection,
   getOptionalFeatureSlotsWithSelection,
@@ -5648,6 +5782,13 @@ function updateCharacterWithRequiredSettings(state, patch, options = {}) {
     nextCharacter?.raceSource,
     sourceOrder
   );
+  const subraceOptions = getSubraceCatalogEntries(state.catalogs, resolvedRace?.name, resolvedRace?.source, sourceOrder);
+  const resolvedSubrace = findCatalogEntryByNameWithSelectedSourcePreference(
+    subraceOptions,
+    nextCharacter?.subrace,
+    nextCharacter?.subraceSource,
+    sourceOrder
+  );
   const resolvedBackground = findCatalogEntryByNameWithSelectedSourcePreference(
     state.catalogs?.backgrounds,
     nextCharacter?.background,
@@ -5661,6 +5802,8 @@ function updateCharacterWithRequiredSettings(state, patch, options = {}) {
     sourceOrder
   );
   nextCharacter.raceSource = resolvedRace ? normalizeSourceTag(resolvedRace?.source) : "";
+  nextCharacter.subrace = resolvedSubrace ? String(resolvedSubrace?.name ?? "").trim() : "";
+  nextCharacter.subraceSource = resolvedSubrace ? normalizeSourceTag(resolvedSubrace?.source) : "";
   nextCharacter.backgroundSource = resolvedBackground ? normalizeSourceTag(resolvedBackground?.source) : "";
   nextCharacter.classSource = resolvedClass ? normalizeSourceTag(resolvedClass?.source) : "";
   nextCharacter = {

@@ -428,21 +428,51 @@ export function createEvents(deps) {
       editPasswordConfirmEl.addEventListener("click", confirmEditPassword);
       syncEditPasswordConfirmState();
     }
-    [["#race", "race"], ["#background", "background"]].forEach(([sel, field]) => {
-      const el = app.querySelector(sel);
-      if (!el) return;
+    const raceEl = app.querySelector("#race");
+    if (raceEl) {
       const handler = () => {
-        const selected = parseSourceAwareSelection(el.value);
-        const sourceField = field === "race" ? "raceSource" : "backgroundSource";
+        const selected = parseSourceAwareSelection(raceEl.value);
         updateCharacterWithRequiredSettings(
           state,
-          { [field]: selected.name, [sourceField]: selected.source },
+          {
+            race: selected.name,
+            raceSource: selected.source,
+            // Reset stale subrace; canonical selection is reapplied by updateCharacterWithRequiredSettings.
+            subrace: "",
+            subraceSource: "",
+          },
           { preserveUserOverrides: true }
         );
       };
-      el.addEventListener("input", handler);
-      el.addEventListener("change", handler);
-    });
+      raceEl.addEventListener("input", handler);
+      raceEl.addEventListener("change", handler);
+    }
+    const subraceEl = app.querySelector("#subrace");
+    if (subraceEl) {
+      const handler = () => {
+        const selected = parseSourceAwareSelection(subraceEl.value);
+        updateCharacterWithRequiredSettings(
+          state,
+          { subrace: selected.name, subraceSource: selected.source },
+          { preserveUserOverrides: true }
+        );
+      };
+      subraceEl.addEventListener("input", handler);
+      subraceEl.addEventListener("change", handler);
+    }
+    const backgroundEl = app.querySelector("#background");
+    if (backgroundEl) {
+      const handler = () => {
+        const selected = parseSourceAwareSelection(backgroundEl.value);
+        updateCharacterWithRequiredSettings(
+          state,
+          { background: selected.name, backgroundSource: selected.source },
+          { preserveUserOverrides: true }
+        );
+      };
+      backgroundEl.addEventListener("input", handler);
+      backgroundEl.addEventListener("change", handler);
+    }
 
     const subclassSelectEl = app.querySelector("#subclass-select");
     if (subclassSelectEl) {

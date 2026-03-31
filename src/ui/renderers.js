@@ -13,6 +13,8 @@ export function createRenderers(deps) {
     getCharacterAllowedSources,
     sourceLabels,
     optionList,
+    getSubraceCatalogEntries,
+    getEffectiveRaceEntry,
     getSubclassSelectOptions,
     getFeatSlotsWithSelection,
     getOptionalFeatureSlotsWithSelection,
@@ -554,6 +556,7 @@ export function createRenderers(deps) {
     }
     const uniqueStored = stored.filter((token, index) => stored.indexOf(token) === index);
     const normalizedByOrder = from.filter((entry) => uniqueStored.includes(normalizeChoiceToken(entry)));
+    if (!normalizedByOrder.length) return from.slice(0, Math.max(0, Math.min(from.length, count)));
     return normalizedByOrder.slice(0, Math.max(0, Math.min(from.length, count)));
   }
 
@@ -1079,12 +1082,7 @@ export function createRenderers(deps) {
       map[skillKey] = current;
     };
     const sourceOrder = getPreferredSourceOrder(character);
-    const raceEntry = findCatalogEntryByNameWithSelectedSourcePreference(
-      catalogs?.races,
-      character?.race,
-      character?.raceSource,
-      sourceOrder
-    );
+    const raceEntry = getEffectiveRaceEntry(catalogs, character, sourceOrder);
     const backgroundEntry = findCatalogEntryByNameWithSelectedSourcePreference(
       catalogs?.backgrounds,
       character?.background,
@@ -1522,12 +1520,7 @@ export function createRenderers(deps) {
     const hpTemp = toNumber(play.hpTemp, 0);
     const initiativeBonus = toNumber(derived?.mods?.dex, 0);
     const raceSourceOrder = getPreferredSourceOrder(character);
-    const raceEntry = findCatalogEntryByNameWithSelectedSourcePreference(
-      state.catalogs?.races,
-      character?.race,
-      character?.raceSource,
-      raceSourceOrder
-    );
+    const raceEntry = getEffectiveRaceEntry(state.catalogs, character, raceSourceOrder);
     const speedRaw = raceEntry?.speed;
     const baseSpeed =
       Number.isFinite(toNumber(speedRaw, Number.NaN))
@@ -2049,28 +2042,7 @@ export function createRenderers(deps) {
       </section>
       <div class="play-grid">
         <article class="card core-stats-card">
-          <h3 class="title">Core Stats</h3>
-          <div class="summary-grid">
-            <div class="pill core-stat-pill"><span class="core-stat-name">HP</span><span class="core-stat-value">${hpCurrent}/${hpTotal}</span></div>
-            <div class="pill core-stat-pill"><span class="core-stat-name">AC</span><span class="core-stat-value">${derived.ac}</span></div>
-            <button type="button" class="pill pill-btn core-stat-pill" data-roll-proficiency title="Roll proficiency check">
-              <span class="core-stat-name">Proficiency</span><span class="core-stat-value">+${derived.proficiencyBonus}</span>
-            </button>
-            <div class="pill core-stat-pill"><span class="core-stat-name">Passive Perception</span><span class="core-stat-value">${derived.passivePerception}</span></div>
-            <div class="pill core-stat-pill"><span class="core-stat-name">Speed</span><span class="core-stat-value">${speed}</span></div>
-            <button
-              type="button"
-              class="pill pill-btn core-stat-pill inspiration-pill ${play.inspiration ? "is-active" : ""}"
-              data-toggle-inspiration
-              aria-pressed="${play.inspiration ? "true" : "false"}"
-              title="Toggle inspiration"
-            >
-              <span class="core-stat-name">Inspiration</span><span class="core-stat-value">${play.inspiration ? "Yes" : "No"}</span>
-            </button>
-            <button type="button" class="pill pill-btn core-stat-pill" data-roll-initiative title="Roll initiative">
-              <span class="core-stat-name">Initiative</span><span class="core-stat-value">${initiativeBonus >= 0 ? "+" : ""}${initiativeBonus}</span>
-            </button>
-          </div>
+          <h3 class="title">Health</h3>
           <div class="play-inline-row hp-pair-row">
             <label class="inline-field hp-control">HP <span class="muted hp-meta">(Current / Total ${hpTotal})</span>
               <div class="num-input-wrap">
@@ -2104,11 +2076,11 @@ export function createRenderers(deps) {
             </label>
           </div>
           <div class="play-inline-row death-save-row">
-            <div class="death-save-head">
-              <span class="death-save-label">Death Saves</span>
-              <button type="button" class="btn secondary death-save-roll-btn" data-roll-death-save>Roll</button>
-            </div>
             <div class="death-save-meters">
+              <div class="death-save-head">
+                <span class="death-save-label">Death Saves</span>
+                <button type="button" class="btn secondary death-save-roll-btn" data-roll-death-save>Roll</button>
+              </div>
               <label class="inline-field">Success
                 <div class="num-input-wrap">
                   <input id="play-ds-success" type="number" min="0" max="3" value="${esc(toNumber(play.deathSavesSuccess, 0))}">
@@ -2304,12 +2276,17 @@ export function createRenderers(deps) {
     }
     if (stepIndex === 2) {
       const raceSourceOrder = getPreferredSourceOrder(character);
-      const selectedRace = findCatalogEntryByNameWithSelectedSourcePreference(
+      const selectedRace = getEffectiveRaceEntry(catalogs, character, raceSourceOrder);
+      const selectedBaseRace = findCatalogEntryByNameWithSelectedSourcePreference(
         catalogs.races,
         character.race,
         character.raceSource,
         raceSourceOrder
       );
+      const subraceOptions = selectedBaseRace
+        ? getSubraceCatalogEntries(catalogs, selectedBaseRace.name, selectedBaseRace.source, raceSourceOrder)
+            .filter((entry) => String(entry?.name ?? "").trim())
+        : [];
       const selectedBackground = findCatalogEntryByNameWithSelectedSourcePreference(
         catalogs.backgrounds,
         character.background,
@@ -2324,11 +2301,13 @@ export function createRenderers(deps) {
       const backgroundAbilityMap = getAbilityBonusesMap(selectedBackground, "background", character);
       const raceAbilityTotal = getAbilityBonusTotal(raceAbilityMap);
       const backgroundAbilityTotal = getAbilityBonusTotal(backgroundAbilityMap);
-      const abilityRulesHint = raceAbilityTotal > 0 && backgroundAbilityTotal > 0
+      const hasRaceAbilityBonuses = Boolean(String(raceAbilitySummary ?? "").trim());
+      const hasBackgroundAbilityBonuses = Boolean(String(backgroundAbilitySummary ?? "").trim());
+      const abilityRulesHint = hasRaceAbilityBonuses && hasBackgroundAbilityBonuses
         ? "<strong>Rules mix detected:</strong> both race and background grant ability bonuses. This stacks bonuses and can exceed standard 2014/2024 assumptions."
-        : raceAbilityTotal > 0
+        : hasRaceAbilityBonuses
           ? "<strong>2014-style active:</strong> race is currently providing ability bonuses."
-          : backgroundAbilityTotal > 0
+          : hasBackgroundAbilityBonuses
             ? "<strong>2024-style active:</strong> background is currently providing ability bonuses."
             : "No automatic ability score bonuses detected from race/background.";
       const raceChoiceEditors = renderAutoChoiceEditorsForEntity(selectedRace, "race", character, catalogs);
@@ -2340,6 +2319,12 @@ export function createRenderers(deps) {
           <select id="race">
             <option value="">Select race</option>
             ${optionList(catalogs.races, character.race, { includeSourceInValue: true, selectedSource: character.raceSource })}
+          </select>
+        </label>
+        <label>Subrace
+          <select id="subrace" ${subraceOptions.length ? "" : "disabled"}>
+            <option value="">None</option>
+            ${optionList(subraceOptions, character.subrace, { includeSourceInValue: true, selectedSource: character.subraceSource })}
           </select>
         </label>
         <label>Background
@@ -3013,8 +2998,10 @@ export function createRenderers(deps) {
           })}
         </div>
         ${renderPersistenceNotice()}
-        ${getModeToggle(state.mode)}
-        ${renderStepperImpl(state.stepIndex)}
+        <div class="build-controls-row">
+          ${getModeToggle(state.mode)}
+          ${renderStepperImpl(state.stepIndex)}
+        </div>
         <div id="editor">${renderBuildEditorImpl(state)}</div>
         <div class="toolbar">
           <button class="btn secondary" id="prev-step" ${state.stepIndex === 0 ? "disabled" : ""}>Previous</button>
@@ -3029,11 +3016,49 @@ export function createRenderers(deps) {
   }
 
   function renderPlayMode(state) {
+    const { character, derived } = state;
+    const play = character?.play ?? {};
+    const hpTotal = toNumber(derived?.hp, 0);
+    const hpCurrent = play.hpCurrent == null ? hpTotal : toNumber(play.hpCurrent, hpTotal);
+    const initiativeBonus = toNumber(derived?.mods?.dex, 0);
+    const classTableEffects = Array.isArray(character?.progression?.classTableEffects) ? character.progression.classTableEffects : [];
+    const raceSourceOrder = getPreferredSourceOrder(character);
+    const raceEntry = getEffectiveRaceEntry(state.catalogs, character, raceSourceOrder);
+    const speedRaw = raceEntry?.speed;
+    const baseSpeed =
+      Number.isFinite(toNumber(speedRaw, Number.NaN))
+        ? Math.max(0, Math.floor(toNumber(speedRaw, 30)))
+        : speedRaw && typeof speedRaw === "object" && !Array.isArray(speedRaw) && Number.isFinite(toNumber(speedRaw.walk, Number.NaN))
+          ? Math.max(0, Math.floor(toNumber(speedRaw.walk, 30)))
+          : 30;
+    const classTableSpeedBonus = classTableEffects.reduce((sum, effect) => {
+      const label = String(effect?.label ?? "").trim().toLowerCase();
+      if (!label || (!label.includes("movement") && !label.includes("speed"))) return sum;
+      const delta = toNumber(String(effect?.value ?? "").match(/[+\-]?\d+/)?.[0], Number.NaN);
+      if (!Number.isFinite(delta)) return sum;
+      return sum + delta;
+    }, 0);
+    const speed = Math.max(0, baseSpeed + classTableSpeedBonus);
+    const proficiencyBonus = toNumber(derived?.proficiencyBonus, 0);
+    const getPassiveSkillValue = (skillKey, fallbackAbility = "wis") => {
+      const skillEntry = skills.find((entry) => entry?.key === skillKey);
+      const abilityKey = String(skillEntry?.ability ?? fallbackAbility).trim().toLowerCase();
+      const mode = normalizeSkillProficiencyMode(
+        play.skillProficiencyModes?.[skillKey] ?? (play.skillProficiencies?.[skillKey] ? "proficient" : "none")
+      );
+      const skillBonus = getSkillProficiencyBonus(proficiencyBonus, mode);
+      return 10 + toNumber(derived?.mods?.[abilityKey], 0) + skillBonus;
+    };
+    const passivePerception = Number.isFinite(toNumber(derived?.passivePerception, Number.NaN))
+      ? toNumber(derived?.passivePerception, 10)
+      : getPassiveSkillValue("perception", "wis");
+    const passiveInsight = getPassiveSkillValue("insight", "wis");
+    const passiveInvestigation = getPassiveSkillValue("investigation", "int");
     const className = String(state.character.class ?? "").trim();
     const subclassName = String(state.character.classSelection?.subclass?.name ?? state.character.subclass ?? "").trim();
     const classHtml = className
-      ? `<button type="button" class="class-info-btn" data-open-class-info title="View class details">${esc(className)}</button>`
-      : "Adventurer";
+      ? `<button type="button" class="pill pill-btn play-character-chip-btn" data-open-class-info title="View class details">${esc(className)}</button>`
+      : `<span class="pill play-character-chip-btn is-static">Adventurer</span>`;
     const manualLinks = getPlayManualLinks(state);
     const manualLinksHtml = manualLinks.length
       ? manualLinks
@@ -3107,15 +3132,69 @@ export function createRenderers(deps) {
             ${renderPersistenceNotice()}
             <div class="play-header-lower">
               <div class="play-header-main">
-              ${getModeToggle(state.mode)}
-              <p class="muted">
-                ${esc(state.character.name || "Unnamed Hero")} - Level ${esc(state.character.level)}
-                ${classHtml}
-                ${subclassName ? ` (${esc(subclassName)})` : ""}
-              </p>
-              <div class="toolbar">
-                <button class="btn secondary" type="button" data-open-levelup>Level Up</button>
-              </div>
+                <div class="play-character-summary">
+                  <div class="play-character-summary-top">
+                    ${getModeToggle(state.mode)}
+                    <p class="play-character-inline">
+                      <span class="play-character-name">${esc(state.character.name || "Unnamed Hero")}</span>
+                      <button type="button" class="pill pill-btn play-character-chip-btn" data-open-levelup>
+                        Level ${esc(state.character.level)}
+                      </button>
+                      ${classHtml}
+                      ${subclassName ? `<span class="pill play-character-chip-btn is-static">${esc(subclassName)}</span>` : ""}
+                    </p>
+                  </div>
+                  <div class="play-character-summary-main">
+                    <div class="play-header-quick-stats">
+                      <div class="play-header-quick-stats-col">
+                        <div class="pill core-stat-pill">
+                          <span class="core-stat-name"><span class="core-stat-icon" aria-hidden="true">❤️</span>HP</span>
+                          <span class="core-stat-value">${hpCurrent}/${hpTotal}</span>
+                        </div>
+                        <div class="pill core-stat-pill">
+                          <span class="core-stat-name"><span class="core-stat-icon" aria-hidden="true">🛡️</span>AC</span>
+                          <span class="core-stat-value">${derived.ac}</span>
+                        </div>
+                        <button type="button" class="pill pill-btn core-stat-pill" data-roll-proficiency title="Roll proficiency check">
+                          <span class="core-stat-name"><span class="core-stat-icon" aria-hidden="true">🎯</span>Proficiency</span>
+                          <span class="core-stat-value">+${derived.proficiencyBonus}</span>
+                        </button>
+                        <div class="pill core-stat-pill">
+                          <span class="core-stat-name"><span class="core-stat-icon" aria-hidden="true">💨</span>Speed</span>
+                          <span class="core-stat-value">${speed}</span>
+                        </div>
+                        <button
+                          type="button"
+                          class="pill pill-btn core-stat-pill inspiration-pill ${play.inspiration ? "is-active" : ""}"
+                          data-toggle-inspiration
+                          aria-pressed="${play.inspiration ? "true" : "false"}"
+                          title="Toggle inspiration"
+                        >
+                          <span class="core-stat-name"><span class="core-stat-icon" aria-hidden="true">✨</span>Inspiration</span>
+                          <span class="core-stat-value">${play.inspiration ? "Yes" : "No"}</span>
+                        </button>
+                        <button type="button" class="pill pill-btn core-stat-pill" data-roll-initiative title="Roll initiative">
+                          <span class="core-stat-name"><span class="core-stat-icon" aria-hidden="true">⚡</span>Initiative</span>
+                          <span class="core-stat-value">${initiativeBonus >= 0 ? "+" : ""}${initiativeBonus}</span>
+                        </button>
+                      </div>
+                      <div class="play-header-quick-stats-col">
+                        <div class="pill core-stat-pill">
+                          <span class="core-stat-name"><span class="core-stat-icon" aria-hidden="true">👀</span>Passive Perception</span>
+                          <span class="core-stat-value">${passivePerception}</span>
+                        </div>
+                        <div class="pill core-stat-pill">
+                          <span class="core-stat-name"><span class="core-stat-icon" aria-hidden="true">🧠</span>Passive Insight</span>
+                          <span class="core-stat-value">${passiveInsight}</span>
+                        </div>
+                        <div class="pill core-stat-pill">
+                          <span class="core-stat-name"><span class="core-stat-icon" aria-hidden="true">🔎</span>Passive Investigation</span>
+                          <span class="core-stat-value">${passiveInvestigation}</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
               </div>
               <div id="play-header-dice-slot" class="play-header-dice-slot"></div>
             </div>

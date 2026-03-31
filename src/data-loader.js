@@ -50,6 +50,15 @@ function mapNamed(items) {
     }));
 }
 
+function mapSubraces(items) {
+  return (Array.isArray(items) ? items : [])
+    .filter((it) => it && it.source && it.raceName)
+    .map((it) => ({
+      ...it,
+      sourceLabel: SOURCE_LABELS[it.source] ?? it.source,
+    }));
+}
+
 function sortCatalogItemsByNameAndSourcePriority(items, allowedSources) {
   const sourceOrder = new Map(
     (Array.isArray(allowedSources) ? allowedSources : [])
@@ -163,6 +172,7 @@ function getFallbackCatalogs(allowedSources) {
     classFeatures: [],
     subclassFeatures: [],
     races: [{ name: "Human", source }, { name: "Elf", source }],
+    subraces: [],
     backgrounds: [{ name: "Acolyte", source }, { name: "Criminal", source }],
     feats: [],
     optionalFeatures: [],
@@ -193,7 +203,7 @@ function getBookSourceLabelMap(books) {
 function buildSourceEntries(sourceSet, bookLabels) {
   return [...sourceSet]
     .map((sourceKey) => {
-      const label = SOURCE_LABELS[sourceKey] ?? bookLabels.get(sourceKey) ?? "";
+      const label = bookLabels.get(sourceKey) ?? SOURCE_LABELS[sourceKey] ?? "";
       if (!label) return null;
       return {
         key: sourceKey,
@@ -206,9 +216,10 @@ function buildSourceEntries(sourceSet, bookLabels) {
 
 export async function loadAvailableSourceEntries() {
   try {
-    const [classData, races, backgrounds, feats, optionalFeatures, spells, items, baseItems, magicVariants, conditions, books] = await Promise.all([
+    const [classData, races, subraces, backgrounds, feats, optionalFeatures, spells, items, baseItems, magicVariants, conditions, books] = await Promise.all([
       loadClassDataFromIndex(),
       loadSingleFile("races.json", "race"),
+      loadSingleFile("races.json", "subrace"),
       loadSingleFile("backgrounds.json", "background"),
       loadSingleFile("feats.json", "feat"),
       loadSingleFile("optionalfeatures.json", "optionalfeature"),
@@ -228,6 +239,7 @@ export async function loadAvailableSourceEntries() {
       ...collectSourceKeys(classData.classFeatures),
       ...collectSourceKeys(classData.subclassFeatures),
       ...collectSourceKeys(playableRaces),
+      ...collectSourceKeys(subraces),
       ...collectSourceKeys(backgrounds),
       ...collectSourceKeys(feats),
       ...collectSourceKeys(optionalFeatures),
@@ -246,9 +258,10 @@ export async function loadAvailableSourceEntries() {
 
 export async function isCatalogDataSrdOnly() {
   try {
-    const [classData, races, backgrounds, feats, optionalFeatures, spells, items, baseItems, magicVariants, conditions] = await Promise.all([
+    const [classData, races, subraces, backgrounds, feats, optionalFeatures, spells, items, baseItems, magicVariants, conditions] = await Promise.all([
       loadClassDataFromIndex(),
       loadSingleFile("races.json", "race"),
+      loadSingleFile("races.json", "subrace"),
       loadSingleFile("backgrounds.json", "background"),
       loadSingleFile("feats.json", "feat"),
       loadSingleFile("optionalfeatures.json", "optionalfeature"),
@@ -267,6 +280,7 @@ export async function isCatalogDataSrdOnly() {
       classData.classFeatures,
       classData.subclassFeatures,
       playableRaces,
+      subraces,
       backgrounds,
       feats,
       optionalFeatures,
@@ -286,9 +300,10 @@ export async function loadAvailableSources() {
 
 export async function loadCatalogs(allowedSources) {
   try {
-    const [classData, races, backgrounds, feats, optionalFeatures, spells, items, baseItems, magicVariants, spellSourceLookup, conditions] = await Promise.all([
+    const [classData, races, subraces, backgrounds, feats, optionalFeatures, spells, items, baseItems, magicVariants, spellSourceLookup, conditions] = await Promise.all([
       loadClassDataFromIndex(),
       loadSingleFile("races.json", "race"),
+      loadSingleFile("races.json", "subrace"),
       loadSingleFile("backgrounds.json", "background"),
       loadSingleFile("feats.json", "feat"),
       loadSingleFile("optionalfeatures.json", "optionalfeature"),
@@ -327,6 +342,7 @@ export async function loadCatalogs(allowedSources) {
       classFeatures: mapNamed(filterBySources(classData.classFeatures, allowedSources)),
       subclassFeatures: mapNamed(filterBySources(classData.subclassFeatures, allowedSources)),
       races: sortCatalogItemsByNameAndSourcePriority(mapNamed(filterBySources(playableRaces, allowedSources)), allowedSources),
+      subraces: sortCatalogItemsByNameAndSourcePriority(mapSubraces(filterBySources(subraces, allowedSources)), allowedSources),
       backgrounds: sortCatalogItemsByNameAndSourcePriority(mapNamed(filterBySources(backgrounds, allowedSources)), allowedSources),
       feats: sortCatalogItemsByNameAndSourcePriority(mapNamed(filterBySources(feats, allowedSources)), allowedSources),
       optionalFeatures: sortCatalogItemsByNameAndSourcePriority(

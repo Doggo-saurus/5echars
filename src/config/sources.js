@@ -15,14 +15,14 @@ export const SOURCE_PRESET_LABELS = {
 };
 
 export const SOURCE_LABELS = {
-  PHB: "Player's Handbook",
-  XPHB: "Player's Handbook (2024)",
-  DMG: "Dungeon Master's Guide",
-  XDMG: "Dungeon Master's Guide (2024)",
-  XGE: "Xanathar's Guide to Everything",
-  TCE: "Tasha's Cauldron of Everything",
-  SCAG: "Sword Coast Adventurer's Guide",
-  MPMM: "Mordenkainen Presents: Monsters of the Multiverse",
+  PHB: "PHB",
+  XPHB: "XPHB",
+  DMG: "DMG",
+  XDMG: "XDMG",
+  XGE: "XGE",
+  TCE: "TCE",
+  SCAG: "SCAG",
+  MPMM: "MPMM",
 };
 
 export const DEFAULT_SOURCE_PRESET = "set2014";
