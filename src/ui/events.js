@@ -14,6 +14,7 @@ export function createEvents(deps) {
     loadCatalogs,
     updateCharacterWithRequiredSettings,
     getClassCatalogEntry,
+    getCharacterFightingStyleSet,
     normalizeSourceTag,
     withUpdatedPlay,
     openModal,
@@ -50,6 +51,7 @@ export function createEvents(deps) {
     getSpellPrimaryDiceNotation,
     rollVisualD20,
     extractSimpleNotation,
+    getArmorClassBreakdown,
     uiState,
     diceStylePresets,
   } = deps;
@@ -1457,6 +1459,42 @@ export function createEvents(deps) {
           rollVisualD20("Initiative", bonus, rollMode);
         }
       );
+    }
+
+    const armorClassButton = app.querySelector("[data-open-ac-breakdown]");
+    if (armorClassButton) {
+      armorClassButton.addEventListener("click", () => {
+        const latestState = store.getState();
+        const dexMod = toNumber(latestState.derived?.mods?.dex, 0);
+        const breakdown = getArmorClassBreakdown(latestState.character, dexMod, getCharacterFightingStyleSet(latestState.character, latestState.catalogs));
+        const rowsHtml = breakdown.components
+          .map((entry) => {
+            const value = toNumber(entry?.value, 0);
+            const signedValue = value > 0 ? `+${value}` : `${value}`;
+            return `
+              <div class="ac-breakdown-row">
+                <span class="ac-breakdown-label">${esc(entry?.label ?? "Modifier")}</span>
+                <span class="ac-breakdown-value">${esc(signedValue)}</span>
+              </div>
+            `;
+          })
+          .join("");
+        openModal({
+          title: "Armor Class Modifiers",
+          bodyHtml: `
+            <div class="ac-breakdown-shell">
+              <div class="ac-breakdown-list">
+                ${rowsHtml || "<p class='muted'>No AC modifiers found.</p>"}
+              </div>
+              <div class="ac-breakdown-total-row">
+                <span>Total AC</span>
+                <strong>${esc(toNumber(breakdown.total, toNumber(latestState.derived?.ac, 10)))}</strong>
+              </div>
+            </div>
+          `,
+          actions: [{ label: "Close", secondary: true, onClick: (close) => close() }],
+        });
+      });
     }
 
     const proficiencyButton = app.querySelector("[data-roll-proficiency]");

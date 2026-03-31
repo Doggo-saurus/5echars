@@ -2641,7 +2641,7 @@ export function createRenderers(deps) {
 
   function renderBuildFeatSlotsImpl(character) {
     const slots = getFeatSlotsWithSelection(character);
-    if (!slots.length) return "<p class='muted'>No feat slots available from current class progression.</p>";
+    if (!slots.length) return "<p class='muted'>No feat slots available from current progression.</p>";
     return slots
       .map((slot) => {
         const isAsiSlot = isAbilityScoreImprovementSlot(slot);
@@ -3157,10 +3157,10 @@ export function createRenderers(deps) {
                           <span class="core-stat-name"><span class="core-stat-icon" aria-hidden="true">❤️</span>HP</span>
                           <span class="core-stat-value">${hpCurrent}/${hpTotal}</span>
                         </div>
-                        <div class="pill core-stat-pill">
+                        <button type="button" class="pill pill-btn core-stat-pill" data-open-ac-breakdown title="View AC modifiers">
                           <span class="core-stat-name"><span class="core-stat-icon" aria-hidden="true">🛡️</span>AC</span>
                           <span class="core-stat-value">${derived.ac}</span>
-                        </div>
+                        </button>
                         <button type="button" class="pill pill-btn core-stat-pill" data-roll-proficiency title="Roll proficiency check">
                           <span class="core-stat-name"><span class="core-stat-icon" aria-hidden="true">🎯</span>Proficiency</span>
                           <span class="core-stat-value">+${derived.proficiencyBonus}</span>

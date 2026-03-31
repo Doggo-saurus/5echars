@@ -23,7 +23,7 @@ import { openModal } from "./ui/modals/modal.js";
 import { createEvents } from "./ui/events.js";
 import { createPickers } from "./ui/pickers.js";
 import { createRenderers } from "./ui/renderers.js";
-import { getCharacterFightingStyleSet, getHitPointBreakdown } from "./engine/rules.js";
+import { getArmorClassBreakdown, getCharacterFightingStyleSet, getHitPointBreakdown } from "./engine/rules.js";
 import {
   esc,
   matchesSearchQuery,
@@ -1995,6 +1995,63 @@ function getFeatSlotsForClass(classEntry, classLevel) {
   return slots;
 }
 
+function getFeatSlotsForEntity(entry, context = {}) {
+  if (!entry || typeof entry !== "object") return [];
+  const featDefinitions = Array.isArray(entry?.feats) ? entry.feats : [];
+  if (!featDefinitions.length) return [];
+
+  const normalizeFeatCategoryList = (value) => {
+    if (Array.isArray(value)) return value.map((item) => String(item ?? "").trim()).filter(Boolean);
+    const single = String(value ?? "").trim();
+    return single ? [single] : [];
+  };
+
+  const entityType = String(context.type ?? "entity").trim().toLowerCase() || "entity";
+  const entityName = String(context.name ?? entry?.name ?? "").trim() || "Feat Source";
+  const entitySource = normalizeSourceTag(context.source ?? entry?.source);
+  const level = Math.max(1, Math.floor(toNumber(context.level, 1)));
+  const slotType = String(context.slotType ?? "Feat").trim() || "Feat";
+
+  const slots = [];
+  featDefinitions.forEach((featDef, featIndex) => {
+    let count = 0;
+    let featCategories = [];
+
+    if (typeof featDef === "number" || Number.isFinite(toNumber(featDef, NaN))) {
+      count = Math.max(0, Math.floor(toNumber(featDef, 0)));
+    } else if (featDef && typeof featDef === "object" && !Array.isArray(featDef)) {
+      if (Number.isFinite(toNumber(featDef.any, NaN))) {
+        count = Math.max(count, Math.floor(toNumber(featDef.any, 0)));
+      }
+      if (featDef.anyFromCategory && typeof featDef.anyFromCategory === "object" && !Array.isArray(featDef.anyFromCategory)) {
+        const categoryCount = Math.max(0, Math.floor(toNumber(featDef.anyFromCategory.count, 1)));
+        count = Math.max(count, categoryCount);
+        featCategories = normalizeFeatCategoryList(featDef.anyFromCategory.category);
+      }
+      if (Array.isArray(featDef.from)) {
+        const fromCount = Math.max(0, Math.floor(toNumber(featDef.count, 1)));
+        count = Math.max(count, fromCount);
+      }
+    }
+
+    if (count <= 0) return;
+    for (let slotIndex = 0; slotIndex < count; slotIndex += 1) {
+      const id = buildEntityId(["feat-slot", entityType, entityName, entitySource || "unknown", level, featIndex, slotIndex]);
+      slots.push({
+        id,
+        className: entityName,
+        classSource: entitySource,
+        level,
+        count: 1,
+        slotType,
+        featCategories,
+      });
+    }
+  });
+
+  return slots;
+}
+
 function getFeatSlotsForSubclass(subclassEntry, classLevel) {
   if (!subclassEntry || classLevel <= 0) return [];
   const normalizeFeatCategoryList = (value) => {
@@ -2043,6 +2100,30 @@ function getFeatSlotsForSubclass(subclassEntry, classLevel) {
 }
 
 function getFeatSlots(catalogs, character) {
+  const sourceOrder = getPreferredSourceOrder(character);
+  const raceEntry = getEffectiveRaceEntry(catalogs, character, sourceOrder);
+  const backgroundEntry = findCatalogEntryByNameWithSelectedSourcePreference(
+    catalogs?.backgrounds,
+    character?.background,
+    character?.backgroundSource,
+    sourceOrder
+  );
+
+  const raceSlots = getFeatSlotsForEntity(raceEntry, {
+    type: "race",
+    name: String(character?.subrace ?? "").trim() ? `${String(raceEntry?.name ?? "").trim()} (${String(character.subrace).trim()})` : raceEntry?.name,
+    source: raceEntry?.source,
+    level: 1,
+    slotType: "Feat",
+  });
+  const backgroundSlots = getFeatSlotsForEntity(backgroundEntry, {
+    type: "background",
+    name: backgroundEntry?.name,
+    source: backgroundEntry?.source,
+    level: 1,
+    slotType: "Feat",
+  });
+
   const tracks = getClassLevelTracks(character);
   const selectedPrimarySubclass = getSelectedSubclassEntry(catalogs, character);
   const slots = tracks.flatMap((track) => {
@@ -2054,7 +2135,7 @@ function getFeatSlots(catalogs, character) {
     if (!subclassClassName || subclassClassName !== trackClassName) return classSlots;
     return [...classSlots, ...getFeatSlotsForSubclass(selectedPrimarySubclass, track.level)];
   });
-  return slots.sort((a, b) => {
+  return [...raceSlots, ...backgroundSlots, ...slots].sort((a, b) => {
     const levelDelta = a.level - b.level;
     if (levelDelta !== 0) return levelDelta;
     const classDelta = String(a.className).localeCompare(String(b.className));
@@ -5857,6 +5938,7 @@ const events = createEvents({
   loadCatalogs,
   updateCharacterWithRequiredSettings,
   getClassCatalogEntry,
+  getCharacterFightingStyleSet,
   normalizeSourceTag,
   withUpdatedPlay,
   openModal,
@@ -5893,6 +5975,7 @@ const events = createEvents({
   getSpellPrimaryDiceNotation,
   rollVisualD20,
   extractSimpleNotation,
+  getArmorClassBreakdown,
   uiState,
   diceStylePresets: DICE_STYLE_PRESETS,
 });
@@ -6552,16 +6635,17 @@ function hydratePersistentBrandLogo() {
 }
 
 function render(state) {
-  const selectedDiceStyle = state.character?.diceStyle;
-  uiState.selectedDiceStyle = selectedDiceStyle in DICE_STYLE_PRESETS ? selectedDiceStyle : DEFAULT_DICE_STYLE;
-
   if (appState.showOnboardingHome) {
+    uiState.selectedDiceStyle = DEFAULT_DICE_STYLE;
     document.body.classList.remove("play-mode");
     applyDiceStyle();
     app.innerHTML = renderOnboardingHome();
     bindOnboardingEvents();
     return;
   }
+
+  const selectedDiceStyle = state.character?.diceStyle;
+  uiState.selectedDiceStyle = selectedDiceStyle in DICE_STYLE_PRESETS ? selectedDiceStyle : DEFAULT_DICE_STYLE;
 
   const previousScrollX = window.scrollX;
   const previousScrollY = window.scrollY;

@@ -1,17 +1,17 @@
 FROM node:22-alpine
 
 WORKDIR /app/server
-COPY server/package*.json ./
+COPY --chown=node:node server/package*.json ./
+COPY --chown=node:node server/scripts ./scripts
 RUN npm ci --omit=dev && npm cache clean --force
 
 WORKDIR /app
-COPY public ./public
-COPY src ./src
-COPY data ./data
-COPY JSON_FORMAT_REFERENCE.md ./JSON_FORMAT_REFERENCE.md
-COPY server ./server
+COPY --chown=node:node public ./public
+COPY --chown=node:node src ./src
+COPY --chown=node:node data ./data
+COPY --chown=node:node JSON_FORMAT_REFERENCE.md ./JSON_FORMAT_REFERENCE.md
+COPY --chown=node:node server/src ./server/src
 
-RUN chown -R node:node /app
 USER node
 
 WORKDIR /app/server

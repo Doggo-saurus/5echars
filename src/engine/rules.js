@@ -208,12 +208,15 @@ function normalizeItemTypeCode(value) {
     .toUpperCase();
 }
 
-function getArmorClassFromEquipment(character, dexMod, fightingStyles = new Set()) {
+export function getArmorClassBreakdown(character, dexMod, fightingStyles = new Set()) {
   const equippedItems = getEquippedInventoryEntries(character);
-  if (!equippedItems.length) return 10 + dexMod;
-
-  let bestArmorAc = null;
+  let bestArmorTotal = null;
+  let bestArmorBase = 0;
+  let bestArmorDex = 0;
+  let bestArmorName = "";
+  let bestArmorTypeCode = "";
   let shieldBonus = 0;
+  let shieldName = "";
   let isWearingArmor = false;
 
   equippedItems.forEach((entry) => {
@@ -224,7 +227,10 @@ function getArmorClassFromEquipment(character, dexMod, fightingStyles = new Set(
 
     if (isShield) {
       const bonus = Number.isFinite(parsedAc) && parsedAc > 0 ? parsedAc : 2;
-      shieldBonus = Math.max(shieldBonus, bonus);
+      if (bonus > shieldBonus) {
+        shieldBonus = bonus;
+        shieldName = String(entry?.name ?? "").trim();
+      }
       return;
     }
 
@@ -235,12 +241,51 @@ function getArmorClassFromEquipment(character, dexMod, fightingStyles = new Set(
     if (typeCode === "MA") dexContribution = Math.min(2, dexMod);
     if (typeCode === "HA") dexContribution = 0;
     const total = parsedAc + dexContribution;
-    if (bestArmorAc == null || total > bestArmorAc) bestArmorAc = total;
+    if (bestArmorTotal == null || total > bestArmorTotal) {
+      bestArmorTotal = total;
+      bestArmorBase = parsedAc;
+      bestArmorDex = dexContribution;
+      bestArmorName = String(entry?.name ?? "").trim();
+      bestArmorTypeCode = typeCode;
+    }
   });
 
   const defenseBonus = isWearingArmor && fightingStyles.has("defense") ? 1 : 0;
-  if (bestArmorAc != null) return bestArmorAc + shieldBonus + defenseBonus;
-  return 10 + dexMod + shieldBonus + defenseBonus;
+  const isArmored = bestArmorTotal != null;
+  const baseLabel = isArmored ? (bestArmorName || "Equipped Armor") : "Base AC";
+  const baseValue = isArmored ? bestArmorBase : 10;
+  const dexValue = isArmored ? bestArmorDex : dexMod;
+  const dexLabel =
+    isArmored && bestArmorTypeCode === "MA"
+      ? "Dexterity (max +2)"
+      : isArmored && bestArmorTypeCode === "HA"
+        ? "Dexterity"
+        : "Dexterity";
+  const components = [
+    { label: baseLabel, value: baseValue, source: isArmored ? "Armor" : "Unarmored" },
+    { label: dexLabel, value: dexValue, source: "Ability" },
+  ];
+  if (shieldBonus > 0) {
+    components.push({
+      label: shieldName || "Shield",
+      value: shieldBonus,
+      source: "Shield",
+    });
+  }
+  if (defenseBonus > 0) {
+    components.push({
+      label: "Fighting Style: Defense",
+      value: defenseBonus,
+      source: "Fighting Style",
+    });
+  }
+
+  const total = components.reduce((sum, component) => sum + toNumber(component.value, 0), 0);
+  return { total, components, isArmored };
+}
+
+function getArmorClassFromEquipment(character, dexMod, fightingStyles = new Set()) {
+  return getArmorClassBreakdown(character, dexMod, fightingStyles).total;
 }
 
 export function computeDerivedStats(character, catalogs = null) {

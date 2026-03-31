@@ -85,6 +85,15 @@ body[data-dice-style] .pill-btn.is-active {
   border-color: var(--dice-theme-tray-border);
 }
 
+/* Keep onboarding primary CTA border in its own amber palette. */
+body[data-dice-style] .layout-onboarding .onboarding-create-btn.btn {
+  border-color: rgba(245, 158, 11, 0.62);
+}
+
+body[data-dice-style] .layout-onboarding .onboarding-create-btn.btn:hover:not(:disabled) {
+  border-color: rgba(245, 158, 11, 0.75);
+}
+
 body[data-dice-style="arcane"] {
   --dice-theme-accent: #22d3ee;
   --dice-theme-glow: rgba(34, 211, 238, 0.22);
@@ -1295,7 +1304,51 @@ body.play-mode #dice-overlay {
 
 .option-row-actions {
   display: inline-flex;
+  align-items: center;
   gap: 0.4rem;
+}
+
+.option-row-requirements {
+  max-width: 24rem;
+  text-align: right;
+  font-size: 0.78rem;
+  line-height: 1.25;
+  white-space: normal;
+}
+
+.ac-breakdown-shell {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.ac-breakdown-list {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.ac-breakdown-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.8rem;
+}
+
+.ac-breakdown-label {
+  color: var(--muted);
+}
+
+.ac-breakdown-value {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+
+.ac-breakdown-total-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  border-top: 1px dashed rgba(255, 255, 255, 0.2);
+  margin-top: 0.2rem;
+  padding-top: 0.55rem;
 }
 
 .auto-choice-shell {

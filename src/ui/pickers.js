@@ -441,6 +441,149 @@ export function createPickers(deps) {
         .toLowerCase();
     }
 
+    function normalizeRequirementValue(value) {
+      const text = String(value ?? "").trim();
+      if (!text) return "";
+      return text
+        .replace(/_/g, " ")
+        .replace(/([a-z])([A-Z])/g, "$1 $2")
+        .replace(/\s+/g, " ")
+        .trim();
+    }
+
+    function titleCaseRequirement(value) {
+      const normalized = normalizeRequirementValue(value);
+      if (!normalized) return "";
+      return normalized
+        .split(" ")
+        .map((word) => {
+          if (!word) return "";
+          const lower = word.toLowerCase();
+          if (["of", "the", "and", "or", "in", "with", "to"].includes(lower)) return lower;
+          return lower.charAt(0).toUpperCase() + lower.slice(1);
+        })
+        .join(" ")
+        .replace(/\b(ac)\b/gi, "AC");
+    }
+
+    function addRequirementTokens(targetSet, rawValue) {
+      if (rawValue == null) return;
+      if (typeof rawValue === "boolean") return;
+      if (Array.isArray(rawValue)) {
+        rawValue.forEach((entry) => addRequirementTokens(targetSet, entry));
+        return;
+      }
+      if (typeof rawValue === "object") {
+        Object.values(rawValue).forEach((entry) => addRequirementTokens(targetSet, entry));
+        return;
+      }
+      const normalized = titleCaseRequirement(rawValue);
+      if (normalized) targetSet.add(normalized);
+    }
+
+    function extractRequirementFromSentence(sentence) {
+      const text = String(sentence ?? "").trim();
+      if (!text) return "";
+      let cleaned = text
+        .replace(/^.*?\bproficient\b\s*(?:with|in)?\s*/i, "")
+        .replace(/^with\s+/i, "")
+        .replace(/^in\s+/i, "")
+        .replace(/\b(?:to|at)\s+attune\b.*$/i, "")
+        .replace(/[.,;:!?]+$/g, "")
+        .trim();
+      if (!cleaned) return "";
+      cleaned = cleaned.replace(/\bweapons?\b/i, (match) => match.toLowerCase());
+      return titleCaseRequirement(cleaned);
+    }
+
+    function collectItemProficiencyRequirements(item) {
+      const weapon = new Set();
+      const armor = new Set();
+      const other = new Set();
+      const addRequirement = (bucket, value) => addRequirementTokens(bucket, value);
+
+      const attuneTags = [];
+      if (Array.isArray(item?.reqAttuneTags)) attuneTags.push(...item.reqAttuneTags);
+      if (Array.isArray(item?.reqAttuneAltTags)) attuneTags.push(...item.reqAttuneAltTags);
+      attuneTags.forEach((tag) => {
+        if (!tag || typeof tag !== "object" || Array.isArray(tag)) return;
+        Object.entries(tag).forEach(([key, value]) => {
+          const keyText = String(key ?? "").toLowerCase();
+          if (keyText.includes("weapon")) {
+            addRequirement(weapon, value);
+            return;
+          }
+          if (keyText.includes("armor") || keyText.includes("shield")) {
+            addRequirement(armor, value);
+            return;
+          }
+          if (keyText.includes("proficiency")) {
+            const valueText = typeof value === "boolean" ? "" : String(value ?? "").trim();
+            const label = titleCaseRequirement(valueText || keyText.replace(/proficiency/gi, "").trim());
+            if (label) other.add(label);
+          }
+        });
+      });
+
+      const proficiencyText = [item?.reqAttune, item?.reqAttuneAlt]
+        .map((value) => String(value ?? "").trim())
+        .filter(Boolean)
+        .join(" ");
+      if (proficiencyText) {
+        const matches = proficiencyText.match(/[^.?!;]*\bproficien(?:t|cy)\b[^.?!;]*/gi) ?? [];
+        matches.forEach((sentence) => {
+          const lowered = sentence.toLowerCase();
+          const requirement = extractRequirementFromSentence(sentence);
+          if (!requirement) return;
+          if (/\bweapon(s)?\b/.test(lowered)) {
+            weapon.add(requirement);
+          } else if (/\barmor\b|\barmour\b|\bshield(s)?\b/.test(lowered)) {
+            armor.add(requirement);
+          } else {
+            other.add(requirement);
+          }
+        });
+      }
+
+      const typeCode = normalizeItemTypeCode(item?.type ?? item?.itemType);
+      const weaponCategory = titleCaseRequirement(item?.weaponCategory);
+      const isWeaponLike = Boolean(item?.weapon) || Boolean(item?.dmg1) || Boolean(item?.dmg2) || Boolean(weaponCategory);
+      const isArmorLike = Boolean(item?.armor) || ["LA", "MA", "HA", "S"].includes(typeCode);
+
+      if (!weapon.size && isWeaponLike) {
+        if (weaponCategory) {
+          if (/simple/i.test(weaponCategory)) weapon.add("Simple Weapons");
+          else if (/martial/i.test(weaponCategory)) weapon.add("Martial Weapons");
+          else weapon.add(weaponCategory);
+        } else {
+          weapon.add("Weapon Proficiency");
+        }
+      }
+
+      if (!armor.size && isArmorLike) {
+        if (typeCode === "LA") armor.add("Light Armor");
+        else if (typeCode === "MA") armor.add("Medium Armor");
+        else if (typeCode === "HA") armor.add("Heavy Armor");
+        else if (typeCode === "S") armor.add("Shields");
+        else armor.add("Armor Proficiency");
+      }
+
+      return {
+        weapon: [...weapon],
+        armor: [...armor],
+        other: [...other],
+      };
+    }
+
+    function formatItemProficiencyRequirements(item) {
+      const requirements = collectItemProficiencyRequirements(item);
+      const parts = [];
+      if (requirements.weapon.length) parts.push(`Weapon: ${requirements.weapon.join(", ")}`);
+      if (requirements.armor.length) parts.push(`Armor: ${requirements.armor.join(", ")}`);
+      if (requirements.other.length) parts.push(`Other: ${requirements.other.join(", ")}`);
+      return parts.join(" | ");
+    }
+
     function getItemSortName(item) {
       const name = String(item?.name ?? "").trim();
       if (!name) return "";
@@ -555,15 +698,21 @@ export function createPickers(deps) {
         baseListEl.innerHTML = filteredVariantCandidates.length
           ? filteredVariantCandidates
               .map(
-                (item, idx) => `
+                (item, idx) => {
+                  const requirementLabel = formatItemProficiencyRequirements(item);
+                  return `
                 <div class="option-row">
                   <div>
                     <strong>${esc(item.name)}</strong>
                     <div class="muted">${esc(item.sourceLabel ?? item.source)}</div>
                   </div>
-                  <button class="btn secondary" data-variant-base-pick="${idx}">Use</button>
+                  <div class="option-row-actions">
+                    ${requirementLabel ? `<div class="option-row-requirements muted" title="Required proficiency">${esc(requirementLabel)}</div>` : ""}
+                    <button class="btn secondary" data-variant-base-pick="${idx}">Use</button>
+                  </div>
                 </div>
-              `
+              `;
+                }
               )
               .join("")
           : "<p class='muted'>No base items match these filters.</p>";
@@ -603,15 +752,21 @@ export function createPickers(deps) {
       listEl.innerHTML = filteredItems.length
         ? filteredItems
             .map(
-              (item, idx) => `
+              (item, idx) => {
+                const requirementLabel = formatItemProficiencyRequirements(item);
+                return `
             <div class="option-row">
               <div>
                 <strong>${esc(item.name)}</strong>
                 <div class="muted">${esc(item.sourceLabel ?? item.source)}</div>
               </div>
-              <button class="btn secondary" data-item-pick="${idx}">Add</button>
+              <div class="option-row-actions">
+                ${requirementLabel ? `<div class="option-row-requirements muted" title="Required proficiency">${esc(requirementLabel)}</div>` : ""}
+                <button class="btn secondary" data-item-pick="${idx}">Add</button>
+              </div>
             </div>
-          `
+          `;
+              }
             )
             .join("")
         : "<p class='muted'>No items match these filters.</p>";
