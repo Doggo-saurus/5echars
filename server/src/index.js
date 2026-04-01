@@ -10,6 +10,8 @@ const EDIT_PASSWORD_FIELD = "editPassword";
 const INVALID_EDIT_PASSWORD_CODE = "INVALID_EDIT_PASSWORD";
 const PARTY_PASSWORD_FIELD = "password";
 const INVALID_PARTY_PASSWORD_CODE = "INVALID_PARTY_PASSWORD";
+const MAX_CHARACTER_SAVE_BYTES = 256 * 1024;
+const CHARACTER_TOO_LARGE_CODE = "CHARACTER_TOO_LARGE";
 
 function isUuid(value) {
   return UUID_V4_REGEX.test(String(value ?? "").trim());
@@ -192,6 +194,26 @@ function applyCharacterMergePatch(existingCharacter, patchCharacter) {
   return next;
 }
 
+function getSerializedJsonByteSize(value) {
+  try {
+    return Buffer.byteLength(JSON.stringify(value), "utf8");
+  } catch {
+    return Number.POSITIVE_INFINITY;
+  }
+}
+
+function tryRejectOversizedCharacter(res, character) {
+  const sizeBytes = getSerializedJsonByteSize(character);
+  if (sizeBytes <= MAX_CHARACTER_SAVE_BYTES) return false;
+  res.status(413).json({
+    error: `Character payload exceeds ${MAX_CHARACTER_SAVE_BYTES} bytes`,
+    code: CHARACTER_TOO_LARGE_CODE,
+    maxBytes: MAX_CHARACTER_SAVE_BYTES,
+    sizeBytes,
+  });
+  return true;
+}
+
 async function listRelativeFiles(rootDir, subDir, includeFile) {
   const startDir = path.join(rootDir, subDir);
   const stack = [startDir];
@@ -272,6 +294,7 @@ app.post("/api/characters", async (req, res) => {
   try {
     const id = uuidv4();
     const character = normalizeCharacterInput(req.body?.character, id);
+    if (tryRejectOversizedCharacter(res, character)) return;
     await repository.create(id, character);
     res.status(201).json({ id, character: toPublicCharacter(character, id), storage });
   } catch (error) {
@@ -434,6 +457,7 @@ app.put("/api/characters/:id", async (req, res) => {
         return;
       }
       const character = normalizeCharacterInput(req.body?.character, id);
+      if (tryRejectOversizedCharacter(res, character)) return;
       await repository.create(id, character);
       res.status(201).json({ id, character: toPublicCharacter(character, id), storage });
       return;
@@ -452,6 +476,7 @@ app.put("/api/characters/:id", async (req, res) => {
     }
 
     const character = mergeCharacterForPersist(existingCharacter, req.body?.character, id);
+    if (tryRejectOversizedCharacter(res, character)) return;
     await repository.save(id, character);
     res.json({ id, character: toPublicCharacter(character, id), storage });
   } catch (error) {
@@ -495,6 +520,7 @@ app.patch("/api/characters/:id", async (req, res) => {
           [EDIT_PASSWORD_FIELD]: getStoredEditPassword(existingCharacter),
         };
 
+    if (tryRejectOversizedCharacter(res, character)) return;
     await repository.save(id, character);
     if (req.body?.returnCharacter === false) {
       res.json({ id, storage });

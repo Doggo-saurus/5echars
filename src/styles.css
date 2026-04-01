@@ -2237,6 +2237,14 @@ body.play-mode #dice-overlay {
   gap: 0.5rem;
 }
 
+.feat-tile-actions {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.35rem;
+}
+
 .feat-tile-title {
   font-size: 0.98rem;
   line-height: 1.3;

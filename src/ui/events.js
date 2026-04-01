@@ -44,6 +44,7 @@ export function createEvents(deps) {
     isSpellAlwaysPrepared,
     getSpellByName,
     getSpellCombatContext,
+    getFeatureActivationDescriptor,
     setDiceResult,
     setSpellCastStatus,
     getSpellSlotValues,
@@ -53,6 +54,7 @@ export function createEvents(deps) {
     extractSimpleNotation,
     getArmorClassBreakdown,
     getHitPointBreakdown,
+    autoResourceIdPrefix,
     uiState,
     diceStylePresets,
     forgetActiveCharacterAndRedirectHome,
@@ -1602,6 +1604,100 @@ export function createEvents(deps) {
         openSpeciesTraitDetailsModal(state, traitName);
       });
     });
+    const getFeatureUseMetaMap = (playState) =>
+      playState.featureUseMeta && typeof playState.featureUseMeta === "object" && !Array.isArray(playState.featureUseMeta)
+        ? { ...playState.featureUseMeta }
+        : {};
+    const getActivatableFeatureById = (snapshot, featureId) => {
+      const normalizedId = String(featureId ?? "").trim();
+      if (!normalizedId) return null;
+      const unlockedFeatures = Array.isArray(snapshot?.character?.progression?.unlockedFeatures)
+        ? snapshot.character.progression.unlockedFeatures
+        : [];
+      const optionalFeatures = Array.isArray(snapshot?.character?.optionalFeatures) ? snapshot.character.optionalFeatures : [];
+      const feats = Array.isArray(snapshot?.character?.feats) ? snapshot.character.feats : [];
+      return (
+        unlockedFeatures.find((entry) => String(entry?.id ?? "").trim() === normalizedId)
+        || optionalFeatures.find((entry) => String(entry?.id ?? "").trim() === normalizedId)
+        || feats.find((entry) => String(entry?.id ?? "").trim() === normalizedId)
+        || null
+      );
+    };
+    const maybeRollFeatureActivation = (featureName, descriptor) => {
+      const notation = extractSimpleNotation(descriptor?.rollNotation ?? "");
+      if (!notation) return;
+      rollVisualNotation(featureName, notation);
+    };
+    app.querySelectorAll("[data-feature-activate]").forEach((button) => {
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const featureId = String(button.dataset.featureActivate ?? "").trim();
+        if (!featureId) return;
+        const latestState = store.getState();
+        const feature = getActivatableFeatureById(latestState, featureId);
+        if (!feature) {
+          setDiceResult("Could not find the selected feature.", true);
+          return;
+        }
+        const currentFeatureUses =
+          latestState?.character?.play?.featureUses
+          && typeof latestState.character.play.featureUses === "object"
+          && !Array.isArray(latestState.character.play.featureUses)
+            ? latestState.character.play.featureUses
+            : {};
+        const descriptor = getFeatureActivationDescriptor(latestState.catalogs, latestState.character, feature, currentFeatureUses);
+        if (!descriptor || !descriptor.trackerKey) {
+          setDiceResult(`${feature.name}: no trackable expend cost found.`, true);
+          return;
+        }
+        let spent = false;
+        let usedFreeActivation = false;
+        let remaining = Math.max(0, toNumber(descriptor.current, 0));
+        withUpdatedPlay(latestState, (playState) => {
+          const nextFeatureUses =
+            playState.featureUses && typeof playState.featureUses === "object" && !Array.isArray(playState.featureUses)
+              ? { ...playState.featureUses }
+              : {};
+          const featureUseMeta = getFeatureUseMetaMap(playState);
+          const featureMeta =
+            featureUseMeta[featureId] && typeof featureUseMeta[featureId] === "object"
+              ? { ...featureUseMeta[featureId] }
+              : {};
+          const hasUsedSinceLongRest = Boolean(featureMeta.usedSinceLongRest);
+          const isFreeUse = Boolean(descriptor.firstUseFreeAfterLongRest) && !hasUsedSinceLongRest;
+          const tracker = nextFeatureUses[descriptor.trackerKey];
+          if (!tracker || typeof tracker !== "object") return;
+          const max = Math.max(0, toNumber(tracker.max, 0));
+          const current = Math.max(0, Math.min(max, toNumber(tracker.current, max)));
+          const amount = Math.max(1, Math.floor(toNumber(descriptor.amount, 1)));
+          if (!isFreeUse) {
+            if (current < amount) {
+              remaining = current;
+              return;
+            }
+            const nextCurrent = Math.max(0, current - amount);
+            remaining = nextCurrent;
+            nextFeatureUses[descriptor.trackerKey] = { ...tracker, current: nextCurrent };
+          } else {
+            usedFreeActivation = true;
+            remaining = current;
+          }
+          featureMeta.usedSinceLongRest = true;
+          featureUseMeta[featureId] = featureMeta;
+          playState.featureUseMeta = featureUseMeta;
+          playState.featureUses = nextFeatureUses;
+          spent = true;
+        });
+        if (!spent) {
+          setDiceResult(`${feature.name}: not enough ${descriptor.resourceLabel} (${remaining} left).`, true);
+          return;
+        }
+        if (usedFreeActivation) setDiceResult(`${feature.name}: first use since long rest is free.`);
+        else setDiceResult(`${feature.name}: spent ${descriptor.amount} ${descriptor.resourceLabel} (${remaining} left).`);
+        maybeRollFeatureActivation(feature.name, descriptor);
+      });
+    });
     app.querySelectorAll("[data-feature-use-delta]").forEach((button) => {
       button.addEventListener("click", () => {
         const raw = String(button.dataset.featureUseDelta ?? "");
@@ -1612,7 +1708,25 @@ export function createEvents(deps) {
         const deltaRaw = raw.slice(markerIndex + marker.length);
         const delta = toNumber(deltaRaw, 0);
         if (!key || !delta) return;
-        withUpdatedPlay(state, (playState) => {
+        const latestState = store.getState();
+        const isFeatureUseSpend = delta < 0 && key.startsWith(String(autoResourceIdPrefix ?? "auto:"));
+        const featureIdFromKey = isFeatureUseSpend ? key.slice(String(autoResourceIdPrefix ?? "auto:").length) : "";
+        const feature = isFeatureUseSpend ? getActivatableFeatureById(latestState, featureIdFromKey) : null;
+        let activationDescriptor = null;
+        if (feature) {
+          const currentFeatureUses =
+            latestState?.character?.play?.featureUses
+            && typeof latestState.character.play.featureUses === "object"
+            && !Array.isArray(latestState.character.play.featureUses)
+              ? latestState.character.play.featureUses
+              : {};
+          activationDescriptor = getFeatureActivationDescriptor(latestState.catalogs, latestState.character, feature, currentFeatureUses);
+        }
+        let spentFromSharedPool = false;
+        let sharedPoolRemaining = 0;
+        let blockedForSharedPool = false;
+        let usedFreeActivation = false;
+        withUpdatedPlay(latestState, (playState) => {
           const nextFeatureUses =
             playState.featureUses && typeof playState.featureUses === "object" && !Array.isArray(playState.featureUses)
               ? { ...playState.featureUses }
@@ -1620,10 +1734,56 @@ export function createEvents(deps) {
           const tracker = nextFeatureUses[key];
           if (!tracker || typeof tracker !== "object") return;
           const max = Math.max(0, toNumber(tracker.max, 0));
-          const current = Math.max(0, Math.min(max, toNumber(tracker.current, max) + delta));
-          nextFeatureUses[key] = { ...tracker, current };
+          const currentValue = Math.max(0, Math.min(max, toNumber(tracker.current, max)));
+          const targetValue = Math.max(0, Math.min(max, currentValue + delta));
+          if (delta < 0 && targetValue >= currentValue) return;
+          if (delta < 0 && activationDescriptor && activationDescriptor.trackerKey && activationDescriptor.trackerKey !== key) {
+            const featureUseMeta = getFeatureUseMetaMap(playState);
+            const featureMeta =
+              featureUseMeta[featureIdFromKey] && typeof featureUseMeta[featureIdFromKey] === "object"
+                ? { ...featureUseMeta[featureIdFromKey] }
+                : {};
+            const hasUsedSinceLongRest = Boolean(featureMeta.usedSinceLongRest);
+            const isFreeUse = Boolean(activationDescriptor.firstUseFreeAfterLongRest) && !hasUsedSinceLongRest;
+            if (!isFreeUse) {
+              const sharedTracker = nextFeatureUses[activationDescriptor.trackerKey];
+              if (!sharedTracker || typeof sharedTracker !== "object") {
+                blockedForSharedPool = true;
+                return;
+              }
+              const sharedMax = Math.max(0, toNumber(sharedTracker.max, 0));
+              const sharedCurrent = Math.max(0, Math.min(sharedMax, toNumber(sharedTracker.current, sharedMax)));
+              const spendAmount = Math.max(1, Math.floor(toNumber(activationDescriptor.amount, 1)));
+              if (sharedCurrent < spendAmount) {
+                blockedForSharedPool = true;
+                sharedPoolRemaining = sharedCurrent;
+                return;
+              }
+              const nextSharedCurrent = Math.max(0, sharedCurrent - spendAmount);
+              nextFeatureUses[activationDescriptor.trackerKey] = { ...sharedTracker, current: nextSharedCurrent };
+              spentFromSharedPool = true;
+              sharedPoolRemaining = nextSharedCurrent;
+            } else {
+              usedFreeActivation = true;
+            }
+            featureMeta.usedSinceLongRest = true;
+            featureUseMeta[featureIdFromKey] = featureMeta;
+            playState.featureUseMeta = featureUseMeta;
+          }
+          nextFeatureUses[key] = { ...tracker, current: targetValue };
           playState.featureUses = nextFeatureUses;
         });
+        if (blockedForSharedPool && feature && activationDescriptor) {
+          setDiceResult(`${feature.name}: not enough ${activationDescriptor.resourceLabel} (${sharedPoolRemaining} left).`, true);
+          return;
+        }
+        if (delta < 0 && feature && activationDescriptor) {
+          if (usedFreeActivation) setDiceResult(`${feature.name}: first use since long rest is free.`);
+          else if (spentFromSharedPool) {
+            setDiceResult(`${feature.name}: spent ${activationDescriptor.amount} ${activationDescriptor.resourceLabel} (${sharedPoolRemaining} left).`);
+          }
+          maybeRollFeatureActivation(feature.name, activationDescriptor);
+        }
       });
     });
     app.querySelectorAll("[data-class-table-roll]").forEach((button) => {
@@ -2395,6 +2555,7 @@ export function createEvents(deps) {
                   featureUses[key] = { ...tracker, current: max };
                 });
                 play.featureUses = featureUses;
+                play.featureUseMeta = {};
 
                 const nextSpentMap = normalizeHitDiceSpent(play.hitDiceSpent);
                 const totalHitDice = pools.reduce((sum, pool) => sum + Math.max(0, toNumber(pool.max, 0)), 0);

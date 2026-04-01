@@ -414,12 +414,16 @@ export function createPartyFeature(deps) {
     };
     const getHpSummary = (snapshot, derived) => {
       const current = readFiniteNumber(snapshot?.play?.hpCurrent);
+      // Prefer persisted character max HP fields first; party view may not have the
+      // exact source catalogs needed to recompute class hit-die based totals reliably.
       const max = getMetricValue(
         snapshot,
-        derived?.hp,
+        snapshot?.play?.hpMax,
+        snapshot?.derived?.hp,
         snapshot?.hpMax,
         snapshot?.maxHitPoints,
-        snapshot?.hitPoints?.max
+        snapshot?.hitPoints?.max,
+        derived?.hp
       );
       const temp = readFiniteNumber(snapshot?.play?.hpTemp) ?? 0;
       if (current !== null && max !== "Unknown") {

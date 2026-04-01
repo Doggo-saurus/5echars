@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "start": "node --env-file-if-exists=../.env src/index.js",
+    "redis:list-characters": "node --env-file-if-exists=../.env ./scripts/list-redis-characters.mjs",
     "sync:dice-assets": "node ./scripts/sync-dice-assets.mjs",
     "postinstall": "npm run sync:dice-assets"
   },

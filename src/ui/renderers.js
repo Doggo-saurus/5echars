@@ -26,6 +26,8 @@ export function createRenderers(deps) {
     getSpellLevelLabel,
     spellSchoolLabels,
     getRuleDescriptionLines,
+    getReferencedUnlockedFeatureIds,
+    getFeatureActivationDescriptor,
     doesClassUsePreparedSpells,
     getPreparedSpellLimit,
     countPreparedSpells,
@@ -1817,7 +1819,13 @@ export function createRenderers(deps) {
     }, 1);
     const attacksPerAttackActionFromTable = classTableEffects.reduce((maxAttacks, effect) => {
       const label = String(effect?.label ?? "").trim().toLowerCase();
-      if (!label || !label.includes("attack")) return maxAttacks;
+      if (!label) return maxAttacks;
+      const isExtraAttackRow =
+        label === "extra attack"
+        || label === "two extra attacks"
+        || label === "three extra attacks"
+        || label.startsWith("extra attack (");
+      if (!isExtraAttackRow) return maxAttacks;
       const numericValue = toNumber(String(effect?.value ?? "").match(/\d+/)?.[0], NaN);
       if (!Number.isFinite(numericValue) || numericValue <= 0) return maxAttacks;
       return Math.max(maxAttacks, numericValue);
@@ -1835,6 +1843,21 @@ export function createRenderers(deps) {
     );
     const featureUses =
       play.featureUses && typeof play.featureUses === "object" && !Array.isArray(play.featureUses) ? play.featureUses : {};
+    const featureUseMeta =
+      play.featureUseMeta && typeof play.featureUseMeta === "object" && !Array.isArray(play.featureUseMeta)
+        ? play.featureUseMeta
+        : {};
+    const referencedUnlockedFeatureIds = new Set(getReferencedUnlockedFeatureIds(state.catalogs, unlockedFeatures));
+    const movedReferencedFeatureIds = new Set(
+      [...referencedUnlockedFeatureIds.values()].filter((featureId) => {
+        const feature = unlockedFeatures.find((entry) => String(entry?.id ?? "") === String(featureId ?? ""));
+        if (!feature) return false;
+        const useKey = `${autoResourceIdPrefix}${feature.id}`;
+        const hasOwnTracker = Boolean(featureUses[useKey] && typeof featureUses[useKey] === "object");
+        const activation = getFeatureActivationDescriptor(state.catalogs, character, feature, featureUses);
+        return Boolean(activation && activation.trackerKey && !hasOwnTracker);
+      })
+    );
     const formatRecharge = (recharge) => {
       const key = String(recharge ?? "").trim();
       if (key === "shortOrLong") return "SR/LR";
@@ -1845,6 +1868,7 @@ export function createRenderers(deps) {
     };
     const featureListHtml = unlockedFeatures.length
       ? unlockedFeatures
+          .filter((feature) => !movedReferencedFeatureIds.has(String(feature?.id ?? "")))
           .map((feature) => {
             const subtitle = feature.type === "subclass" && feature.subclassName ? ` (${feature.subclassName})` : "";
             const isAsiFeature = isAbilityScoreImprovementSlot({ slotType: feature?.name ?? "" });
@@ -1852,6 +1876,29 @@ export function createRenderers(deps) {
             const displayName = isAsiFeature && selectedAsiSlotKeys.has(asiFeatureKey) ? "Feat" : String(feature?.name ?? "");
             const useKey = `${autoResourceIdPrefix}${feature.id}`;
             const tracker = featureUses[useKey];
+            const activation = getFeatureActivationDescriptor(state.catalogs, character, feature, featureUses);
+            const hasUsedFreeActivation = Boolean(featureUseMeta?.[feature.id]?.usedSinceLongRest);
+            const canUseFreeActivation = Boolean(activation?.firstUseFreeAfterLongRest) && !hasUsedFreeActivation;
+            const hasActivationPower = Boolean(activation) && toNumber(activation.current, 0) >= Math.max(1, toNumber(activation.amount, 1));
+            const canActivate = canUseFreeActivation || hasActivationPower;
+            const firstUseFreePillHtml =
+              activation && activation.firstUseFreeAfterLongRest
+                ? `<span class="pill" title="Resets on long rest">${hasUsedFreeActivation ? "0/1 Free" : "1/1 Free"}</span>`
+                : "";
+            const activationButtonHtml =
+              activation && activation.trackerKey && !tracker
+                ? `
+              <button
+                type="button"
+                class="save-mod-btn"
+                data-feature-activate="${esc(feature.id)}"
+                ${canActivate ? "" : "disabled"}
+                title="${esc(`Spend ${activation.amount} ${activation.resourceLabel}`)}"
+              >
+                Use
+              </button>
+            `
+                : "";
             const trackerHtml = tracker
               ? `
               <span class="feature-use-controls">
@@ -1868,7 +1915,9 @@ export function createRenderers(deps) {
                 <button type="button" class="spell-name-btn feature-name-btn" data-open-feature="${esc(feature.id)}">${esc(
                   `${displayName}${subtitle}`
                 )}</button>
+                ${firstUseFreePillHtml}
                 ${trackerHtml}
+                ${activationButtonHtml}
               </div>
             </li>
           `;
@@ -1973,6 +2022,70 @@ export function createRenderers(deps) {
           })
           .join("")
       : "<span class='muted'>No feats selected.</span>";
+    const referencedFeatureListHtml = unlockedFeatures.length
+      ? unlockedFeatures
+          .filter((feature) => movedReferencedFeatureIds.has(String(feature?.id ?? "")))
+          .map((feature) => {
+            const featureName = String(feature?.name ?? "").trim();
+            const subtitle = feature.type === "subclass" && feature.subclassName ? ` (${feature.subclassName})` : "";
+            const metaLabel = feature.level ? `Lv ${feature.level}` : "Level ?";
+            const useKey = `${autoResourceIdPrefix}${feature.id}`;
+            const tracker = featureUses[useKey];
+            const activation = getFeatureActivationDescriptor(state.catalogs, character, feature, featureUses);
+            const hasUsedFreeActivation = Boolean(featureUseMeta?.[feature.id]?.usedSinceLongRest);
+            const canUseFreeActivation = Boolean(activation?.firstUseFreeAfterLongRest) && !hasUsedFreeActivation;
+            const hasActivationPower = Boolean(activation) && toNumber(activation.current, 0) >= Math.max(1, toNumber(activation.amount, 1));
+            const canActivate = canUseFreeActivation || hasActivationPower;
+            const firstUseFreePillHtml =
+              activation && activation.firstUseFreeAfterLongRest
+                ? `<span class="pill" title="Resets on long rest">${hasUsedFreeActivation ? "0/1 Free" : "1/1 Free"}</span>`
+                : "";
+            const activationButtonHtml =
+              activation && activation.trackerKey && !tracker
+                ? `
+              <span
+                class="pill pill-btn"
+                data-feature-activate="${canActivate ? esc(feature.id) : ""}"
+                title="${esc(`Spend ${activation.amount} ${activation.resourceLabel}`)}"
+                ${canActivate ? "role=\"button\" tabindex=\"0\"" : "aria-disabled=\"true\""}
+              >Use</span>
+            `
+                : "";
+            const actionControlsHtml =
+              firstUseFreePillHtml || activationButtonHtml
+                ? `<span class="feat-tile-actions">${firstUseFreePillHtml}${activationButtonHtml}</span>`
+                : "";
+            const trackerHtml = tracker
+              ? `
+              <span class="feature-use-controls">
+                <span class="pill">${esc(tracker.current)}/${esc(tracker.max)}${formatRecharge(tracker.recharge) ? ` ${esc(formatRecharge(tracker.recharge))}` : ""}</span>
+                <button type="button" class="save-mod-btn" data-feature-use-delta="${esc(useKey)}|inc:-1" ${tracker.current <= 0 ? "disabled" : ""}>Use</button>
+                <button type="button" class="save-mod-btn" data-feature-use-delta="${esc(useKey)}|inc:1" ${tracker.current >= tracker.max ? "disabled" : ""}>+</button>
+              </span>
+            `
+              : "";
+            return `
+            <div class="feature-row feature-row-feat">
+              <div class="feature-main">
+                <button
+                  type="button"
+                  class="feat-tile-btn"
+                  data-open-feature="${esc(feature.id)}"
+                  aria-label="Open ${esc(featureName)} details"
+                >
+                  <span class="feat-tile-head">
+                    <strong class="feat-tile-title">${esc(`${featureName}${subtitle}`)}</strong>
+                    ${actionControlsHtml}
+                  </span>
+                  <span class="feat-tile-meta">${esc(metaLabel)} - ${esc(feature.className || "class feature")}</span>
+                </button>
+                ${trackerHtml}
+              </div>
+            </div>
+          `;
+          })
+          .join("")
+      : "";
     const optionalFeatureListHtml = selectedOptionalFeatures.length
       ? selectedOptionalFeatures
           .map((feature) => {
@@ -2000,6 +2113,30 @@ export function createRenderers(deps) {
               : "No preview available. Click to open full optional feature details.";
             const useKey = `${autoResourceIdPrefix}${feature.id}`;
             const tracker = featureUses[useKey];
+            const activation = getFeatureActivationDescriptor(state.catalogs, character, feature, featureUses);
+            const hasUsedFreeActivation = Boolean(featureUseMeta?.[feature.id]?.usedSinceLongRest);
+            const canUseFreeActivation = Boolean(activation?.firstUseFreeAfterLongRest) && !hasUsedFreeActivation;
+            const hasActivationPower = Boolean(activation) && toNumber(activation.current, 0) >= Math.max(1, toNumber(activation.amount, 1));
+            const canActivate = canUseFreeActivation || hasActivationPower;
+            const firstUseFreePillHtml =
+              activation && activation.firstUseFreeAfterLongRest
+                ? `<span class="pill" title="Resets on long rest">${hasUsedFreeActivation ? "0/1 Free" : "1/1 Free"}</span>`
+                : "";
+            const activationButtonHtml =
+              activation && activation.trackerKey && !tracker
+                ? `
+              <span
+                class="pill pill-btn"
+                data-feature-activate="${canActivate ? esc(feature.id) : ""}"
+                title="${esc(`Spend ${activation.amount} ${activation.resourceLabel}`)}"
+                ${canActivate ? "role=\"button\" tabindex=\"0\"" : "aria-disabled=\"true\""}
+              >Use</span>
+            `
+                : "";
+            const actionControlsHtml =
+              firstUseFreePillHtml || activationButtonHtml
+                ? `<span class="feat-tile-actions">${firstUseFreePillHtml}${activationButtonHtml}</span>`
+                : "";
             const trackerHtml = tracker
               ? `
               <span class="feature-use-controls">
@@ -2020,7 +2157,7 @@ export function createRenderers(deps) {
                 >
                   <span class="feat-tile-head">
                     <strong class="feat-tile-title">${esc(featureName)}</strong>
-                    <span class="pill">${esc(sourceLabel)}</span>
+                    ${actionControlsHtml}
                   </span>
                   <span class="feat-tile-meta">
                     ${feature.levelGranted ? `Lv ${esc(feature.levelGranted)}` : "Level ?"} - ${esc(feature.slotType || "optional feature")}${
@@ -2240,7 +2377,12 @@ export function createRenderers(deps) {
             optionalFeatureListHtml
               ? `
           <h4>Class Features</h4>
-          ${optionalFeatureListHtml ? `<div>${optionalFeatureListHtml}</div>` : ""}
+          <div>${referencedFeatureListHtml || ""}${optionalFeatureListHtml}</div>
+          `
+              : referencedFeatureListHtml
+                ? `
+          <h4>Class Features</h4>
+          <div>${referencedFeatureListHtml}</div>
           `
               : ""
           }
