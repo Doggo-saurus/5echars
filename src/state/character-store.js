@@ -44,6 +44,7 @@ function getDefaultPlayState() {
   return {
     hpCurrent: null,
     hpTemp: 0,
+    customAcModifier: 0,
     speed: 30,
     initiativeBonus: 0,
     saveProficiencies: {},

@@ -653,6 +653,7 @@ const partyFeature = createPartyFeature({
   openModal,
   loadCharacterHistory,
   loadCharacterById: (...args) => loadCharacterById(...args),
+  getCatalogsForCharacter: (...args) => getCachedPartyModalCatalogs(...args),
   openClassDetailsModalForCharacter: (...args) => openClassDetailsModalForCharacter(...args),
   openSubclassDetailsModalForCharacter: (...args) => openSubclassDetailsModalForCharacter(...args),
   render: (...args) => render(...args),
@@ -1219,9 +1220,12 @@ function getCharacterFromApiPayload(payload, fallbackId) {
   if (!payload || typeof payload.character !== "object" || payload.character == null || Array.isArray(payload.character)) {
     throw new Error("Invalid character payload");
   }
+  const normalizedCharacter = { ...payload.character, id };
+  // Ignore persisted computed snapshots; runtime derived stats are recalculated.
+  delete normalizedCharacter.derived;
   return {
     id,
-    character: { ...payload.character, id },
+    character: normalizedCharacter,
   };
 }
 
@@ -2080,21 +2084,51 @@ function getUnlockedFeatures(catalogs, character) {
   const unlocked = [];
   const seen = new Set();
   const tracks = getClassLevelTracks(character);
+  const getOptionLabel = (option) => {
+    if (!option) return "";
+    if (typeof option === "string") return cleanSpellInlineTags(option.split("|")[0]);
+    if (!isRecordObject(option)) return "";
+    if (typeof option.name === "string" && option.name.trim()) return cleanSpellInlineTags(option.name);
+    if (typeof option.optionalfeature === "string") return cleanSpellInlineTags(option.optionalfeature.split("|")[0]);
+    if (typeof option.subclassFeature === "string") return cleanSpellInlineTags(option.subclassFeature.split("|")[0]);
+    if (typeof option.classFeature === "string") return cleanSpellInlineTags(option.classFeature.split("|")[0]);
+    if (typeof option.feature === "string") return cleanSpellInlineTags(option.feature.split("|")[0]);
+    if (typeof option.entry === "string") return cleanSpellInlineTags(option.entry);
+    return "";
+  };
 
-  const collectReferencedTokens = (entry, acc = []) => {
+  const collectReferencedTokens = (entry, acc = [], context = {}) => {
     if (entry == null) return acc;
     if (Array.isArray(entry)) {
-      entry.forEach((value) => collectReferencedTokens(value, acc));
+      entry.forEach((value) => collectReferencedTokens(value, acc, context));
       return acc;
     }
     if (!isRecordObject(entry)) return acc;
+    if (entry.type === "options" && Array.isArray(entry.entries)) {
+      const optionValues = [...new Set(entry.entries.map((option) => getOptionLabel(option)).filter(Boolean))];
+      const maxCount = Math.max(1, Math.min(optionValues.length, Math.floor(toNumber(entry.count, 1))));
+      const modeId = buildEntityId(["feature-mode", context.featureId, context.entryIndex]);
+      const rawModeSelection = character?.play?.featureModes?.[modeId];
+      const currentValues = Array.isArray(rawModeSelection)
+        ? rawModeSelection.map((value) => String(value ?? "").trim())
+        : [String(rawModeSelection ?? "").trim()];
+      const selected = [...new Set(currentValues.filter((value) => value && optionValues.includes(value)))];
+      if (!selected.length) selected.push(...optionValues.slice(0, maxCount));
+      const selectedValues = new Set(selected.slice(0, maxCount));
+      entry.entries.forEach((option) => {
+        const label = getOptionLabel(option);
+        if (!label || !selectedValues.has(label)) return;
+        collectReferencedTokens(option, acc, context);
+      });
+      return acc;
+    }
     if (entry.type === "refSubclassFeature" && typeof entry.subclassFeature === "string") {
       acc.push({ type: "subclass", token: entry.subclassFeature });
     }
     if (entry.type === "refClassFeature" && typeof entry.classFeature === "string") {
       acc.push({ type: "class", token: entry.classFeature });
     }
-    Object.values(entry).forEach((value) => collectReferencedTokens(value, acc));
+    Object.values(entry).forEach((value) => collectReferencedTokens(value, acc, context));
     return acc;
   };
 
@@ -2105,49 +2139,54 @@ function getUnlockedFeatures(catalogs, character) {
     unlocked.push(feature);
 
     const detail = resolveFeatureEntryFromCatalogs(catalogs, feature);
-    const refTokens = collectReferencedTokens(detail?.entries ?? []);
-    refTokens.forEach((ref) => {
-      if (!ref?.token) return;
-      if (ref.type === "subclass") {
-        const parsed = parseSubclassFeatureToken(
-          ref.token,
-          feature.source,
-          classNameHint || feature.className,
-          subclassNameHint || feature.subclassName
-        );
+    const entries = Array.isArray(detail?.entries) ? detail.entries : [];
+    entries.forEach((entry, entryIndex) => {
+      const refTokens = collectReferencedTokens(entry, [], { featureId: feature.id, entryIndex });
+      refTokens.forEach((ref) => {
+        if (!ref?.token) return;
+        if (ref.type === "subclass") {
+          const parsed = parseSubclassFeatureToken(
+            ref.token,
+            feature.source,
+            classNameHint || feature.className,
+            subclassNameHint || feature.subclassName
+          );
+          if (!parsed || parsed.level == null || parsed.level > trackLevel) return;
+          const nextClassName = parsed.className || classNameHint || feature.className;
+          const nextSubclassName = parsed.subclassName || subclassNameHint || feature.subclassName;
+          enqueueFeature(
+            {
+              ...parsed,
+              className: nextClassName,
+              subclassName: nextSubclassName,
+            },
+            trackLevel,
+            nextClassName,
+            nextSubclassName
+          );
+          return;
+        }
+
+        const parsed = parseClassFeatureToken(ref.token, feature.source, classNameHint || feature.className);
         if (!parsed || parsed.level == null || parsed.level > trackLevel) return;
         const nextClassName = parsed.className || classNameHint || feature.className;
-        const nextSubclassName = parsed.subclassName || subclassNameHint || feature.subclassName;
         enqueueFeature(
           {
             ...parsed,
             className: nextClassName,
-            subclassName: nextSubclassName,
           },
           trackLevel,
           nextClassName,
-          nextSubclassName
+          subclassNameHint || feature.subclassName
         );
-        return;
-      }
-
-      const parsed = parseClassFeatureToken(ref.token, feature.source, classNameHint || feature.className);
-      if (!parsed || parsed.level == null || parsed.level > trackLevel) return;
-      const nextClassName = parsed.className || classNameHint || feature.className;
-      enqueueFeature(
-        {
-          ...parsed,
-          className: nextClassName,
-        },
-        trackLevel,
-        nextClassName,
-        subclassNameHint || feature.subclassName
-      );
+      });
     });
   };
 
+  const sourceOrder = getPreferredSourceOrder(character);
   tracks.forEach((track) => {
-    const classEntry = getClassCatalogEntry(catalogs, track.className);
+    const selectedClassSource = track.isPrimary ? character?.classSource : "";
+    const classEntry = getClassCatalogEntry(catalogs, track.className, selectedClassSource, sourceOrder);
     if (!classEntry) return;
     const classSource = normalizeSourceTag(classEntry.source);
     const classFeatures = Array.isArray(classEntry.classFeatures) ? classEntry.classFeatures : [];
@@ -3018,6 +3057,40 @@ function getAutoResourcesFromFeatures(features) {
     .filter(Boolean);
 }
 
+function getSpeciesTraitId(raceEntry, traitName) {
+  const source = normalizeSourceTag(raceEntry?.source);
+  const slug = String(traitName ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-");
+  return `species:${source}:${slug}`;
+}
+
+function getAutoResourcesFromRaceTraits(catalogs, character) {
+  const sourceOrder = getPreferredSourceOrder(character);
+  const raceEntry = getEffectiveRaceEntry(catalogs, character, sourceOrder);
+  if (!isRecordObject(raceEntry)) return [];
+  const traitEntries = Array.isArray(raceEntry?.entries) ? raceEntry.entries : [];
+  const ignoredTraitNames = new Set(["age", "alignment", "size", "language", "languages", "creature type"]);
+  const byId = new Map();
+  traitEntries.forEach((entry) => {
+    if (!isRecordObject(entry)) return;
+    const name = String(entry?.name ?? "").trim();
+    if (!name || ignoredTraitNames.has(name.toLowerCase())) return;
+    const descriptor = getResourceDescriptorFromEntry(entry, name, Math.max(1, toNumber(character?.level, 1)));
+    if (!descriptor || descriptor.max <= 0) return;
+    const id = getSpeciesTraitId(raceEntry, name);
+    byId.set(`${AUTO_RESOURCE_ID_PREFIX}${id}`, {
+      autoId: `${AUTO_RESOURCE_ID_PREFIX}${id}`,
+      name: descriptor.name,
+      current: descriptor.max,
+      max: descriptor.max,
+      recharge: descriptor.recharge,
+    });
+  });
+  return [...byId.values()];
+}
+
 function getAutoResourcesFromRules(catalogs, character, features, feats, optionalFeatures) {
   const classLevelMap = getClassLevelMap(character);
   const byId = new Map();
@@ -3074,6 +3147,10 @@ function getAutoResourcesFromRules(catalogs, character, features, feats, optiona
       max: descriptor.max,
       recharge: descriptor.recharge,
     });
+  });
+
+  getAutoResourcesFromRaceTraits(catalogs, character).forEach((tracker) => {
+    byId.set(String(tracker?.autoId ?? ""), tracker);
   });
 
   return [...byId.values()];
@@ -3369,6 +3446,15 @@ function getAutoGrantedSpellData(catalogs, character) {
       addGrant(grant.name, grant.grantType)
     );
   });
+  const classLevelMap = getClassLevelMap(character);
+  getUnlockedFeatures(catalogs, character).forEach((feature) => {
+    const detail = resolveFeatureEntryFromCatalogs(catalogs, feature);
+    if (!detail) return;
+    const classLevel = toNumber(classLevelMap.get(String(feature?.className ?? "").trim().toLowerCase()), toNumber(character?.level, 1));
+    collectAdditionalSpellGrantsFromEntries(detail?.additionalSpells, Math.max(1, classLevel)).forEach((grant) =>
+      addGrant(grant.name, grant.grantType)
+    );
+  });
   const autoPreparedSpells = {};
   const autoSpellGrantTypes = {};
   [...grants.entries()].forEach(([key, grant]) => {
@@ -3540,10 +3626,21 @@ function extractFeatureModeDescriptors(catalogs, features) {
   };
 
   const modes = [];
+  const collectOptionEntries = (entry, out = []) => {
+    if (entry == null) return out;
+    if (Array.isArray(entry)) {
+      entry.forEach((value) => collectOptionEntries(value, out));
+      return out;
+    }
+    if (!isRecordObject(entry)) return out;
+    if (entry.type === "options" && Array.isArray(entry.entries)) out.push(entry);
+    Object.values(entry).forEach((value) => collectOptionEntries(value, out));
+    return out;
+  };
   (Array.isArray(features) ? features : []).forEach((feature) => {
     const detail = resolveFeatureEntryFromCatalogs(catalogs, feature);
-    const entries = Array.isArray(detail?.entries) ? detail.entries : [];
-    entries.forEach((entry, entryIndex) => {
+    const optionEntries = collectOptionEntries(detail?.entries ?? []);
+    optionEntries.forEach((entry, entryIndex) => {
       if (!isRecordObject(entry) || entry.type !== "options" || !Array.isArray(entry.entries)) return;
       const optionValues = [...new Set(entry.entries.map((option) => getOptionLabel(option)).filter(Boolean))];
       const count = Math.min(optionValues.length, normalizeModeCount(entry.count));
@@ -5799,6 +5896,19 @@ function getCharacterWeaponProficiencyTokens(catalogs, character) {
     const sourceEntries = track.isPrimary ? primaryWeapons : multiclassWeapons;
     collectWeaponProficiencyStrings(sourceEntries).forEach((token) => tokens.add(token));
   });
+  const unlockedFeatures = getUnlockedFeatures(catalogs, character);
+  unlockedFeatures.forEach((feature) => {
+    const detail = resolveFeatureEntryFromCatalogs(catalogs, feature);
+    collectWeaponProficiencyStrings(detail?.weaponProficiencies).forEach((token) => tokens.add(token));
+    collectWeaponProficiencyStrings(detail?.startingProficiencies?.weapons).forEach((token) => tokens.add(token));
+    const featureName = String(feature?.name ?? "").trim().toLowerCase();
+    const className = String(feature?.className ?? "").trim().toLowerCase();
+    if (className === "cleric" && featureName === "protector") {
+      tokens.add("martial weapons");
+      tokens.add("martial weapon");
+      tokens.add("martial");
+    }
+  });
   return tokens;
 }
 
@@ -5814,9 +5924,51 @@ function getInventoryWeaponCategory(entry) {
   return String(entry?.weaponCategory ?? "").trim().toLowerCase();
 }
 
+function normalizeWeaponPropertyToken(value) {
+  const token = String(value ?? "")
+    .trim()
+    .toUpperCase()
+    .replace(/\./g, "");
+  if (!token) return "";
+  if (token === "FINESSE") return "F";
+  if (token === "LIGHT") return "L";
+  if (token === "THROWN") return "T";
+  if (token === "VERSATILE") return "V";
+  if (token === "HEAVY") return "H";
+  if (token === "RANGED") return "RANGED";
+  if (token === "TWO-HANDED" || token === "TWO HANDED") return "2H";
+  return token;
+}
+
+function collectWeaponPropertyTokens(value, out = []) {
+  if (value == null) return out;
+  if (Array.isArray(value)) {
+    value.forEach((entry) => collectWeaponPropertyTokens(entry, out));
+    return out;
+  }
+  if (typeof value === "object") {
+    Object.entries(value).forEach(([key, entryValue]) => {
+      if (entryValue === true) out.push(key);
+      else collectWeaponPropertyTokens(entryValue, out);
+    });
+    return out;
+  }
+  const raw = String(value ?? "").trim();
+  if (!raw) return out;
+  const parts = raw.split(/[,/;|]/).map((part) => part.trim()).filter(Boolean);
+  if (!parts.length) out.push(raw);
+  else out.push(...parts);
+  return out;
+}
+
 function getInventoryWeaponProperties(entry) {
-  const props = Array.isArray(entry?.properties) ? entry.properties : Array.isArray(entry?.property) ? entry.property : [];
-  return props.map((prop) => String(prop ?? "").trim().toUpperCase()).filter(Boolean);
+  const tokens = [
+    ...collectWeaponPropertyTokens(entry?.properties),
+    ...collectWeaponPropertyTokens(entry?.property),
+  ]
+    .map((prop) => normalizeWeaponPropertyToken(prop))
+    .filter(Boolean);
+  return [...new Set(tokens)];
 }
 
 function getInventoryWeaponFamily(entry) {
@@ -5830,7 +5982,7 @@ function isRangedWeaponEntry(entry) {
   const category = getInventoryWeaponCategory(entry);
   const typeCode = normalizeItemTypeCode(entry?.itemType ?? entry?.type);
   const properties = getInventoryWeaponProperties(entry);
-  return category.includes("ranged") || properties.includes("R") || typeCode === "R";
+  return category.includes("ranged") || properties.includes("R") || properties.includes("RANGED") || typeCode === "R";
 }
 
 function normalizeItemNameForProficiency(name) {
@@ -5875,13 +6027,12 @@ function getWeaponAttackAbility(entry, derived) {
   const mods = derived?.mods ?? {};
   const strMod = toNumber(mods.str, 0);
   const dexMod = toNumber(mods.dex, 0);
-  const category = getInventoryWeaponCategory(entry);
   const properties = getInventoryWeaponProperties(entry);
-  const isRanged = category.includes("ranged") || properties.includes("R");
+  const isRanged = isRangedWeaponEntry(entry);
   const hasFinesse = properties.includes("F");
 
   if (isRanged) return { key: "dex", mod: dexMod };
-  if (hasFinesse) return dexMod > strMod ? { key: "dex", mod: dexMod } : { key: "str", mod: strMod };
+  if (hasFinesse) return dexMod >= strMod ? { key: "dex", mod: dexMod } : { key: "str", mod: strMod };
   return { key: "str", mod: strMod };
 }
 
@@ -6357,11 +6508,20 @@ async function applyRemoteCharacterPayload(payload, fallbackId = null, defaultMo
   appState.startupErrorMessage = "";
   appState.isRemoteSaveSuppressed = true;
   try {
-    seedCharacterLogState(parsed.character);
-    store.hydrate(parsed.character);
+    await ensureRuntimeSourcePresets();
+    const resolvedPreset = resolveRuntimeSourcePreset(parsed.character?.sourcePreset ?? DEFAULT_SOURCE_PRESET);
+    const nextCharacter = parsed.character?.sourcePreset === resolvedPreset
+      ? parsed.character
+      : { ...parsed.character, sourcePreset: resolvedPreset };
+    const catalogs = await loadCatalogs(getCharacterAllowedSources(nextCharacter));
+    // Apply catalogs before hydration so derived HP uses the correct source data
+    // on the first render of the loaded character.
+    store.setCatalogs(catalogs);
+    seedCharacterLogState(nextCharacter);
+    store.hydrate(nextCharacter);
     store.setMode(defaultMode);
     store.setStep(0);
-    await loadCatalogsForCharacter(parsed.character);
+    updateCharacterWithRequiredSettings(store.getState(), {}, { preserveUserOverrides: true });
   } finally {
     appState.isRemoteSaveSuppressed = false;
   }
@@ -7074,11 +7234,6 @@ function updateCharacterWithRequiredSettings(state, patch, options = {}) {
       ? raw.map((entry) => String(entry ?? "").trim())
       : [String(raw ?? "").trim()];
     const selected = [...new Set(currentValues.filter((value) => value && options.includes(value)))];
-    while (selected.length < maxCount) {
-      const nextOption = options.find((option) => !selected.includes(option));
-      if (!nextOption) break;
-      selected.push(nextOption);
-    }
     if (!selected.length) selected.push(options[0]);
     nextFeatureModes[mode.id] = maxCount <= 1 ? selected[0] : selected.slice(0, maxCount);
   });

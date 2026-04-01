@@ -94,9 +94,13 @@ export function createEvents(deps) {
     const breakdown = getArmorClassBreakdown(
       snapshot.character,
       dexMod,
-      getCharacterFightingStyleSet(snapshot.character, snapshot.catalogs)
+      getCharacterFightingStyleSet(snapshot.character, snapshot.catalogs),
+      snapshot.catalogs
     );
+    const customModifier = Math.floor(toNumber(snapshot.character?.play?.customAcModifier, 0));
+    const baseTotal = toNumber(breakdown.total, toNumber(snapshot.derived?.ac, 10)) - customModifier;
     const rowsHtml = breakdown.components
+      .filter((entry) => String(entry?.source ?? "").trim().toLowerCase() !== "custom")
       .map((entry) => {
         const value = toNumber(entry?.value, 0);
         const signedValue = value > 0 ? `+${value}` : `${value}`;
@@ -115,13 +119,46 @@ export function createEvents(deps) {
           <div class="ac-breakdown-list">
             ${rowsHtml || "<p class='muted'>No AC modifiers found.</p>"}
           </div>
+          <div class="ac-breakdown-row">
+            <span class="ac-breakdown-label">Custom Modifier</span>
+            <div class="num-input-wrap num-input-wrap-inline">
+              <input id="ac-custom-modifier-input" type="number" min="-99" max="99" value="${esc(customModifier)}" aria-label="Custom armor class modifier">
+              <div class="num-stepper num-stepper-inline">
+                <button type="button" class="num-step-btn" data-ac-custom-modifier-step="-1" aria-label="Decrease custom armor class modifier">-</button>
+                <button type="button" class="num-step-btn" data-ac-custom-modifier-step="1" aria-label="Increase custom armor class modifier">+</button>
+              </div>
+            </div>
+          </div>
           <div class="ac-breakdown-total-row">
             <span>Total AC</span>
-            <strong>${esc(toNumber(breakdown.total, toNumber(snapshot.derived?.ac, 10)))}</strong>
+            <strong data-ac-breakdown-total>${esc(toNumber(breakdown.total, toNumber(snapshot.derived?.ac, 10)))}</strong>
           </div>
         </div>
       `,
       actions: [{ label: "Close", secondary: true, onClick: (close) => close() }],
+    });
+    const modal = document.querySelector(".modal");
+    const input = modal?.querySelector("#ac-custom-modifier-input");
+    const totalEl = modal?.querySelector("[data-ac-breakdown-total]");
+    const setCustomModifier = (valueRaw) => {
+      const next = Math.max(-99, Math.min(99, Math.floor(toNumber(valueRaw, 0))));
+      if (input instanceof HTMLInputElement) input.value = String(next);
+      if (totalEl) totalEl.textContent = String(baseTotal + next);
+      withUpdatedPlay(store.getState(), (play) => {
+        play.customAcModifier = next;
+      });
+    };
+    if (input instanceof HTMLInputElement) {
+      input.addEventListener("change", () => setCustomModifier(input.value));
+      input.addEventListener("input", () => setCustomModifier(input.value));
+    }
+    modal?.querySelectorAll("[data-ac-custom-modifier-step]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const delta = Math.floor(toNumber(button.dataset.acCustomModifierStep, 0));
+        if (!delta || !(input instanceof HTMLInputElement)) return;
+        const current = Math.floor(toNumber(input.value, 0));
+        setCustomModifier(current + delta);
+      });
     });
   }
 
@@ -2094,6 +2131,25 @@ export function createEvents(deps) {
       );
     });
 
+    app.querySelectorAll("[data-spell-damage-roll]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const spellName = button.dataset.spellDamageRoll;
+        if (!spellName) return;
+        const spell = getSpellByName(state, spellName);
+        if (!spell) {
+          setDiceResult(`Spell damage unavailable: ${spellName}`, true);
+          return;
+        }
+        const notation = getSpellPrimaryDiceNotation(spell);
+        const simpleNotation = extractSimpleNotation(notation);
+        if (!simpleNotation) {
+          setDiceResult(`${spell.name}: no primary damage roll found.`, true);
+          return;
+        }
+        await rollVisualNotation(`${spell.name} damage`, simpleNotation);
+      });
+    });
+
     app.querySelectorAll("[data-spell-cast]").forEach((button) => {
       button.addEventListener("click", async () => {
         const spellName = button.dataset.spellCast;
@@ -2149,6 +2205,10 @@ export function createEvents(deps) {
         const notation = getSpellPrimaryDiceNotation(spell);
         const simpleNotation = extractSimpleNotation(notation);
         const spellCombat = getSpellCombatContext(state, spell);
+        if (spellCombat.hasSpellAttack && simpleNotation) {
+          setDiceResult(`Cast ${spell.name}: ${slotSpent ? "slot spent." : "cast."} Roll To Hit and Damage separately.`, false);
+          return;
+        }
         if (simpleNotation) {
           const rollLabel = spellCombat.hasSpellAttack ? `${spell.name} damage` : `Cast ${spell.name}`;
           await rollVisualNotation(rollLabel, simpleNotation);

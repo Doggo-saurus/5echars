@@ -523,15 +523,31 @@ export function createRenderers(deps) {
     if (!raceEntry || typeof raceEntry !== "object") return [];
     const ignoredTraitNames = new Set(["age", "alignment", "size", "language", "languages", "creature type"]);
     const entries = Array.isArray(raceEntry?.entries) ? raceEntry.entries : [];
+    const extractSaveAdvantageTags = (entry) => {
+      const lines = getRuleDescriptionLines(entry);
+      const text = lines.join(" ").toLowerCase();
+      if (!/advantage on saving throws?/.test(text)) return [];
+      const tags = [];
+      if (/\bparaly(?:zed|sis)\b/.test(text)) tags.push("Paralyzed");
+      if (/\bpoison(?:ed|ing)?\b/.test(text)) tags.push("Poisoned");
+      if (!tags.length) tags.push("General");
+      return tags;
+    };
     return entries
-      .map((entry) => {
+      .map((entry, index) => {
         if (!entry || typeof entry !== "object") return null;
         const name = String(entry?.name ?? "").trim();
         if (!name) return null;
         if (ignoredTraitNames.has(name.toLowerCase())) return null;
+        const source = normalizeSourceTag(raceEntry?.source);
+        const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+        const id = `species:${source}:${slug}`;
         return {
-          id: `species:${normalizeSourceTag(raceEntry?.source)}:${name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`,
+          id,
+          sortOrder: index,
           name,
+          saveAdvantageTags: extractSaveAdvantageTags(entry),
+          resourceKey: `${autoResourceIdPrefix}${id}`,
         };
       })
       .filter(Boolean);
@@ -1480,17 +1496,19 @@ export function createRenderers(deps) {
                 : "Toggle prepared";
             const castDisabled = usesPreparedSpells && toNumber(spell?.level, 0) > 0 && !isPrepared;
             const spellDamageNotation = extractSimpleNotation(getSpellPrimaryDiceNotation(spell));
+            const hasAttackDamageSplit = spellCombat.hasSpellAttack && Boolean(spellDamageNotation);
             const spellAttackButtonHtml =
               spellCombat.hasSpellAttack && spellCombat.attackBonus != null
                 ? `<button type="button" class="btn secondary spell-cast-btn" data-spell-attack-roll="${esc(name)}" ${castDisabled ? "disabled" : ""}>To Hit ${esc(
                     signed(spellCombat.attackBonus)
                   )}</button>`
                 : "";
-            const castLabel = spellCombat.hasSpellAttack
-              ? spellDamageNotation
-                ? `Damage ${spellDamageNotation}`
-                : "Cast"
-              : "Cast";
+            const spellDamageButtonHtml = hasAttackDamageSplit
+              ? `<button type="button" class="btn secondary spell-cast-btn" data-spell-damage-roll="${esc(name)}" ${castDisabled ? "disabled" : ""}>Damage ${esc(
+                  spellDamageNotation
+                )}</button>`
+              : "";
+            const castLabel = "Cast";
             const ritualBadgeHtml = isSpellRitualCast(spell)
               ? '<span class="spell-ritual-pill" title="Can be cast as a ritual">R</span>'
               : "";
@@ -1517,6 +1535,7 @@ export function createRenderers(deps) {
               <span class="spell-meta muted">${esc(meta || "")}</span>
               <div class="spell-action-group">
                 ${spellAttackButtonHtml}
+                ${spellDamageButtonHtml}
                 ${ritualBadgeHtml}
                 <button type="button" class="btn secondary spell-cast-btn" data-spell-cast="${esc(name)}" ${castDisabled ? "disabled" : ""}>${castLabel}</button>
               </div>
@@ -1551,16 +1570,11 @@ export function createRenderers(deps) {
       ? raw.map((entry) => String(entry ?? "").trim())
       : [String(raw ?? "").trim()];
     const selected = [...new Set(currentValues.filter((value) => value && options.includes(value)))];
-    while (selected.length < maxCount) {
-      const nextOption = options.find((option) => !selected.includes(option));
-      if (!nextOption) break;
-      selected.push(nextOption);
-    }
     if (!selected.length) selected.push(options[0]);
     return maxCount <= 1 ? [selected[0]] : selected.slice(0, maxCount);
   }
 
-  function isFeatureModeHandledByOptionalFeatures(mode, optionalFeatureSlots, selectedOptionalFeatures) {
+  function isFeatureModeHandledByOptionalFeatures(mode, optionalFeatureSlots, catalogs) {
     const normalize = (value) =>
       String(value ?? "")
         .toLowerCase()
@@ -1568,15 +1582,33 @@ export function createRenderers(deps) {
         .replace(/[^a-z0-9\s]/g, " ")
         .replace(/\s+/g, " ")
         .trim();
+    const normalizeFeatureTypeList = (value) => {
+      if (Array.isArray(value)) return value.map((entry) => normalize(entry)).filter(Boolean);
+      const single = normalize(value);
+      return single ? [single] : [];
+    };
     const modeName = normalize(mode?.featureName);
     if (!modeName) return false;
-    const slotTypes = [
-      ...(Array.isArray(optionalFeatureSlots) ? optionalFeatureSlots : []).map((slot) => slot?.slotType),
-      ...(Array.isArray(selectedOptionalFeatures) ? selectedOptionalFeatures : []).map((feature) => feature?.slotType),
-    ]
-      .map((value) => normalize(value))
-      .filter(Boolean);
-    return slotTypes.some((slotType) => slotType.includes(modeName) || modeName.includes(slotType));
+    const optionValues = Array.isArray(mode?.optionValues) ? mode.optionValues.map((value) => normalize(value)).filter(Boolean) : [];
+    if (!optionValues.length) return false;
+    const slots = (Array.isArray(optionalFeatureSlots) ? optionalFeatureSlots : []).filter(
+      (slot) => normalize(slot?.slotType) === modeName
+    );
+    if (!slots.length) return false;
+    const optionalFeatureCatalog = Array.isArray(catalogs?.optionalFeatures) ? catalogs.optionalFeatures : [];
+    const availableNames = new Set();
+    slots.forEach((slot) => {
+      const slotFeatureType = normalize(slot?.featureType);
+      if (!slotFeatureType) return;
+      optionalFeatureCatalog.forEach((entry) => {
+        const featureTypes = normalizeFeatureTypeList(entry?.featureType);
+        if (!featureTypes.includes(slotFeatureType)) return;
+        const name = normalize(entry?.name);
+        if (name) availableNames.add(name);
+      });
+    });
+    if (!availableNames.size) return false;
+    return optionValues.every((value) => availableNames.has(value));
   }
 
   function renderPlayViewImpl(state) {
@@ -1661,6 +1693,7 @@ export function createRenderers(deps) {
 
     const savesHtml = renderSaveRowsImpl(state, { canToggle: false, includeRollButtons: true });
     const skillsHtml = renderSkillRowsImpl(state, { canToggle: false, includeRollButtons: true });
+    const speciesTraits = getSpeciesTraitRows(raceEntry);
     const traitSummary = getCharacterToolAndDefenseSummary(state.catalogs, character);
     const renderTraitChip = (entry) =>
       `<span class="play-trait-chip">${esc(entry.label)}${
@@ -1675,12 +1708,21 @@ export function createRenderers(deps) {
         </div>
       `;
     };
+    const saveAdvantageEntries = [
+      ...new Set(
+        speciesTraits
+          .flatMap((trait) => (Array.isArray(trait?.saveAdvantageTags) ? trait.saveAdvantageTags : []))
+          .map((tag) => String(tag ?? "").trim())
+          .filter(Boolean)
+      ),
+    ].map((label) => ({ label, sources: ["Species"] }));
     const traitSectionHtml = [
-      renderTraitGroup("Tool Proficiencies", traitSummary.tools),
+      renderTraitGroup("Save Advantages", saveAdvantageEntries),
       renderTraitGroup("Resistances", traitSummary.resistances),
       renderTraitGroup("Immunities", traitSummary.immunities),
       renderTraitGroup("Condition Immunities", traitSummary.conditionImmunities),
       renderTraitGroup("Vulnerabilities", traitSummary.vulnerabilities),
+      renderTraitGroup("Tool Proficiencies", traitSummary.tools),
     ]
       .filter(Boolean)
       .join("");
@@ -1807,9 +1849,8 @@ export function createRenderers(deps) {
     const optionalFeatureSlots = Array.isArray(character?.progression?.optionalFeatureSlots) ? character.progression.optionalFeatureSlots : [];
     const featureModesRaw = Array.isArray(character?.progression?.featureModes) ? character.progression.featureModes : [];
     const featureModes = featureModesRaw.filter(
-      (mode) => !isFeatureModeHandledByOptionalFeatures(mode, optionalFeatureSlots, selectedOptionalFeatures)
+      (mode) => !isFeatureModeHandledByOptionalFeatures(mode, optionalFeatureSlots, state.catalogs)
     );
-    const speciesTraits = getSpeciesTraitRows(raceEntry);
     const attacksPerAttackActionFromFeatures = unlockedFeatures.reduce((maxAttacks, feature) => {
       const featureName = String(feature?.name ?? "").trim();
       if (!featureName || !featureName.toLowerCase().startsWith("extra attack")) return maxAttacks;
@@ -2195,16 +2236,29 @@ export function createRenderers(deps) {
     const speciesTraitListHtml = speciesTraits.length
       ? speciesTraits
           .map(
-            (trait) => `
+            (trait) => {
+              const tracker = featureUses[trait.resourceKey];
+              const trackerHtml = tracker
+                ? `
+              <span class="feature-use-controls">
+                <span class="pill">${esc(tracker.current)}/${esc(tracker.max)}${formatRecharge(tracker.recharge) ? ` ${esc(formatRecharge(tracker.recharge))}` : ""}</span>
+                <button type="button" class="save-mod-btn" data-feature-use-delta="${esc(trait.resourceKey)}|inc:-1" ${tracker.current <= 0 ? "disabled" : ""}>Use</button>
+                <button type="button" class="save-mod-btn" data-feature-use-delta="${esc(trait.resourceKey)}|inc:1" ${tracker.current >= tracker.max ? "disabled" : ""}>+</button>
+              </span>
+            `
+                : "";
+              return `
             <li class="feature-row">
               <span class="class-feature-level">Species</span>
               <div class="feature-main">
                 <button type="button" class="spell-name-btn feature-name-btn" data-open-species-trait="${esc(trait.name)}">${esc(
                   trait.name
                 )}</button>
+                ${trackerHtml}
               </div>
             </li>
-          `
+          `;
+            }
           )
           .join("")
       : "";
@@ -2592,10 +2646,9 @@ export function createRenderers(deps) {
     if (stepIndex === 3) {
       const subclassOptions = getSubclassSelectOptions(state);
       const progressionOptionalFeatureSlots = Array.isArray(character?.progression?.optionalFeatureSlots) ? character.progression.optionalFeatureSlots : [];
-      const selectedOptionalFeatures = Array.isArray(character?.optionalFeatures) ? character.optionalFeatures : [];
       const progressionFeatureModesRaw = Array.isArray(character?.progression?.featureModes) ? character.progression.featureModes : [];
       const progressionFeatureModes = progressionFeatureModesRaw.filter(
-        (mode) => !isFeatureModeHandledByOptionalFeatures(mode, progressionOptionalFeatureSlots, selectedOptionalFeatures)
+        (mode) => !isFeatureModeHandledByOptionalFeatures(mode, progressionOptionalFeatureSlots, catalogs)
       );
       const buildFeatureChoicesHtml = progressionFeatureModes.length
         ? progressionFeatureModes

@@ -18,11 +18,13 @@ export function createPartyFeature(deps) {
     openModal,
     loadCharacterHistory,
     loadCharacterById,
+    getCatalogsForCharacter,
     openClassDetailsModalForCharacter,
     openSubclassDetailsModalForCharacter,
     render,
   } = deps;
   const memberCharacterCache = new Map();
+  const memberDerivedCache = new Map();
   let partyAutoRefreshTimer = null;
   let isPartyAutoRefreshInFlight = false;
 
@@ -186,6 +188,8 @@ export function createPartyFeature(deps) {
 
   const clearActiveParty = () => {
     stopPartyAutoRefresh();
+    memberCharacterCache.clear();
+    memberDerivedCache.clear();
     appState.activePartyId = null;
     appState.activeParty = null;
     clearPartyIdInUrl(true);
@@ -352,8 +356,13 @@ export function createPartyFeature(deps) {
       const snapshot = memberCharacterCache.get(characterId);
       return snapshot && typeof snapshot === "object" && !Array.isArray(snapshot) ? snapshot : null;
     };
-    const getMemberDerived = (snapshot) => {
+    const getMemberDerived = (snapshot, characterId = "") => {
       if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) return null;
+      const parsedId = String(characterId ?? "").trim();
+      if (isUuid(parsedId)) {
+        const cached = memberDerivedCache.get(parsedId);
+        if (cached && typeof cached === "object" && !Array.isArray(cached)) return cached;
+      }
       try {
         return computeDerivedStats(snapshot, store.getState()?.catalogs ?? null);
       } catch {
@@ -414,17 +423,7 @@ export function createPartyFeature(deps) {
     };
     const getHpSummary = (snapshot, derived) => {
       const current = readFiniteNumber(snapshot?.play?.hpCurrent);
-      // Prefer persisted character max HP fields first; party view may not have the
-      // exact source catalogs needed to recompute class hit-die based totals reliably.
-      const max = getMetricValue(
-        snapshot,
-        snapshot?.play?.hpMax,
-        snapshot?.derived?.hp,
-        snapshot?.hpMax,
-        snapshot?.maxHitPoints,
-        snapshot?.hitPoints?.max,
-        derived?.hp
-      );
+      const max = getMetricValue(snapshot, derived?.hp);
       const temp = readFiniteNumber(snapshot?.play?.hpTemp) ?? 0;
       if (current !== null && max !== "Unknown") {
         return temp > 0 ? `${Math.max(0, current)}/${max} (+${temp} temp)` : `${Math.max(0, current)}/${max}`;
@@ -498,7 +497,7 @@ export function createPartyFeature(deps) {
         const classSummary = buildClassSummary(snapshot, history);
         const speciesSummary = buildSpeciesSummary(snapshot);
         const backgroundSummary = buildBackgroundSummary(snapshot);
-        const derived = getMemberDerived(snapshot);
+        const derived = getMemberDerived(snapshot, characterId);
         const hpSummary = getHpSummary(snapshot, derived);
         const acSummary = getArmorClassSummary(snapshot, derived);
         const speedSummary = getSpeedSummary(snapshot);
@@ -710,14 +709,31 @@ export function createPartyFeature(deps) {
     if (!pendingIds.length) return;
     const responses = await Promise.allSettled(pendingIds.map((id) => getCharacter(id)));
     let didUpdate = false;
+    const refreshedMembers = [];
     responses.forEach((result, index) => {
       if (result.status !== "fulfilled") return;
       const characterId = pendingIds[index];
       const candidate = result.value?.character;
       if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return;
-      memberCharacterCache.set(characterId, { ...candidate, id: characterId });
+      const snapshot = { ...candidate, id: characterId };
+      memberCharacterCache.set(characterId, snapshot);
+      refreshedMembers.push({ characterId, snapshot });
       didUpdate = true;
     });
+    if (refreshedMembers.length && typeof getCatalogsForCharacter === "function") {
+      const derivedResults = await Promise.allSettled(
+        refreshedMembers.map(async ({ characterId, snapshot }) => {
+          const catalogs = await getCatalogsForCharacter(snapshot);
+          return { characterId, derived: computeDerivedStats(snapshot, catalogs) };
+        })
+      );
+      derivedResults.forEach((result) => {
+        if (result.status !== "fulfilled") return;
+        const { characterId, derived } = result.value;
+        if (!isUuid(characterId) || !derived || typeof derived !== "object" || Array.isArray(derived)) return;
+        memberDerivedCache.set(characterId, derived);
+      });
+    }
     if (!didUpdate) return;
     if (String(appState.activePartyId ?? "").trim() !== partyId) return;
     render(store.getState());

@@ -208,7 +208,71 @@ function normalizeItemTypeCode(value) {
     .toUpperCase();
 }
 
-export function getArmorClassBreakdown(character, dexMod, fightingStyles = new Set()) {
+function normalizeSourceTag(value) {
+  return String(value ?? "")
+    .trim()
+    .toUpperCase();
+}
+
+function collectTraitTextLines(entry, out = []) {
+  if (entry == null) return out;
+  if (typeof entry === "string") {
+    const line = entry
+      .replace(/\{@[a-z]+ ([^}]+)\}/gi, "$1")
+      .replace(/\{@[a-z]+\}/gi, "")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (line) out.push(line);
+    return out;
+  }
+  if (Array.isArray(entry)) {
+    entry.forEach((value) => collectTraitTextLines(value, out));
+    return out;
+  }
+  if (typeof entry !== "object") return out;
+  if (typeof entry.name === "string" && entry.name.trim()) out.push(entry.name.trim());
+  collectTraitTextLines(entry.entry, out);
+  collectTraitTextLines(entry.text, out);
+  collectTraitTextLines(entry.entries, out);
+  collectTraitTextLines(entry.items, out);
+  return out;
+}
+
+function getSelectedRaceEntry(catalogs, character) {
+  const races = Array.isArray(catalogs?.races) ? catalogs.races : [];
+  if (!races.length) return null;
+  const raceName = String(character?.race ?? "").trim().toLowerCase();
+  if (!raceName) return null;
+  const raceSource = normalizeSourceTag(character?.raceSource);
+  const raceMatch = races.find((entry) => {
+    if (String(entry?.name ?? "").trim().toLowerCase() !== raceName) return false;
+    if (!raceSource) return true;
+    return normalizeSourceTag(entry?.source) === raceSource;
+  }) ?? races.find((entry) => String(entry?.name ?? "").trim().toLowerCase() === raceName);
+  return raceMatch ?? null;
+}
+
+function getSpeciesUnarmoredAcRule(catalogs, character) {
+  const raceEntry = getSelectedRaceEntry(catalogs, character);
+  if (!raceEntry) return null;
+  const traitEntries = Array.isArray(raceEntry?.entries) ? raceEntry.entries : [];
+  for (const trait of traitEntries) {
+    if (!trait || typeof trait !== "object") continue;
+    const traitName = String(trait?.name ?? "").trim();
+    const joinedText = collectTraitTextLines(trait, []).join(" ").toLowerCase();
+    const baseMatch = joinedText.match(/(?:base ac|armor class)\D{0,32}(\d{1,2})\s*\+\s*(?:your\s+)?dexterity modifier/i);
+    if (!baseMatch?.[1]) continue;
+    const base = toNumber(baseMatch[1], 0);
+    if (base <= 0) continue;
+    return {
+      base,
+      label: traitName || "Species Trait",
+    };
+  }
+  return null;
+}
+
+export function getArmorClassBreakdown(character, dexMod, fightingStyles = new Set(), catalogs = null) {
   const equippedItems = getEquippedInventoryEntries(character);
   let bestArmorTotal = null;
   let bestArmorBase = 0;
@@ -252,8 +316,9 @@ export function getArmorClassBreakdown(character, dexMod, fightingStyles = new S
 
   const defenseBonus = isWearingArmor && fightingStyles.has("defense") ? 1 : 0;
   const isArmored = bestArmorTotal != null;
-  const baseLabel = isArmored ? (bestArmorName || "Equipped Armor") : "Base AC";
-  const baseValue = isArmored ? bestArmorBase : 10;
+  const speciesUnarmoredRule = isArmored ? null : getSpeciesUnarmoredAcRule(catalogs, character);
+  const baseLabel = isArmored ? (bestArmorName || "Equipped Armor") : speciesUnarmoredRule?.label || "Base AC";
+  const baseValue = isArmored ? bestArmorBase : toNumber(speciesUnarmoredRule?.base, 10);
   const dexValue = isArmored ? bestArmorDex : dexMod;
   const dexLabel =
     isArmored && bestArmorTypeCode === "MA"
@@ -279,13 +344,21 @@ export function getArmorClassBreakdown(character, dexMod, fightingStyles = new S
       source: "Fighting Style",
     });
   }
+  const customModifier = Math.floor(toNumber(character?.play?.customAcModifier, 0));
+  if (customModifier !== 0) {
+    components.push({
+      label: "Custom Modifier",
+      value: customModifier,
+      source: "Custom",
+    });
+  }
 
   const total = components.reduce((sum, component) => sum + toNumber(component.value, 0), 0);
   return { total, components, isArmored };
 }
 
-function getArmorClassFromEquipment(character, dexMod, fightingStyles = new Set()) {
-  return getArmorClassBreakdown(character, dexMod, fightingStyles).total;
+function getArmorClassFromEquipment(character, dexMod, fightingStyles = new Set(), catalogs = null) {
+  return getArmorClassBreakdown(character, dexMod, fightingStyles, catalogs).total;
 }
 
 export function computeDerivedStats(character, catalogs = null) {
@@ -301,7 +374,7 @@ export function computeDerivedStats(character, catalogs = null) {
   const prof = proficiencyBonus(character.level);
   const hp = getHitPointBreakdown(catalogs, character).total;
   const fightingStyles = getCharacterFightingStyleSet(character, catalogs);
-  const ac = getArmorClassFromEquipment(character, mods.dex, fightingStyles);
+  const ac = getArmorClassFromEquipment(character, mods.dex, fightingStyles, catalogs);
 
   return {
     mods,
