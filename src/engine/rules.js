@@ -7,6 +7,19 @@ function proficiencyBonus(level) {
   return 2 + Math.floor((lvl - 1) / 4);
 }
 
+function normalizeSkillProficiencyMode(value) {
+  const mode = String(value ?? "").trim().toLowerCase();
+  if (mode === "half" || mode === "proficient" || mode === "expertise") return mode;
+  return "none";
+}
+
+function getSkillProficiencyBonus(proficiencyBonusValue, mode) {
+  if (mode === "expertise") return proficiencyBonusValue * 2;
+  if (mode === "proficient") return proficiencyBonusValue;
+  if (mode === "half") return Math.floor(proficiencyBonusValue / 2);
+  return 0;
+}
+
 function getClassKey(className) {
   return String(className ?? "")
     .trim()
@@ -363,6 +376,7 @@ function getArmorClassFromEquipment(character, dexMod, fightingStyles = new Set(
 
 export function computeDerivedStats(character, catalogs = null) {
   const abilities = character.abilities ?? {};
+  const play = character.play ?? {};
   const mods = {
     str: abilityMod(abilities.str),
     dex: abilityMod(abilities.dex),
@@ -375,12 +389,23 @@ export function computeDerivedStats(character, catalogs = null) {
   const hp = getHitPointBreakdown(catalogs, character).total;
   const fightingStyles = getCharacterFightingStyleSet(character, catalogs);
   const ac = getArmorClassFromEquipment(character, mods.dex, fightingStyles, catalogs);
+  const getPassiveSkillValue = (skillKey, abilityKey) => {
+    const mode = normalizeSkillProficiencyMode(
+      play.skillProficiencyModes?.[skillKey] ?? (play.skillProficiencies?.[skillKey] ? "proficient" : "none")
+    );
+    return 10 + toNumber(mods?.[abilityKey], 0) + getSkillProficiencyBonus(prof, mode);
+  };
+  const passivePerception = getPassiveSkillValue("perception", "wis");
+  const passiveInsight = getPassiveSkillValue("insight", "wis");
+  const passiveInvestigation = getPassiveSkillValue("investigation", "int");
 
   return {
     mods,
     proficiencyBonus: prof,
     hp,
     ac,
-    passivePerception: 10 + mods.wis,
+    passivePerception,
+    passiveInsight,
+    passiveInvestigation,
   };
 }

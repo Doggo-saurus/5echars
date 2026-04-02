@@ -475,10 +475,13 @@ export function createPartyFeature(deps) {
         const proficiency = getSkillProficiencyBonus(proficiencyBonus, mode);
         return 10 + getAbilityMod(abilityKey) + proficiency;
       };
+      const derivedPerception = readFiniteNumber(derived?.passivePerception);
+      const derivedInsight = readFiniteNumber(derived?.passiveInsight);
+      const derivedInvestigation = readFiniteNumber(derived?.passiveInvestigation);
       return {
-        perception: computePassiveSkill("perception", "wis"),
-        insight: computePassiveSkill("insight", "wis"),
-        investigation: computePassiveSkill("investigation", "int"),
+        perception: derivedPerception ?? computePassiveSkill("perception", "wis"),
+        insight: derivedInsight ?? computePassiveSkill("insight", "wis"),
+        investigation: derivedInvestigation ?? computePassiveSkill("investigation", "int"),
       };
     };
     const members = Array.isArray(party.members) ? party.members : [];
