@@ -3382,8 +3382,12 @@ export function createRenderers(deps) {
     const passivePerception = Number.isFinite(toNumber(derived?.passivePerception, Number.NaN))
       ? toNumber(derived?.passivePerception, 10)
       : getPassiveSkillValue("perception", "wis");
-    const passiveInsight = getPassiveSkillValue("insight", "wis");
-    const passiveInvestigation = getPassiveSkillValue("investigation", "int");
+    const passiveInsight = Number.isFinite(toNumber(derived?.passiveInsight, Number.NaN))
+      ? toNumber(derived?.passiveInsight, 10)
+      : getPassiveSkillValue("insight", "wis");
+    const passiveInvestigation = Number.isFinite(toNumber(derived?.passiveInvestigation, Number.NaN))
+      ? toNumber(derived?.passiveInvestigation, 10)
+      : getPassiveSkillValue("investigation", "int");
     const hasDiceTray = character?.showDiceTray !== false;
     const className = String(state.character.class ?? "").trim();
     const subclassName = String(state.character.classSelection?.subclass?.name ?? state.character.subclass ?? "").trim();
