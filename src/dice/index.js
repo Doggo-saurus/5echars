@@ -1,3 +1,5 @@
+import { DEFAULT_DICE_STYLE } from "../theme/dice-theme.js";
+
 export function createDiceUi(deps) {
   const {
     esc,
@@ -177,9 +179,12 @@ export function createDiceUi(deps) {
   }
 
   function applyDiceStyle(box = uiState.diceBox) {
-    const selectedStyleKey = uiState.selectedDiceStyle in diceStylePresets ? uiState.selectedDiceStyle : "arcane";
+    const selectedStyleKey = uiState.selectedDiceStyle in diceStylePresets ? uiState.selectedDiceStyle : DEFAULT_DICE_STYLE;
     uiState.selectedDiceStyle = selectedStyleKey;
-    const preset = diceStylePresets[selectedStyleKey] ?? diceStylePresets.arcane ?? Object.values(diceStylePresets)[0];
+    const preset =
+      diceStylePresets[selectedStyleKey]
+      ?? diceStylePresets[DEFAULT_DICE_STYLE]
+      ?? Object.values(diceStylePresets)[0];
 
     const overlay = document.getElementById("dice-overlay");
     if (overlay) {

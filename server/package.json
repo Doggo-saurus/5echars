@@ -4,7 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node --env-file-if-exists=../.env src/index.js",
+    "start": "npm run build:client && node --env-file-if-exists=../.env src/index.js",
+    "build:client": "node ./scripts/build-client.mjs --minify",
+    "watch:client": "node ./scripts/build-client.mjs --watch",
     "redis:list-characters": "node --env-file-if-exists=../.env ./scripts/list-redis-characters.mjs",
     "sync:dice-assets": "node ./scripts/sync-dice-assets.mjs",
     "postinstall": "npm run sync:dice-assets"
@@ -12,6 +14,7 @@
   "dependencies": {
     "@3d-dice/dice-box": "^1.1.4",
     "@3d-dice/dice-themes": "^0.2.1",
+    "esbuild": "^0.25.9",
     "express": "^4.22.1",
     "redis": "^4.7.1",
     "uuid": "^11.1.0"

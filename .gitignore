@@ -1,6 +1,7 @@
 data/
 data/catalog-src/
 server/node_modules/
+public/dist/
 .env
 data/redis/
 data/character-fallback/

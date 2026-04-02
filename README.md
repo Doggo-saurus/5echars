@@ -40,6 +40,34 @@ Then open:
 
 [http://localhost:3000](http://localhost:3000)
 
+### Client bundling (esbuild)
+
+The app now serves the bundled client by default from `public/index.html` using `/dist/main.js`.
+
+```bash
+cd server
+npm run build:client
+```
+
+Watch mode for iterative frontend changes:
+
+```bash
+cd server
+npm run watch:client
+```
+
+To run the app (which now serves the bundled shell by default):
+
+```bash
+npm start
+```
+
+Notes:
+
+- `npm start` builds the client bundle first, then starts the server.
+- Built assets are emitted to `public/dist/`.
+- `watch:client` is useful while iterating on frontend code in another terminal.
+
 ### Redis toggle (optional for now)
 
 - `REDIS_ENABLED=false` (default) uses in-memory storage

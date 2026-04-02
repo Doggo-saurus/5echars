@@ -19,7 +19,74 @@ import {
 } from "./character-api.js";
 import { createPersistence } from "./app/persistence.js";
 import { createPartyFeature } from "./app/party-feature.js";
+import {
+  CHARACTER_CHANGE_LOG_KEY,
+  CHARACTER_CHANGE_LOG_LIMIT,
+  CHARACTER_HISTORY_KEY,
+  CHARACTER_HISTORY_LIMIT,
+  CHARACTER_SYNC_META_KEY,
+  DEFAULT_DICE_RESULT_MESSAGE,
+  LAST_CHARACTER_ID_KEY,
+  NEW_CHARACTER_OPTION_VALUE,
+  ROLL_HISTORY_LIMIT,
+  UUID_V4_REGEX,
+  createAppState,
+  createUiState,
+} from "./app/runtime/state.js";
+import { createRuntimeSourcePresets } from "./app/runtime/source-presets.js";
+import { createCharacterHistory } from "./app/character/history.js";
+import { createCharacterImportExport } from "./app/character/import-export.js";
+import { getCharacterFromApiPayload as parseCharacterApiPayload } from "./app/character/api-payload.js";
+import { createCharacterChangeLogDomain } from "./app/character/change-log.js";
+import { createCharacterUpdater } from "./app/character/update.js";
+import { createCharacterViewHelpers } from "./app/character/view-helpers.js";
+import { createCatalogLookupDomain } from "./app/catalog/lookup.js";
+import { createBootstrap } from "./app/bootstrap.js";
+import { createCharacterDetailsModals } from "./app/modals/character-details.js";
+import { createEditPasswordController } from "./app/modals/edit-password.js";
+import { createLevelUpModal } from "./app/modals/level-up.js";
+import { createMulticlassModal } from "./app/modals/multiclass.js";
+import { createPartyModalCatalogCache } from "./app/modals/party-catalog-cache.js";
+import { createPartyCharacterDetailsModals } from "./app/modals/party-character-details.js";
+import { createOnboardingView } from "./app/render/onboarding.js";
+import { createPersistentBrandLogo } from "./app/render/brand-logo.js";
+import { createFeatureResourceRules } from "./app/rules/feature-resources.js";
+import { createHitPointRules } from "./app/rules/hit-points.js";
+import { createProficiencySummaryRules } from "./app/rules/proficiency-summary.js";
+import { createProgressionRules } from "./app/rules/progression.js";
+import { createProgressionCore } from "./app/rules/progression-core.js";
+import { createCharacterProgressionDomain } from "./app/rules/character-progression.js";
+import { createProficiencyRules } from "./app/rules/proficiencies.js";
+import { createSpellcastingRules } from "./app/rules/spellcasting.js";
+import { createAutoGrantedSpellRules, getClassKey as getSpellClassKey } from "./app/spells/auto-grants.js";
+import { createPreparedSpellRules } from "./app/spells/prepared.js";
+import { createSpellTextAndContext } from "./app/spells/text-and-context.js";
+import { createAutoAttackRules } from "./app/inventory/auto-attacks.js";
+import { createInventoryWeapons } from "./app/inventory/weapons.js";
+import {
+  buildEntityId,
+  normalizeSourceTag,
+  parseClassFeatureToken,
+  parseSubclassFeatureToken,
+} from "./app/dataset/feature-token-parsers.js";
+import {
+  flattenTableCellToText,
+  getAdditionalThresholdsForCombatSuperiority,
+  getResourceRechargeHint,
+  hasFirstUseFreeAfterLongRestRule,
+  inferResourceLabelFromLines,
+  normalizeResourceLabel,
+  parseDieFacesByClassLevel,
+  parseExplicitResourceCostFromLines,
+  parseResourceCountFromProficiencyBonus,
+  parseResourceCountFromTable,
+  scoreResourceLabelMatch,
+} from "./app/dataset/resource-string-parsers.js";
+import { cleanSpellInlineTags, parseCountToken, toTitleCase } from "./app/dataset/text-utils.js";
 import { createDiceUi } from "./dice/index.js";
+import { dockDiceOverlay, isDiceTrayEnabled, syncDiceOverlayVisibility } from "./dice/overlay.js";
+import { createDiceRoller } from "./dice/roller.js";
+import { DEFAULT_DICE_STYLE, DICE_STYLE_PRESETS } from "./theme/dice-theme.js";
 import { openModal } from "./ui/modals/modal.js";
 import { createEvents } from "./ui/events.js";
 import { createPickers } from "./ui/pickers.js";
@@ -33,190 +100,34 @@ import {
 } from "./ui/formatters.js";
 
 const app = document.getElementById("app");
+const persistentBrandLogo = createPersistentBrandLogo({ app });
 const MANUAL_BASE_URL = String(window.__MANUAL_BASE_URL__ ?? "").trim().replace(/\/+$/g, "");
 const persistedState = loadAppState();
 const store = createStore(persistedState?.character ?? createInitialCharacter());
-const DICE_MODULE_SOURCES = [
-  {
-    moduleUrl: "/vendor/dice-box/dice-box.es.min.js",
-    assetPath: "/vendor/dice-box/assets/",
-    assetOrigin: window.location.origin,
-  },
-  {
-    moduleUrl: "/src/vendor/local-dice-box.js",
-    assetPath: "assets/",
-    assetOrigin: window.location.origin,
-  },
-];
-const DICE_STYLE_PRESETS = {
-  arcane: {
-    label: "Arcane Cyan",
-    diceTheme: "blueGreenMetal",
-    themeColor: "#22d3ee",
-    lightIntensity: 1.15,
-    shadowTransparency: 0.8,
-    pageAccent: "#22d3ee",
-    pageGlow: "rgba(34, 211, 238, 0.22)",
-    pageBgTop: "rgba(14, 116, 144, 0.34)",
-    pageBgBottom: "rgba(8, 145, 178, 0.26)",
-    trayBorder: "rgba(34, 211, 238, 0.55)",
-    trayGlow: "rgba(34, 211, 238, 0.24)",
-  },
-  ember: {
-    label: "Ember Gold",
-    diceTheme: "rust",
-    themeColor: "#f59e0b",
-    lightIntensity: 1.12,
-    shadowTransparency: 0.82,
-    pageAccent: "#fbbf24",
-    pageGlow: "rgba(251, 191, 36, 0.2)",
-    pageBgTop: "rgba(146, 64, 14, 0.32)",
-    pageBgBottom: "rgba(180, 83, 9, 0.24)",
-    trayBorder: "rgba(245, 158, 11, 0.55)",
-    trayGlow: "rgba(245, 158, 11, 0.25)",
-  },
-  forest: {
-    label: "Forest Jade",
-    diceTheme: "wooden",
-    themeColor: "#34d399",
-    lightIntensity: 1.02,
-    shadowTransparency: 0.76,
-    pageAccent: "#34d399",
-    pageGlow: "rgba(52, 211, 153, 0.2)",
-    pageBgTop: "rgba(5, 150, 105, 0.28)",
-    pageBgBottom: "rgba(22, 163, 74, 0.24)",
-    trayBorder: "rgba(52, 211, 153, 0.55)",
-    trayGlow: "rgba(52, 211, 153, 0.24)",
-  },
-  ruby: {
-    label: "Ruby Red",
-    diceTheme: "rock",
-    themeColor: "#dc2626",
-    lightIntensity: 1.12,
-    shadowTransparency: 0.78,
-    pageAccent: "#f87171",
-    pageGlow: "rgba(248, 113, 113, 0.22)",
-    pageBgTop: "rgba(153, 27, 27, 0.34)",
-    pageBgBottom: "rgba(190, 24, 93, 0.24)",
-    trayBorder: "rgba(239, 68, 68, 0.55)",
-    trayGlow: "rgba(239, 68, 68, 0.24)",
-  },
-  prismatic: {
-    label: "Prismatic Nebula",
-    diceTheme: "rock",
-    themeColor: "#6d28d9",
-    lightIntensity: 1.12,
-    shadowTransparency: 0.8,
-    pageAccent: "#c084fc",
-    pageGlow: "rgba(192, 132, 252, 0.2)",
-    pageBgTop: "rgba(79, 70, 229, 0.33)",
-    pageBgBottom: "rgba(217, 70, 239, 0.24)",
-    trayBorder: "rgba(192, 132, 252, 0.58)",
-    trayGlow: "rgba(56, 189, 248, 0.24)",
-  },
-  glass: {
-    label: "Ghost Glass",
-    diceTheme: "smooth",
-    themeColor: "#9ec5eb",
-    lightIntensity: 1.06,
-    shadowTransparency: 0.92,
-    pageAccent: "#bfdbfe",
-    pageGlow: "rgba(191, 219, 254, 0.18)",
-    pageBgTop: "rgba(148, 163, 184, 0.24)",
-    pageBgBottom: "rgba(125, 211, 252, 0.2)",
-    trayBorder: "rgba(191, 219, 254, 0.56)",
-    trayGlow: "rgba(191, 219, 254, 0.2)",
-  },
-  obsidian: {
-    label: "Obsidian Smoke",
-    diceTheme: "rock",
-    themeColor: "#64748b",
-    lightIntensity: 0.96,
-    shadowTransparency: 0.7,
-    pageAccent: "#94a3b8",
-    pageGlow: "rgba(148, 163, 184, 0.16)",
-    pageBgTop: "rgba(15, 23, 42, 0.44)",
-    pageBgBottom: "rgba(30, 41, 59, 0.3)",
-    trayBorder: "rgba(148, 163, 184, 0.42)",
-    trayGlow: "rgba(100, 116, 139, 0.18)",
-  },
-};
-const DEFAULT_DICE_STYLE = "arcane";
-const DEFAULT_DICE_RESULT_MESSAGE = "Roll a save or skill to throw dice.";
-const ROLL_HISTORY_LIMIT = 10;
-const CHARACTER_CHANGE_LOG_LIMIT = 200;
-const CHARACTER_CHANGE_LOG_KEY = "characterLog";
-const LAST_CHARACTER_ID_KEY = "fivee-last-character-id";
-const CHARACTER_HISTORY_KEY = "fivee-character-history";
-const CHARACTER_HISTORY_LIMIT = 20;
-const NEW_CHARACTER_OPTION_VALUE = "__new_character__";
-const CHARACTER_SYNC_META_KEY = "__syncMeta";
-const UUID_V4_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-let diceBoxPromise = null;
-let lastRollAction = null;
 let currentUrlCharacterId = null;
-let persistenceNoticeMessage = "";
 let lastPersistedCharacterFingerprint = "";
-const uiState = {
-  selectedDiceStyle: DEFAULT_DICE_STYLE,
-  diceBox: null,
-  latestDiceResultMessage: DEFAULT_DICE_RESULT_MESSAGE,
-  latestDiceResultIsError: false,
-  rollHistory: [],
-  characterChangeLog: [],
-  lastCharacterSnapshot: null,
-  lastCharacterLogFingerprint: "",
-  latestSpellCastStatusMessage: "",
-  latestSpellCastStatusIsError: false,
-  spellCastStatusTimer: null,
-};
-const appState = {
-  startupErrorMessage: "",
-  showOnboardingHome: true,
-  isRemoteSaveSuppressed: false,
-  remoteSaveTimer: null,
-  localCharacterVersion: 0,
-  localCharacterUpdatedAt: "",
-  activePartyId: null,
-  activeParty: null,
-};
-const { srd: srdPresetSources = [], ...nonSrdSourcePresets } = SOURCE_PRESETS;
-const { srd: srdPresetLabel = "SRD", ...nonSrdSourcePresetLabels } = SOURCE_PRESET_LABELS;
-let runtimeSourcePresets = { ...nonSrdSourcePresets };
-let runtimeSourcePresetLabels = { ...nonSrdSourcePresetLabels };
-let sourcePresetRuntimeReady = false;
+const uiState = createUiState(DEFAULT_DICE_STYLE);
+const appState = createAppState();
+const changeLogDomain = createCharacterChangeLogDomain({
+  toNumber,
+  toTitleCase,
+  esc,
+  characterSyncMetaKey: CHARACTER_SYNC_META_KEY,
+  characterChangeLogKey: CHARACTER_CHANGE_LOG_KEY,
+  characterChangeLogLimit: CHARACTER_CHANGE_LOG_LIMIT,
+  uiState,
+  getState: () => store.getState(),
+  isUuid,
+  isOnboardingHome: () => appState.showOnboardingHome,
+});
+const runtimeSourcePresetsState = createRuntimeSourcePresets({
+  defaultSourcePreset: DEFAULT_SOURCE_PRESET,
+  sourcePresets: SOURCE_PRESETS,
+  sourcePresetLabels: SOURCE_PRESET_LABELS,
+  isCatalogDataSrdOnly,
+});
 
-function getRuntimeDefaultSourcePreset() {
-  if (runtimeSourcePresets[DEFAULT_SOURCE_PRESET]) return DEFAULT_SOURCE_PRESET;
-  const [firstPreset] = Object.keys(runtimeSourcePresets);
-  return firstPreset ?? DEFAULT_SOURCE_PRESET;
-}
-
-function resolveRuntimeSourcePreset(presetKey) {
-  const normalized = String(presetKey ?? "").trim();
-  if (normalized && runtimeSourcePresets[normalized]) return normalized;
-  return getRuntimeDefaultSourcePreset();
-}
-
-async function ensureRuntimeSourcePresets() {
-  if (sourcePresetRuntimeReady) return;
-  const srdOnly = await isCatalogDataSrdOnly();
-  if (srdOnly) {
-    runtimeSourcePresets = { srd: srdPresetSources };
-    runtimeSourcePresetLabels = { srd: srdPresetLabel };
-  }
-  sourcePresetRuntimeReady = true;
-}
-
-const {
-  renderRollHistory,
-  syncDiceResultElements,
-  syncSpellCastStatusElements,
-  setDiceResult,
-  setSpellCastStatus,
-  applyDiceStyle,
-  renderDiceStyleOptions,
-} = createDiceUi({
+const diceUi = createDiceUi({
   esc,
   toNumber,
   rollHistoryLimit: ROLL_HISTORY_LIMIT,
@@ -224,11 +135,28 @@ const {
   uiState,
 });
 
-appState.localCharacterVersion = getCharacterVersion(persistedState?.character);
-lastPersistedCharacterFingerprint = buildCharacterFingerprint(persistedState?.character ?? store.getState().character);
-seedCharacterLogState(store.getState().character);
+const diceRoller = createDiceRoller({
+  uiState,
+  store,
+  toNumber,
+  signed,
+  rollDie,
+  applyDiceStyle: diceUi.applyDiceStyle,
+  setDiceResult: diceUi.setDiceResult,
+  openModal,
+  isDiceTrayEnabled,
+  appendDiceRollLog: changeLogDomain.appendDiceRollLog,
+  defaultDiceResultMessage: DEFAULT_DICE_RESULT_MESSAGE,
+});
+
+
+changeLogDomain.setRestoreDiceStateFromCharacterLog(diceRoller.restoreDiceStateFromCharacterLog);
+
+appState.localCharacterVersion = changeLogDomain.getCharacterVersion(persistedState?.character);
+lastPersistedCharacterFingerprint = changeLogDomain.buildCharacterFingerprint(persistedState?.character ?? store.getState().character);
+changeLogDomain.seedCharacterLogState(store.getState().character);
 appState.localCharacterUpdatedAt =
-  (typeof getSyncMeta(persistedState?.character).updatedAt === "string" && getSyncMeta(persistedState?.character).updatedAt) ||
+  (typeof changeLogDomain.getSyncMeta(persistedState?.character).updatedAt === "string" && changeLogDomain.getSyncMeta(persistedState?.character).updatedAt) ||
   new Date().toISOString();
 
 const SKILLS = [
@@ -296,265 +224,190 @@ const SPELL_SCHOOL_LABELS = {
   T: "Transmutation",
 };
 const DICE_NOTATION_REGEX = /\b\d+d\d+(?:\s*[+\-]\s*\d+)?\b/gi;
-const CUSTOM_ROLL_DIE_FACES = [4, 6, 8, 10, 12, 20, 100];
 const ASI_FEATURE_NAME_REGEX = /ability score improvement/i;
 const AUTO_RESOURCE_ID_PREFIX = "auto:";
-const NUMBER_WORDS = {
-  a: 1,
-  an: 1,
-  one: 1,
-  two: 2,
-  three: 3,
-  four: 4,
-  five: 5,
-  six: 6,
-  seven: 7,
-  eight: 8,
-  nine: 9,
-  ten: 10,
-  eleven: 11,
-  twelve: 12,
-};
-
+const catalogLookupDomain = createCatalogLookupDomain({
+  toNumber,
+  normalizeSourceTag,
+  sourceLabels: SOURCE_LABELS,
+  saveAbilities: SAVE_ABILITIES,
+  getCharacterAllowedSources,
+  buildEntityId,
+});
+const spellcastingRules = createSpellcastingRules({
+  toNumber,
+  spellSlotLevels: SPELL_SLOT_LEVELS,
+  getPreferredSourceOrder: catalogLookupDomain.getPreferredSourceOrder,
+  getClassCatalogEntry: catalogLookupDomain.getClassCatalogEntry,
+});
+const progressionCore = createProgressionCore({
+  toNumber,
+  abilityLabels: ABILITY_LABELS,
+  isRecordObject: catalogLookupDomain.isRecordObject,
+  getCharacterClassLevels: spellcastingRules.getCharacterClassLevels,
+});
+const proficiencyRules = createProficiencyRules({
+  toNumber,
+  saveAbilities: SAVE_ABILITIES,
+  skills: SKILLS,
+  skillKeyByCanonical: SKILL_KEY_BY_CANONICAL,
+  skillProficiencyNone: SKILL_PROFICIENCY_NONE,
+  skillProficiencyHalf: SKILL_PROFICIENCY_HALF,
+  skillProficiencyProficient: SKILL_PROFICIENCY_PROFICIENT,
+  skillProficiencyExpertise: SKILL_PROFICIENCY_EXPERTISE,
+  skillProficiencyModes: SKILL_PROFICIENCY_MODES,
+  asiFeatureNameRegex: ASI_FEATURE_NAME_REGEX,
+  isRecordObject: catalogLookupDomain.isRecordObject,
+  getCharacterClassLevels: spellcastingRules.getCharacterClassLevels,
+  getPreferredSourceOrder: catalogLookupDomain.getPreferredSourceOrder,
+  getClassCatalogEntry: catalogLookupDomain.getClassCatalogEntry,
+  getEffectiveRaceEntry: catalogLookupDomain.getEffectiveRaceEntry,
+  findCatalogEntryByNameWithSelectedSourcePreference: catalogLookupDomain.findCatalogEntryByNameWithSelectedSourcePreference,
+  getClassSaveProficiencies: catalogLookupDomain.getClassSaveProficiencies,
+});
+const characterViewHelpers = createCharacterViewHelpers({
+  esc,
+  toNumber,
+  normalizeSourceTag,
+  sourceLabels: SOURCE_LABELS,
+  defaultSourcePreset: DEFAULT_SOURCE_PRESET,
+  getAllowedSources,
+  runtimeSourcePresetsState,
+  catalogLookupDomain,
+  spellcastingRules,
+  saveAbilities: SAVE_ABILITIES,
+  abilityLabels: ABILITY_LABELS,
+});
+const spellTextAndContext = createSpellTextAndContext({
+  cleanSpellInlineTags,
+  flattenTableCellToText,
+  toNumber,
+  esc,
+  diceNotationRegex: DICE_NOTATION_REGEX,
+  abilityLabels: ABILITY_LABELS,
+  getClassSpellcastingAbility,
+});
+const characterProgressionDomain = createCharacterProgressionDomain({
+  toNumber,
+  signed,
+  isRecordObject: catalogLookupDomain.isRecordObject,
+  normalizeSourceTag,
+  buildEntityId,
+  cleanSpellInlineTags,
+  parseClassFeatureToken,
+  parseSubclassFeatureToken,
+  getClassLevelTracks: progressionCore.getClassLevelTracks,
+  getPreferredSourceOrder: catalogLookupDomain.getPreferredSourceOrder,
+  getClassCatalogEntry: catalogLookupDomain.getClassCatalogEntry,
+  getSelectedSubclassEntry: catalogLookupDomain.getSelectedSubclassEntry,
+  getEffectiveRaceEntry: catalogLookupDomain.getEffectiveRaceEntry,
+  findCatalogEntryByNameWithSelectedSourcePreference: catalogLookupDomain.findCatalogEntryByNameWithSelectedSourcePreference,
+  asiFeatureNameRegex: ASI_FEATURE_NAME_REGEX,
+  extractSimpleNotation: diceRoller.extractSimpleNotation,
+  collectSpellEntryLines: spellTextAndContext.collectSpellEntryLines,
+});
+const inventoryWeapons = createInventoryWeapons({
+  cleanSpellInlineTags,
+  extractSimpleNotation: diceRoller.extractSimpleNotation,
+  toNumber,
+  signed,
+  getRuleDescriptionLines: characterProgressionDomain.getRuleDescriptionLines,
+  getClassLevelTracks: progressionCore.getClassLevelTracks,
+  getClassCatalogEntry: catalogLookupDomain.getClassCatalogEntry,
+  getUnlockedFeatures: characterProgressionDomain.getUnlockedFeatures,
+  resolveFeatureEntryFromCatalogs: characterProgressionDomain.resolveFeatureEntryFromCatalogs,
+});
+const autoGrantedSpellRules = createAutoGrantedSpellRules({
+  toNumber,
+  cleanSpellInlineTags,
+  catalogLookupDomain,
+  progressionCore,
+  characterProgressionDomain,
+  spellcastingRules,
+  spellSlotLevels: SPELL_SLOT_LEVELS,
+});
+const featureResourceRules = createFeatureResourceRules({
+  toNumber,
+  toTitleCase,
+  normalizeSourceTag,
+  buildEntityId,
+  cleanSpellInlineTags,
+  parseCountToken,
+  progressionCore,
+  characterProgressionDomain,
+  catalogLookupDomain,
+  parseDieFacesByClassLevel,
+  getAdditionalThresholdsForCombatSuperiority,
+  getResourceRechargeHint,
+  hasFirstUseFreeAfterLongRestRule,
+  inferResourceLabelFromLines,
+  parseExplicitResourceCostFromLines,
+  parseResourceCountFromProficiencyBonus,
+  parseResourceCountFromTable,
+  scoreResourceLabelMatch,
+  autoResourceIdPrefix: AUTO_RESOURCE_ID_PREFIX,
+});
+const preparedSpellRules = createPreparedSpellRules({
+  toNumber,
+  catalogLookupDomain,
+  spellcastingRules,
+  normalizeAbilityKey: proficiencyRules.normalizeAbilityKey,
+  getSpellByName: spellTextAndContext.getSpellByName,
+});
+const proficiencySummaryRules = createProficiencySummaryRules({
+  toNumber,
+  cleanSpellInlineTags,
+  normalizeSourceTag,
+  buildEntityId,
+  catalogLookupDomain,
+  proficiencyRules,
+});
+const autoAttackRules = createAutoAttackRules({
+  toNumber,
+  signed,
+  getCharacterFightingStyleSet,
+  inventoryWeapons,
+});
+const characterDetailsModals = createCharacterDetailsModals({
+  openModal,
+  esc,
+  toNumber,
+  toTitleCase,
+  buildEntityId,
+  sourceLabels: SOURCE_LABELS,
+  normalizeSourceTag,
+  parseClassFeatureToken,
+  parseSubclassFeatureToken,
+  getRuleDescriptionLines: characterProgressionDomain.getRuleDescriptionLines,
+  renderTextWithInlineDiceButtons: spellTextAndContext.renderTextWithInlineDiceButtons,
+  rollVisualNotation: diceRoller.rollVisualNotation,
+  setDiceResult: diceUi.setDiceResult,
+  recomputeCharacterProgression: characterProgressionDomain.recomputeCharacterProgression,
+  getClassCatalogEntry: catalogLookupDomain.getClassCatalogEntry,
+  getSelectedSubclassEntry: catalogLookupDomain.getSelectedSubclassEntry,
+  resolveFeatureEntryFromCatalogs: characterProgressionDomain.resolveFeatureEntryFromCatalogs,
+  getPreferredSourceOrder: catalogLookupDomain.getPreferredSourceOrder,
+  getEffectiveRaceEntry: catalogLookupDomain.getEffectiveRaceEntry,
+});
 function isUuid(value) {
   return UUID_V4_REGEX.test(String(value ?? "").trim());
 }
 
-function getCharacterIdFromUrl() {
-  const params = new URLSearchParams(window.location.search);
-  const id = params.get("char");
-  return isUuid(id) ? id : null;
-}
+const historyApi = createCharacterHistory({
+  toNumber,
+  esc,
+  isUuid,
+  lastCharacterIdKey: LAST_CHARACTER_ID_KEY,
+  characterHistoryKey: CHARACTER_HISTORY_KEY,
+  characterHistoryLimit: CHARACTER_HISTORY_LIMIT,
+  newCharacterOptionValue: NEW_CHARACTER_OPTION_VALUE,
+});
 
 function setCharacterIdInUrl(id, replace = false) {
-  if (!isUuid(id)) return;
-  const url = new URL(window.location.href);
-  url.searchParams.set("char", id);
-  if (replace) window.history.replaceState({}, "", url.toString());
-  else window.history.pushState({}, "", url.toString());
-  currentUrlCharacterId = id;
+  historyApi.setCharacterIdInUrl(id, replace);
+  currentUrlCharacterId = isUuid(id) ? String(id).trim().toLowerCase() : null;
 }
 
-function getLastCharacterId() {
-  const id = localStorage.getItem(LAST_CHARACTER_ID_KEY);
-  return isUuid(id) ? id : null;
-}
-
-function rememberLastCharacterId(id) {
-  if (!isUuid(id)) return;
-  localStorage.setItem(LAST_CHARACTER_ID_KEY, id);
-}
-
-function clearLastCharacterId() {
-  localStorage.removeItem(LAST_CHARACTER_ID_KEY);
-}
-
-function getCharacterDisplayName(name) {
-  const parsed = String(name ?? "").trim();
-  return parsed || "Unnamed Hero";
-}
-
-function buildClassLevelSummary(character, fallbackClassName = "", fallbackLevel = 1) {
-  if (character && typeof character === "object" && !Array.isArray(character)) {
-    const primaryClassName = String(character.class ?? "").trim();
-    const { primaryLevel, multiclass } = getCharacterClassLevels(character);
-    const parts = [];
-    if (primaryClassName) parts.push(`Level ${primaryLevel} ${primaryClassName}`);
-    multiclass.forEach((entry) => {
-      const className = String(entry?.class ?? "").trim();
-      if (!className) return;
-      const level = Math.max(1, Math.min(20, toNumber(entry?.level, 1)));
-      parts.push(`Level ${level} ${className}`);
-    });
-    if (parts.length) return parts.join(", ");
-  }
-
-  const className = String(fallbackClassName ?? "").trim() || "Adventurer";
-  const level = Math.max(1, Math.min(20, toNumber(fallbackLevel, 1)));
-  return `Level ${level} ${className}`;
-}
-
-function formatCharacterHistoryEntrySummary(entry) {
-  const name = getCharacterDisplayName(entry?.name);
-  const classSummary = String(entry?.classSummary ?? "").trim() || buildClassLevelSummary(null, entry?.className, entry?.level);
-  return `${name} (${classSummary})`;
-}
-
-function loadCharacterHistory() {
-  let parsed = [];
-  try {
-    const raw = localStorage.getItem(CHARACTER_HISTORY_KEY);
-    const json = raw ? JSON.parse(raw) : [];
-    if (Array.isArray(json)) parsed = json;
-  } catch {
-    parsed = [];
-  }
-
-  return parsed
-    .map((entry) => {
-      const id = typeof entry?.id === "string" ? entry.id.trim().toLowerCase() : "";
-      if (!isUuid(id)) return null;
-      const name = getCharacterDisplayName(entry?.name);
-      const level = Math.max(1, Math.min(20, toNumber(entry?.level, 1)));
-      const className = String(entry?.className ?? "").trim();
-      const classSummary = String(entry?.classSummary ?? "").trim();
-      const lastAccessedAt = typeof entry?.lastAccessedAt === "string" ? entry.lastAccessedAt : "";
-      return { id, name, level, className, classSummary, lastAccessedAt };
-    })
-    .filter(Boolean)
-    .slice(0, CHARACTER_HISTORY_LIMIT);
-}
-
-function saveCharacterHistory(entries) {
-  if (!Array.isArray(entries)) return;
-  localStorage.setItem(CHARACTER_HISTORY_KEY, JSON.stringify(entries.slice(0, CHARACTER_HISTORY_LIMIT)));
-}
-
-function upsertCharacterHistory(character, options = {}) {
-  const id = typeof character?.id === "string" ? character.id.trim().toLowerCase() : "";
-  if (!isUuid(id)) return;
-  const shouldTouchAccess = options.touchAccess !== false;
-  const entries = loadCharacterHistory();
-  const current = entries.find((entry) => entry.id === id) ?? null;
-  const nextName = getCharacterDisplayName(character?.name || current?.name);
-  const nextLevel = Math.max(1, Math.min(20, toNumber(character?.level, current?.level ?? 1)));
-  const nextClassName = String(character?.class ?? current?.className ?? "").trim();
-  const nextClassSummary = buildClassLevelSummary(character, current?.className, current?.level ?? nextLevel);
-
-  if (!current) {
-    saveCharacterHistory([
-      {
-        id,
-        name: nextName,
-        level: nextLevel,
-        className: nextClassName,
-        classSummary: nextClassSummary,
-        lastAccessedAt: new Date().toISOString(),
-      },
-      ...entries,
-    ]);
-    return;
-  }
-
-  if (!shouldTouchAccess) {
-    saveCharacterHistory(
-      entries.map((entry) =>
-        entry.id === id
-          ? { ...entry, name: nextName, level: nextLevel, className: nextClassName, classSummary: nextClassSummary }
-          : entry
-      )
-    );
-    return;
-  }
-
-  const withoutCurrent = entries.filter((entry) => entry.id !== id);
-  saveCharacterHistory([
-    {
-      id,
-      name: nextName,
-      level: nextLevel,
-      className: nextClassName,
-      classSummary: nextClassSummary,
-      lastAccessedAt: new Date().toISOString(),
-    },
-    ...withoutCurrent,
-  ]);
-}
-
-function removeCharacterFromHistory(characterId) {
-  const parsedCharacterId = String(characterId ?? "").trim().toLowerCase();
-  if (!isUuid(parsedCharacterId)) return;
-  const entries = loadCharacterHistory();
-  if (!entries.some((entry) => entry.id === parsedCharacterId)) return;
-  const nextEntries = entries.filter((entry) => entry.id !== parsedCharacterId);
-  saveCharacterHistory(nextEntries);
-  const nextLastCharacterId = String(nextEntries[0]?.id ?? "").trim();
-  if (isUuid(nextLastCharacterId)) rememberLastCharacterId(nextLastCharacterId);
-  else clearLastCharacterId();
-}
-
-function readFileText(file) {
-  if (!file || typeof file.text !== "function") throw new Error("Choose a JSON file to import.");
-  return file.text();
-}
-
-function isImportEnvelope(candidate) {
-  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return false;
-  if (!candidate.character || typeof candidate.character !== "object" || Array.isArray(candidate.character)) return false;
-  const keys = Object.keys(candidate);
-  return keys.every((key) =>
-    key === "id" ||
-    key === "character" ||
-    key === "storage" ||
-    key === "meta" ||
-    key === "updatedAt" ||
-    key === "version" ||
-    key === "createdAt"
-  );
-}
-
-function parseImportedCharacterPayload(parsed) {
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error("Invalid JSON payload");
-  }
-
-  let candidate = parsed;
-  let envelopeId = isUuid(parsed.id) ? parsed.id : null;
-  let guard = 0;
-  while (isImportEnvelope(candidate) && guard < 3) {
-    if (!envelopeId && isUuid(candidate.id)) {
-      envelopeId = candidate.id;
-    }
-    candidate = candidate.character;
-    guard += 1;
-  }
-
-  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
-    throw new Error("Invalid JSON payload");
-  }
-
-  const characterId = isUuid(candidate.id) ? candidate.id : envelopeId;
-  return {
-    id: characterId,
-    character: characterId ? { ...candidate, id: characterId } : candidate,
-  };
-}
-
-function sanitizeFileNamePart(value) {
-  const parsed = String(value ?? "")
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-  return parsed || "character";
-}
-
-function exportCharacterToJsonFile(character) {
-  if (!character || typeof character !== "object" || Array.isArray(character)) {
-    throw new Error("No character available to export.");
-  }
-  const fileNameBase = sanitizeFileNamePart(character.name);
-  const blob = new Blob([JSON.stringify(character, null, 2)], { type: "application/json" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = `${fileNameBase}.json`;
-  document.body.append(link);
-  link.click();
-  link.remove();
-  window.setTimeout(() => URL.revokeObjectURL(url), 0);
-}
-
-async function doesRemoteCharacterExist(id) {
-  if (!isUuid(id)) return false;
-  try {
-    await getCharacter(id);
-    return true;
-  } catch (error) {
-    if (error && typeof error === "object" && "status" in error && error.status === 404) return false;
-    throw error;
-  }
-}
 
 function buildImportOverwriteMessage(importedId, options = {}) {
   const sourceLabel = String(options.sourceLabel ?? "Import");
@@ -570,100 +423,30 @@ function buildImportOverwriteMessage(importedId, options = {}) {
   );
 }
 
-async function importCharacterFromParsedJson(parsed, options = {}) {
-  const importedPayload = parseImportedCharacterPayload(parsed);
-  const sourceLabel = String(options.sourceLabel ?? "Import");
-  const importedId = importedPayload.id;
-  const currentId = isUuid(store.getState().character?.id) ? store.getState().character.id : null;
-  const nextVersion = Math.max(appState.localCharacterVersion, getCharacterVersion(importedPayload.character)) + 1;
-  const preparedCharacter = withSyncMeta(withCharacterChangeLog(importedPayload.character), nextVersion);
-
-  if (importedId) {
-    const isCurrentCharacter = importedId === currentId;
-    const existingHistoryEntry = loadCharacterHistory().find((entry) => entry.id === importedId) ?? null;
-    const existsRemotely = await doesRemoteCharacterExist(importedId);
-    if (isCurrentCharacter || existsRemotely) {
-      const displayName = isCurrentCharacter
-        ? getCharacterDisplayName(store.getState().character?.name)
-        : getCharacterDisplayName(existingHistoryEntry?.name);
-      const shouldContinue = window.confirm(
-        buildImportOverwriteMessage(importedId, {
-          sourceLabel,
-          isCurrentCharacter,
-          displayName,
-        })
-      );
-      if (!shouldContinue) return { cancelled: true, id: importedId };
-    }
-
-    const payload = existsRemotely
-      ? await saveCharacter(importedId, { ...preparedCharacter, id: importedId })
-      : await createCharacter({ ...preparedCharacter, id: importedId });
-    const normalized = getCharacterFromApiPayload(payload, importedId);
-    setCharacterIdInUrl(normalized.id, false);
-    await applyRemoteCharacterPayload(payload, normalized.id);
-    return { cancelled: false, id: normalized.id };
-  }
-
-  const payload = await createCharacter(preparedCharacter);
-  const normalized = getCharacterFromApiPayload(payload, null);
-  setCharacterIdInUrl(normalized.id, false);
-  await applyRemoteCharacterPayload(payload, normalized.id);
-  return { cancelled: false, id: normalized.id };
-}
-
-async function importCharacterFromJsonFile(file, options = {}) {
-  const text = await readFileText(file);
-  let parsed = null;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    throw new Error("Invalid JSON payload");
-  }
-  return importCharacterFromParsedJson(parsed, options);
-}
-
-function renderCharacterHistorySelector(selectId, selectedCharacterId = null, options = {}) {
-  const className = String(options.className ?? "character-history-control");
-  const entries = loadCharacterHistory();
-
-  return `
-    <label class="${esc(className)}">
-      <select id="${esc(selectId)}" data-character-history-select>
-        ${entries
-          .map((entry) => {
-            const selected = selectedCharacterId === entry.id ? "selected" : "";
-            const label = formatCharacterHistoryEntrySummary(entry);
-            return `<option value="${esc(entry.id)}" ${selected}>${esc(label)}</option>`;
-          })
-          .join("")}
-        <option value="${NEW_CHARACTER_OPTION_VALUE}">New character</option>
-      </select>
-    </label>
-  `;
-}
-
-const partyFeature = createPartyFeature({
-  app,
-  appState,
-  store,
+const characterIo = createCharacterImportExport({
   isUuid,
-  esc,
-  toNumber,
-  openModal,
-  loadCharacterHistory,
-  loadCharacterById: (...args) => loadCharacterById(...args),
-  getCatalogsForCharacter: (...args) => getCachedPartyModalCatalogs(...args),
-  openClassDetailsModalForCharacter: (...args) => openClassDetailsModalForCharacter(...args),
-  openSubclassDetailsModalForCharacter: (...args) => openSubclassDetailsModalForCharacter(...args),
-  render: (...args) => render(...args),
+  getCharacter,
+  saveCharacter,
+  createCharacter,
+  getCharacterVersion: changeLogDomain.getCharacterVersion,
+  getCharacterFromApiPayload,
+  withSyncMeta: changeLogDomain.withSyncMeta,
+  withCharacterChangeLog: changeLogDomain.withCharacterChangeLog,
+  applyRemoteCharacterPayload,
+  setCharacterIdInUrl,
+  getCharacterDisplayName: historyApi.getCharacterDisplayName,
+  loadCharacterHistory: historyApi.loadCharacterHistory,
+  buildImportOverwriteMessage,
+  getCurrentCharacterId: () => (isUuid(store.getState().character?.id) ? store.getState().character.id : null),
+  getCurrentCharacterName: () => store.getState().character?.name,
+  getLocalCharacterVersion: () => appState.localCharacterVersion,
 });
 
 async function createAndOpenNewCharacter() {
   partyFeature.clearActiveParty();
   const character = createInitialCharacter();
-  const nextVersion = Math.max(appState.localCharacterVersion, getCharacterVersion(character)) + 1;
-  const payload = await createCharacter(withSyncMeta(withCharacterChangeLog(character), nextVersion));
+  const nextVersion = Math.max(appState.localCharacterVersion, changeLogDomain.getCharacterVersion(character)) + 1;
+  const payload = await createCharacter(changeLogDomain.withSyncMeta(changeLogDomain.withCharacterChangeLog(character), nextVersion));
   const parsed = getCharacterFromApiPayload(payload, null);
   setCharacterIdInUrl(parsed.id, false);
   await applyRemoteCharacterPayload(payload, parsed.id);
@@ -672,7 +455,7 @@ async function createAndOpenNewCharacter() {
 function forgetActiveCharacterAndRedirectHome() {
   const characterId = String(store.getState().character?.id ?? "").trim();
   if (!isUuid(characterId)) return;
-  removeCharacterFromHistory(characterId);
+  historyApi.removeCharacterFromHistory(characterId);
   // Reset the in-memory/persisted character so startup subscription does not re-add it to history.
   store.hydrate(createInitialCharacter());
   appState.showOnboardingHome = true;
@@ -688,7 +471,7 @@ async function switchCharacterFromHistory(characterId) {
     if (!isCharacterInActiveParty) {
       partyFeature.clearActiveParty();
     }
-    await loadCharacterById(characterId);
+    await persistence.loadCharacterById(characterId);
     setCharacterIdInUrl(characterId, false);
     render(store.getState());
   } catch (error) {
@@ -697,482 +480,6 @@ async function switchCharacterFromHistory(characterId) {
     else alert(message);
     render(store.getState());
   }
-}
-
-function formatNotationWithModifier(baseNotation, modifier) {
-  if (modifier === 0) return baseNotation;
-  const op = modifier > 0 ? "+" : "-";
-  return `${baseNotation} ${op} ${Math.abs(modifier)}`;
-}
-
-function formatEvaluatedWithModifier(baseValue, modifier) {
-  if (modifier === 0) return String(baseValue);
-  const op = modifier > 0 ? "+" : "-";
-  return `${baseValue} ${op} ${Math.abs(modifier)}`;
-}
-
-function formatEvaluatedNotation(rollValues, total) {
-  if (!Array.isArray(rollValues) || !rollValues.length || !Number.isFinite(total)) return null;
-  const sum = rollValues.reduce((acc, value) => acc + value, 0);
-  const diceExpression = rollValues.length > 1 ? `(${rollValues.join(" + ")})` : `${rollValues[0]}`;
-  const delta = total - sum;
-  if (delta === 0) return diceExpression;
-  const op = delta > 0 ? "+" : "-";
-  return `${diceExpression} ${op} ${Math.abs(delta)}`;
-}
-
-function parseFlatNotationModifier(notation) {
-  const normalized = String(notation || "").replace(/\s+/g, "");
-  if (!normalized) return null;
-  if (/[^0-9d+\-]/i.test(normalized)) return null;
-  const tokens = normalized.match(/[+\-]?[^+\-]+/g);
-  if (!tokens?.length) return null;
-  let modifierTotal = 0;
-  let hasNumericModifierToken = false;
-  for (const token of tokens) {
-    const isNegative = token.startsWith("-");
-    const unsigned = token.replace(/^[+\-]/, "");
-    if (!unsigned) return null;
-    if (/^\d+d\d+$/i.test(unsigned)) continue;
-    if (!/^\d+$/.test(unsigned)) return null;
-    hasNumericModifierToken = true;
-    const value = Number(unsigned);
-    modifierTotal += isNegative ? -value : value;
-  }
-  return hasNumericModifierToken ? modifierTotal : 0;
-}
-
-function parseSimpleNotation(notation) {
-  const normalized = String(notation || "").replace(/\s+/g, "");
-  if (!normalized) return null;
-  if (/[^0-9d+\-]/i.test(normalized)) return null;
-  const tokens = normalized.match(/[+\-]?[^+\-]+/g);
-  if (!tokens?.length) return null;
-  const diceTerms = [];
-  let modifierTotal = 0;
-  for (const token of tokens) {
-    const isNegative = token.startsWith("-");
-    const sign = isNegative ? -1 : 1;
-    const unsigned = token.replace(/^[+\-]/, "");
-    if (!unsigned) return null;
-    if (/^\d+d\d+$/i.test(unsigned)) {
-      const [countRaw, facesRaw] = unsigned.toLowerCase().split("d");
-      const count = Number(countRaw);
-      const faces = Number(facesRaw);
-      if (!Number.isFinite(count) || !Number.isFinite(faces) || count <= 0 || faces <= 0) return null;
-      diceTerms.push({ sign, count, faces });
-      continue;
-    }
-    if (!/^\d+$/.test(unsigned)) return null;
-    modifierTotal += sign * Number(unsigned);
-  }
-  return { normalized, diceTerms, modifierTotal };
-}
-
-function extractSimpleNotation(value) {
-  const compact = String(value || "").replace(/\s+/g, "");
-  if (!compact) return "";
-  if (parseSimpleNotation(compact)) return compact;
-  const match = compact.match(/[+\-]?\d+d\d+(?:[+\-](?:\d+d\d+|\d+))*/i);
-  if (!match?.[0]) return "";
-  const candidate = String(match[0]);
-  return parseSimpleNotation(candidate) ? candidate : "";
-}
-
-function normalizeD20RollMode(value) {
-  if (value === "advantage" || value === "disadvantage") return value;
-  return "normal";
-}
-
-function selectD20ResultFromRolls(rolls, rollMode) {
-  const candidates = Array.isArray(rolls) ? rolls.filter((value) => value >= 1 && value <= 20) : [];
-  if (!candidates.length) return null;
-  if (rollMode === "advantage") return Math.max(...candidates);
-  if (rollMode === "disadvantage") return Math.min(...candidates);
-  return candidates[0] ?? null;
-}
-
-function formatD20ResultMessage(label, modifier, dieValue, total, rollMode = "normal", rollValues = []) {
-  const mode = normalizeD20RollMode(rollMode);
-  const baseExpression = mode === "advantage" ? "2d20kh1" : mode === "disadvantage" ? "2d20kl1" : "1d20";
-  const inputExpression = formatNotationWithModifier(baseExpression, modifier);
-  const modeSuffix = mode === "advantage" ? " (advantage)" : mode === "disadvantage" ? " (disadvantage)" : "";
-  const rollList = Array.isArray(rollValues) ? rollValues.filter((value) => Number.isFinite(value)) : [];
-  if (dieValue != null && total != null) {
-    const selected = formatEvaluatedWithModifier(dieValue, modifier);
-    if (mode !== "normal" && rollList.length >= 2) {
-      return `${label}${modeSuffix}: ${inputExpression} | rolls ${rollList.join(", ")} -> ${selected} = ${total}`;
-    }
-    return `${label}${modeSuffix}: ${inputExpression} | ${selected} = ${total}`;
-  }
-  if (total != null) {
-    return `${label}${modeSuffix}: ${inputExpression} | total = ${total}`;
-  }
-  return `${label}${modeSuffix}: ${inputExpression} | roll completed.`;
-}
-
-function formatNotationResultMessage(label, notation, total, rollValues) {
-  const inputExpression = String(notation || "").trim();
-  const evaluated = formatEvaluatedNotation(rollValues, total);
-  if (evaluated && total != null) {
-    return `${label}: ${inputExpression} | ${evaluated} = ${total}`;
-  }
-  if (total != null) {
-    return `${label}: ${inputExpression} | total = ${total}`;
-  }
-  return `${label}: ${inputExpression} | roll completed.`;
-}
-
-async function getDiceBox() {
-  if (uiState.diceBox) return uiState.diceBox;
-  if (diceBoxPromise) return diceBoxPromise;
-
-  diceBoxPromise = (async () => {
-    try {
-      const tray = document.getElementById("dice-tray");
-      if (!tray) return null;
-      let lastError = null;
-      for (const source of DICE_MODULE_SOURCES) {
-        try {
-          const module = await import(source.moduleUrl);
-          const DiceBox = module?.default;
-          if (!DiceBox) continue;
-
-          const box = new DiceBox({
-            container: "#dice-tray",
-            assetPath: source.assetPath ?? "assets/",
-            origin: source.assetOrigin,
-            theme: "default",
-            scale: 12,
-            // Punchier throws: stronger launch/spin with lower damping for more bounce.
-            gravity: 2.35,
-            throwForce: 4.8,
-            spinForce: 1.55,
-            startingHeight: 7,
-            linearDamping: 0.82,
-            angularDamping: 0.86,
-            settleTimeout: 3200,
-          });
-          await box.init();
-          uiState.diceBox = box;
-          await applyDiceStyle(box);
-          return box;
-        } catch (error) {
-          lastError = error;
-        }
-      }
-      if (lastError) {
-        console.error("Dice modules failed to initialize", lastError);
-      }
-    } catch (error) {
-      console.error("Dice Box failed to initialize", error);
-    }
-    setDiceResult("Visual dice failed to load.", true);
-    return null;
-  })();
-
-  return diceBoxPromise;
-}
-
-async function rollVisualD20(label, modifier = 0, rollMode = "normal") {
-  const mode = normalizeD20RollMode(rollMode);
-  const notationBase = mode === "advantage" || mode === "disadvantage" ? "2d20" : "1d20";
-  const notation = modifier === 0 ? notationBase : `${notationBase}${signed(modifier)}`;
-  setDiceResult(`${label}: rolling ${notation}...`, false, { record: false });
-  if (!isDiceTrayEnabled(store.getState().character ?? {})) {
-    const rollCount = mode === "normal" ? 1 : 2;
-    const resolvedRollValues = Array.from({ length: rollCount }, () => rollDie(20));
-    const resolvedDieValue = selectD20ResultFromRolls(resolvedRollValues, mode);
-    const total = resolvedDieValue != null ? resolvedDieValue + modifier : null;
-    setDiceResult(formatD20ResultMessage(label, modifier, resolvedDieValue, total, mode, resolvedRollValues));
-    appendDiceRollLog({
-      label,
-      notation,
-      total,
-      rollValues: resolvedRollValues,
-      rollMode: mode,
-    });
-    lastRollAction = { type: "d20", label, modifier, rollMode: mode };
-    return {
-      label,
-      notation,
-      modifier,
-      rollMode: mode,
-      rollValues: resolvedRollValues,
-      dieValue: resolvedDieValue,
-      total,
-    };
-  }
-  const physicalNotation = notationBase;
-  const box = await getDiceBox();
-  if (!box) return null;
-  await applyDiceStyle(box);
-
-  try {
-    const rollGroups = await box.roll(physicalNotation);
-    const groups = Array.isArray(rollGroups) ? rollGroups : [];
-    const rollValues = groups.flatMap((group) =>
-      Array.isArray(group?.rolls) ? group.rolls.map((it) => toNumber(it?.value, NaN)).filter((it) => Number.isFinite(it)) : []
-    );
-    const validRollValues = rollValues.filter((value) => value >= 1 && value <= 20);
-    const fallbackRollValues = groups
-      .map((group) => Number(group?.value))
-      .filter((value) => Number.isFinite(value) && value >= 1 && value <= 20);
-    const resolvedRollValues = validRollValues.length ? validRollValues : fallbackRollValues;
-    const resolvedDieValue = selectD20ResultFromRolls(resolvedRollValues, mode);
-    const total = resolvedDieValue != null ? resolvedDieValue + modifier : null;
-    setDiceResult(formatD20ResultMessage(label, modifier, resolvedDieValue, total, mode, resolvedRollValues));
-    appendDiceRollLog({
-      label,
-      notation,
-      total,
-      rollValues: resolvedRollValues,
-      rollMode: mode,
-    });
-    lastRollAction = { type: "d20", label, modifier, rollMode: mode };
-    return {
-      label,
-      notation,
-      modifier,
-      rollMode: mode,
-      rollValues: resolvedRollValues,
-      dieValue: resolvedDieValue,
-      total,
-    };
-  } catch (error) {
-    console.error("Dice roll failed", error);
-    setDiceResult(`${label}: roll failed.`, true);
-    return null;
-  }
-}
-
-async function rollVisualNotation(label, notation) {
-  const cleanNotation = String(notation || "").trim();
-  if (!cleanNotation) {
-    setDiceResult(`${label}: no dice notation.`, true);
-    return null;
-  }
-  const normalizedNotation = cleanNotation.replace(/\s+/g, "");
-  const parsedNotation = parseSimpleNotation(normalizedNotation);
-  const canComputeDeterministically =
-    parsedNotation != null && parsedNotation.diceTerms.length > 0 && parsedNotation.diceTerms.every((term) => term.sign > 0);
-  const diceOnlyNotation = canComputeDeterministically
-    ? parsedNotation.diceTerms.map((term) => `${term.count}d${term.faces}`).join("+")
-    : normalizedNotation;
-
-  setDiceResult(`${label}: rolling ${normalizedNotation}...`, false, { record: false });
-  if (!isDiceTrayEnabled(store.getState().character ?? {})) {
-    if (!parsedNotation) {
-      setDiceResult(`${label}: invalid dice notation.`, true);
-      return null;
-    }
-    const rollValues = [];
-    let total = parsedNotation.modifierTotal;
-    parsedNotation.diceTerms.forEach((term) => {
-      const count = Math.max(0, Math.floor(toNumber(term?.count, 0)));
-      const faces = Math.max(1, Math.floor(toNumber(term?.faces, 0)));
-      const sign = toNumber(term?.sign, 1) < 0 ? -1 : 1;
-      for (let index = 0; index < count; index += 1) {
-        const value = rollDie(faces);
-        rollValues.push(sign < 0 ? -value : value);
-        total += sign * value;
-      }
-    });
-    setDiceResult(formatNotationResultMessage(label, normalizedNotation, total, rollValues));
-    appendDiceRollLog({
-      label,
-      notation: normalizedNotation,
-      total,
-      rollValues,
-      rollMode: "normal",
-    });
-    lastRollAction = { type: "notation", label, notation: normalizedNotation };
-    return {
-      notation: normalizedNotation,
-      total: Number.isFinite(total) ? total : null,
-      rollValues,
-    };
-  }
-  const box = await getDiceBox();
-  if (!box) return null;
-  await applyDiceStyle(box);
-
-  try {
-    const rollGroups = await box.roll(diceOnlyNotation);
-    const groups = Array.isArray(rollGroups) ? rollGroups : [];
-    const rollValues = groups.flatMap((group) =>
-      Array.isArray(group?.rolls) ? group.rolls.map((it) => toNumber(it?.value, NaN)).filter((it) => Number.isFinite(it)) : []
-    );
-    const groupTotals = groups.map((group) => toNumber(group?.value, NaN)).filter((it) => Number.isFinite(it));
-    const summedGroupTotal = groupTotals.length ? groupTotals.reduce((acc, value) => acc + value, 0) : NaN;
-    const firstGroupTotal = groups.length ? toNumber(groups[0]?.value, NaN) : NaN;
-    const rawTotal = Number.isFinite(summedGroupTotal) ? summedGroupTotal : firstGroupTotal;
-    const diceOnlyTotalFromRolls = rollValues.length ? rollValues.reduce((acc, value) => acc + value, 0) : null;
-    const diceOnlyTotal =
-      diceOnlyTotalFromRolls != null
-        ? diceOnlyTotalFromRolls
-        : canComputeDeterministically && Number.isFinite(rawTotal)
-          ? rawTotal
-          : null;
-    const parsedModifier = canComputeDeterministically ? parsedNotation.modifierTotal : parseFlatNotationModifier(normalizedNotation);
-    const computedTotal =
-      Number.isFinite(diceOnlyTotal) && Number.isFinite(parsedModifier) ? diceOnlyTotal + parsedModifier : null;
-    const total = computedTotal ?? (Number.isFinite(rawTotal) ? rawTotal : diceOnlyTotal);
-    const displayRollValues = rollValues.length
-      ? rollValues
-      : Number.isFinite(diceOnlyTotal)
-        ? [diceOnlyTotal]
-        : [];
-    setDiceResult(formatNotationResultMessage(label, normalizedNotation, total, displayRollValues));
-    appendDiceRollLog({
-      label,
-      notation: normalizedNotation,
-      total,
-      rollValues: displayRollValues,
-      rollMode: "normal",
-    });
-    lastRollAction = { type: "notation", label, notation: normalizedNotation };
-    return {
-      notation: normalizedNotation,
-      total: Number.isFinite(total) ? total : null,
-      rollValues: displayRollValues,
-    };
-  } catch (error) {
-    console.error("Dice roll failed", error);
-    setDiceResult(`${label}: roll failed.`, true);
-    return null;
-  }
-}
-
-async function rerollLastRoll() {
-  if (!lastRollAction) {
-    setDiceResult("There is no previous roll to reroll.", true);
-    return;
-  }
-
-  if (lastRollAction.type === "d20") {
-    await rollVisualD20(
-      lastRollAction.label,
-      toNumber(lastRollAction.modifier, 0),
-      normalizeD20RollMode(lastRollAction.rollMode)
-    );
-    return;
-  }
-
-  if (lastRollAction.type === "notation") {
-    await rollVisualNotation(lastRollAction.label, lastRollAction.notation);
-  }
-}
-
-function openCustomRollModal() {
-  const diceCounts = CUSTOM_ROLL_DIE_FACES.reduce((acc, face) => {
-    acc[face] = 0;
-    return acc;
-  }, {});
-  const close = openModal({
-    title: "Custom Dice Roll",
-    bodyHtml: `
-      <div class="custom-roll-shell">
-        <p class="subtitle custom-roll-subtitle">Click dice to add them, then roll.</p>
-        <div class="custom-roll-grid">
-          ${CUSTOM_ROLL_DIE_FACES.map(
-            (face) => `
-              <button type="button" class="custom-roll-die-btn" data-custom-roll-add="${face}">
-                <span class="custom-roll-die-label">d${face}</span>
-                <span class="custom-roll-die-count" data-custom-roll-count="${face}">0</span>
-              </button>
-            `
-          ).join("")}
-        </div>
-        <div class="custom-roll-selected" id="custom-roll-selected" aria-live="polite"></div>
-        <div class="custom-roll-actions">
-          <button type="button" class="btn secondary" id="custom-roll-clear">Clear</button>
-          <button type="button" class="btn" id="custom-roll-submit" disabled>Roll</button>
-        </div>
-      </div>
-    `,
-    actions: [{ label: "Close", secondary: true, onClick: (done) => done() }],
-  });
-  const selectedEl = document.getElementById("custom-roll-selected");
-  const submitEl = document.getElementById("custom-roll-submit");
-  const clearEl = document.getElementById("custom-roll-clear");
-  const modalEl = selectedEl?.closest(".modal");
-
-  const getNotation = () =>
-    CUSTOM_ROLL_DIE_FACES.map((face) => {
-      const count = toNumber(diceCounts[face], 0);
-      if (count <= 0) return "";
-      return `${count}d${face}`;
-    })
-      .filter(Boolean)
-      .join("+");
-
-  const renderSelected = () => {
-    if (!selectedEl || !submitEl) return;
-    const chips = CUSTOM_ROLL_DIE_FACES.map((face) => {
-      const count = toNumber(diceCounts[face], 0);
-      if (count <= 0) return "";
-      return `
-        <button type="button" class="custom-roll-chip" data-custom-roll-remove="${face}" title="Remove one d${face}">
-          ${count}d${face}
-        </button>
-      `;
-    })
-      .filter(Boolean)
-      .join("");
-    if (chips) {
-      selectedEl.innerHTML = `<span class="muted custom-roll-selected-label">Selected</span>${chips}`;
-      selectedEl.classList.add("is-populated");
-      submitEl.disabled = false;
-      return;
-    }
-    selectedEl.innerHTML = `<span class="muted">Choose at least one die to roll.</span>`;
-    selectedEl.classList.remove("is-populated");
-    submitEl.disabled = true;
-  };
-
-  modalEl?.querySelectorAll("[data-custom-roll-add]").forEach((button) => {
-    button.addEventListener("click", () => {
-      const face = toNumber(button.dataset.customRollAdd, 0);
-      if (!face || !(face in diceCounts)) return;
-      diceCounts[face] = Math.min(20, toNumber(diceCounts[face], 0) + 1);
-      const countEl = modalEl.querySelector(`[data-custom-roll-count="${face}"]`);
-      if (countEl) countEl.textContent = String(diceCounts[face]);
-      renderSelected();
-    });
-  });
-
-  selectedEl?.addEventListener("click", (event) => {
-    const target = event.target instanceof Element ? event.target.closest("[data-custom-roll-remove]") : null;
-    if (!target) return;
-    const face = toNumber(target.dataset.customRollRemove, 0);
-    if (!face || !(face in diceCounts)) return;
-    diceCounts[face] = Math.max(0, toNumber(diceCounts[face], 0) - 1);
-    const countEl = modalEl?.querySelector(`[data-custom-roll-count="${face}"]`);
-    if (countEl) countEl.textContent = String(diceCounts[face]);
-    renderSelected();
-  });
-
-  clearEl?.addEventListener("click", () => {
-    CUSTOM_ROLL_DIE_FACES.forEach((face) => {
-      diceCounts[face] = 0;
-      const countEl = modalEl?.querySelector(`[data-custom-roll-count="${face}"]`);
-      if (countEl) countEl.textContent = "0";
-    });
-    renderSelected();
-  });
-
-  submitEl?.addEventListener("click", async () => {
-    const notation = getNotation();
-    if (!notation) {
-      renderSelected();
-      return;
-    }
-    close();
-    await rollVisualNotation("Custom Roll", notation);
-  });
-
-  renderSelected();
 }
 
 function getActiveInputSnapshot() {
@@ -1203,5289 +510,43 @@ function restoreActiveInput(snapshot) {
   }
 }
 
-function getModeToggle(mode) {
-  const playButtonClass = mode === "play" ? "mode-toggle-btn is-active" : "mode-toggle-btn";
-  const buildButtonClass = mode === "build" ? "mode-toggle-btn is-active" : "mode-toggle-btn";
-  return `
-    <div class="mode-toggle" role="group" aria-label="Character mode">
-      <button type="button" data-mode="play" class="${playButtonClass}">Play</button>
-      <button type="button" data-mode="build" class="${buildButtonClass}">Edit</button>
-    </div>
-  `;
-}
-
 function getCharacterFromApiPayload(payload, fallbackId) {
-  const id = payload?.id ?? fallbackId ?? null;
-  if (!isUuid(id)) throw new Error("Invalid character id");
-  if (!payload || typeof payload.character !== "object" || payload.character == null || Array.isArray(payload.character)) {
-    throw new Error("Invalid character payload");
-  }
-  const normalizedCharacter = { ...payload.character, id };
-  // Ignore persisted computed snapshots; runtime derived stats are recalculated.
-  delete normalizedCharacter.derived;
-  return {
-    id,
-    character: normalizedCharacter,
-  };
+  return parseCharacterApiPayload(payload, fallbackId, { isUuid });
 }
 
-function getSyncMeta(character) {
-  if (!character || typeof character !== "object" || Array.isArray(character)) return {};
-  const meta = character[CHARACTER_SYNC_META_KEY];
-  if (!meta || typeof meta !== "object" || Array.isArray(meta)) return {};
-  return meta;
-}
-
-function getCharacterVersion(character) {
-  const version = Number(getSyncMeta(character).version);
-  return Number.isFinite(version) && version > 0 ? Math.floor(version) : 0;
-}
-
-function getCharacterUpdatedAtMs(character) {
-  const updatedAt = getSyncMeta(character).updatedAt;
-  if (typeof updatedAt !== "string" || !updatedAt.trim()) return 0;
-  const parsed = Date.parse(updatedAt);
-  return Number.isFinite(parsed) ? parsed : 0;
-}
-
-function withSyncMeta(character, version, updatedAt = null) {
-  return {
-    ...character,
-    [CHARACTER_SYNC_META_KEY]: {
-      version: Math.max(1, Math.floor(Number(version) || 1)),
-      updatedAt: typeof updatedAt === "string" && updatedAt ? updatedAt : new Date().toISOString(),
-    },
-  };
-}
-
-function stripSyncMeta(character) {
-  if (!character || typeof character !== "object" || Array.isArray(character)) return character;
-  const next = { ...character };
-  delete next[CHARACTER_SYNC_META_KEY];
-  return next;
-}
-
-function buildCharacterFingerprint(character) {
-  try {
-    return JSON.stringify(stripSyncMeta(character) ?? {});
-  } catch {
-    return "";
-  }
-}
-
-function sanitizeCharacterLogEntry(entry) {
-  if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
-  const summaryParts = Array.isArray(entry.summaryParts)
-    ? entry.summaryParts
-        .map((part) => {
-          const text = String(part?.text ?? "");
-          if (!text) return null;
-          const style = part?.style === "bold" || part?.style === "highlight" ? part.style : "plain";
-          return { text, style };
-        })
-        .filter(Boolean)
-    : [];
-  const details = Array.isArray(entry.details)
-    ? entry.details
-        .map((row) => {
-          const label = String(row?.label ?? "").trim();
-          const before = String(row?.before ?? "").trim();
-          const after = String(row?.after ?? "").trim();
-          if (!label && !before && !after) return null;
-          return { label, before: before || "empty", after: after || "empty" };
-        })
-        .filter(Boolean)
-    : [];
-  const at = typeof entry.at === "string" && entry.at ? entry.at : new Date().toISOString();
-  const rawSectionLabel = String(entry.sectionLabel ?? "").trim() || "Character";
-  const sectionKey = String(entry.sectionKey ?? "").trim() || "character";
-  const sectionLabel = sectionKey === "play" && rawSectionLabel.toLowerCase() === "play state"
-    ? "Character Sheet"
-    : rawSectionLabel;
-  return {
-    id: String(entry.id ?? "").trim() || createCharacterLogEntryId(),
-    at,
-    sectionKey,
-    sectionLabel,
-    summaryParts: summaryParts.length ? summaryParts : [{ text: "Updated character", style: "plain" }],
-    details,
-  };
-}
-
-function loadCharacterChangeLog(character) {
-  const raw = character?.play?.[CHARACTER_CHANGE_LOG_KEY];
-  if (!Array.isArray(raw)) return [];
-  return raw.map((entry) => sanitizeCharacterLogEntry(entry)).filter(Boolean).slice(0, CHARACTER_CHANGE_LOG_LIMIT);
-}
-
-function extractDiceLogLabelAndMode(entry) {
-  const summaryParts = Array.isArray(entry?.summaryParts) ? entry.summaryParts : [];
-  const highlighted = summaryParts.find((part) => part?.style === "highlight");
-  const fallback = summaryParts.map((part) => String(part?.text ?? "")).join("");
-  const sourceText = String(highlighted?.text ?? fallback).trim();
-  const modeMatch = sourceText.match(/\s+\((advantage|disadvantage)\)\s*$/i);
-  const mode = modeMatch?.[1]?.toLowerCase() === "advantage"
-    ? "advantage"
-    : modeMatch?.[1]?.toLowerCase() === "disadvantage"
-      ? "disadvantage"
-      : "normal";
-  const label = sourceText.replace(/\s+\((advantage|disadvantage)\)\s*$/i, "").trim() || "Roll";
-  return { label, mode };
-}
-
-function parseDiceLogRollValues(entry) {
-  const details = Array.isArray(entry?.details) ? entry.details : [];
-  const diceRow = details.find((row) => String(row?.label ?? "").trim().toLowerCase() === "dice");
-  if (!diceRow) return [];
-  return String(diceRow.after ?? "")
-    .split(",")
-    .map((value) => toNumber(value.trim(), Number.NaN))
-    .filter((value) => Number.isFinite(value));
-}
-
-function parseDiceLogTotal(entry) {
-  const details = Array.isArray(entry?.details) ? entry.details : [];
-  const rollRow = details.find((row) => String(row?.label ?? "").trim().toLowerCase() === "roll");
-  const totalRow = details.find((row) => String(row?.label ?? "").trim().toLowerCase() === "total");
-  const candidate = rollRow?.after ?? totalRow?.after;
-  const parsed = toNumber(candidate, Number.NaN);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
-function parseDiceLogNotation(entry) {
-  const details = Array.isArray(entry?.details) ? entry.details : [];
-  const rollRow = details.find((row) => String(row?.label ?? "").trim().toLowerCase() === "roll");
-  return String(rollRow?.before ?? "").replace(/\s+/g, "").trim();
-}
-
-function parseD20ActionFromLoggedNotation(notation, rollMode) {
-  const cleaned = String(notation ?? "").replace(/\s+/g, "").trim().toLowerCase();
-  if (!cleaned) return null;
-  const parseModifier = (token) => {
-    if (!token) return 0;
-    const parsed = toNumber(token, Number.NaN);
-    return Number.isFinite(parsed) ? parsed : 0;
-  };
-  const d20NormalMatch = cleaned.match(/^1d20([+\-]\d+)?$/);
-  if (d20NormalMatch) {
-    return { type: "d20", modifier: parseModifier(d20NormalMatch[1]), rollMode: "normal" };
-  }
-  const d20AdvDisMatch = cleaned.match(/^2d20([+\-]\d+)?$/);
-  if (d20AdvDisMatch && (rollMode === "advantage" || rollMode === "disadvantage")) {
-    return { type: "d20", modifier: parseModifier(d20AdvDisMatch[1]), rollMode };
-  }
-  const d20KeepHighMatch = cleaned.match(/^2d20kh1([+\-]\d+)?$/);
-  if (d20KeepHighMatch) {
-    return { type: "d20", modifier: parseModifier(d20KeepHighMatch[1]), rollMode: "advantage" };
-  }
-  const d20KeepLowMatch = cleaned.match(/^2d20kl1([+\-]\d+)?$/);
-  if (d20KeepLowMatch) {
-    return { type: "d20", modifier: parseModifier(d20KeepLowMatch[1]), rollMode: "disadvantage" };
-  }
-  return null;
-}
-
-function restoreDiceStateFromCharacterLog(entries) {
-  lastRollAction = null;
-  uiState.latestDiceResultMessage = DEFAULT_DICE_RESULT_MESSAGE;
-  uiState.latestDiceResultIsError = false;
-  uiState.rollHistory = [];
-
-  const latestDiceEntry = Array.isArray(entries) ? entries.find((entry) => entry?.sectionKey === "dice") : null;
-  if (!latestDiceEntry) return;
-
-  const { label, mode } = extractDiceLogLabelAndMode(latestDiceEntry);
-  const notation = parseDiceLogNotation(latestDiceEntry);
-  const total = parseDiceLogTotal(latestDiceEntry);
-  const rollValues = parseDiceLogRollValues(latestDiceEntry);
-  const parsedD20 = parseD20ActionFromLoggedNotation(notation, mode);
-
-  let message = "";
-  if (parsedD20) {
-    const resolvedRollMode = normalizeD20RollMode(parsedD20.rollMode);
-    const selectedDieValue = selectD20ResultFromRolls(rollValues, resolvedRollMode);
-    message = formatD20ResultMessage(label, parsedD20.modifier, selectedDieValue, total, resolvedRollMode, rollValues);
-    lastRollAction = { type: "d20", label, modifier: parsedD20.modifier, rollMode: resolvedRollMode };
-  } else if (notation) {
-    message = formatNotationResultMessage(label, notation, total, rollValues);
-    lastRollAction = { type: "notation", label, notation };
-  } else {
-    message = `${label}: roll completed.`;
-  }
-
-  uiState.latestDiceResultMessage = message;
-  uiState.latestDiceResultIsError = false;
-  const entryDate = new Date(latestDiceEntry.at);
-  const timeLabel = Number.isNaN(entryDate.getTime())
-    ? ""
-    : entryDate.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-  uiState.rollHistory = [
-    {
-      message,
-      isError: false,
-      timeLabel,
-    },
-  ];
-}
-
-function withCharacterChangeLog(character) {
-  const nextCharacter = character && typeof character === "object" && !Array.isArray(character) ? { ...character } : {};
-  const nextPlay = nextCharacter.play && typeof nextCharacter.play === "object" && !Array.isArray(nextCharacter.play)
-    ? { ...nextCharacter.play }
-    : {};
-  nextPlay[CHARACTER_CHANGE_LOG_KEY] = uiState.characterChangeLog.slice(0, CHARACTER_CHANGE_LOG_LIMIT);
-  nextCharacter.play = nextPlay;
-  return nextCharacter;
-}
-
-function seedCharacterLogState(character) {
-  uiState.characterChangeLog = loadCharacterChangeLog(character);
-  restoreDiceStateFromCharacterLog(uiState.characterChangeLog);
-  uiState.lastCharacterSnapshot = stripSyncMeta(character) ?? null;
-  uiState.lastCharacterLogFingerprint = buildCharacterFingerprint(character);
-}
-
-function createCharacterLogEntryId() {
-  const stamp = Date.now().toString(36);
-  const rand = Math.random().toString(36).slice(2, 8);
-  return `clog_${stamp}_${rand}`;
-}
-
-function getCharacterLogSectionLabel(sectionKey) {
-  const labels = {
-    id: "Character ID",
-    name: "Name",
-    critStyle: "Crit Style",
-    showDiceTray: "Dice Tray",
-    level: "Level",
-    sourcePreset: "Source Preset",
-    race: "Race",
-    background: "Background",
-    class: "Class",
-    subclass: "Subclass",
-    abilities: "Abilities",
-    abilityBase: "Base Abilities",
-    inventory: "Inventory",
-    spells: "Spells",
-    feats: "Feats",
-    optionalFeatures: "Optional Features",
-    notes: "Notes",
-    multiclass: "Multiclass",
-    classSelection: "Subclass Selection",
-    progression: "Progression",
-    hitPointRollOverrides: "Hit Point Rolls",
-    play: "Character Sheet",
-  };
-  return labels[sectionKey] ?? toTitleCase(String(sectionKey ?? "Character"));
-}
-
-function serializeForDiff(value) {
-  try {
-    return JSON.stringify(value ?? null);
-  } catch {
-    return String(value);
-  }
-}
-
-function truncateLogValue(value, maxLength = 64) {
-  const text = String(value ?? "");
-  return text.length > maxLength ? `${text.slice(0, maxLength - 1)}…` : text;
-}
-
-function summarizeLogValue(value) {
-  if (value == null) return "empty";
-  if (typeof value === "string") {
-    const parsed = value.trim();
-    return parsed ? truncateLogValue(`"${parsed}"`) : "empty";
-  }
-  if (typeof value === "number" || typeof value === "boolean") return String(value);
-  if (Array.isArray(value)) return `${value.length} item${value.length === 1 ? "" : "s"}`;
-  if (typeof value === "object") {
-    const size = Object.keys(value).length;
-    return `${size} field${size === 1 ? "" : "s"}`;
-  }
-  return truncateLogValue(String(value));
-}
-
-function isPlainLogValue(value) {
-  return value == null || typeof value === "string" || typeof value === "number" || typeof value === "boolean";
-}
-
-function buildSummaryPartsForSimpleChange(sectionLabel, beforeValue, afterValue) {
-  return [
-    { text: "Updated ", style: "plain" },
-    { text: sectionLabel, style: "highlight" },
-    { text: ": ", style: "plain" },
-    { text: summarizeLogValue(beforeValue), style: "bold" },
-    { text: " -> ", style: "plain" },
-    { text: summarizeLogValue(afterValue), style: "bold" },
-  ];
-}
-
-function normalizeLogRowValue(value) {
-  if (value == null) return "empty";
-  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return truncateLogValue(value, 80);
-  return summarizeLogValue(value);
-}
-
-function buildObjectChangeRows(beforeValue, afterValue, maxRows = 8) {
-  const beforeObj = beforeValue && typeof beforeValue === "object" && !Array.isArray(beforeValue) ? beforeValue : {};
-  const afterObj = afterValue && typeof afterValue === "object" && !Array.isArray(afterValue) ? afterValue : {};
-  const allKeys = [...new Set([...Object.keys(beforeObj), ...Object.keys(afterObj)])];
-  const changedKeys = allKeys.filter((key) => serializeForDiff(beforeObj[key]) !== serializeForDiff(afterObj[key]));
-  const visibleKeys = changedKeys.slice(0, maxRows);
-  const rows = visibleKeys.map((key) => ({
-    label: key,
-    before: normalizeLogRowValue(beforeObj[key]),
-    after: normalizeLogRowValue(afterObj[key]),
-  }));
-  if (changedKeys.length > visibleKeys.length) {
-    rows.push({
-      label: "more",
-      before: `${changedKeys.length - visibleKeys.length} additional changes`,
-      after: "…",
-    });
-  }
-  return rows;
-}
-
-function buildArrayChangeRows(beforeValue, afterValue) {
-  const beforeList = Array.isArray(beforeValue) ? beforeValue : [];
-  const afterList = Array.isArray(afterValue) ? afterValue : [];
-  const rows = [
-    {
-      label: "count",
-      before: String(beforeList.length),
-      after: String(afterList.length),
-    },
-  ];
-  const primitiveToken = (value) =>
-    value == null || typeof value === "string" || typeof value === "number" || typeof value === "boolean";
-  if (!beforeList.every(primitiveToken) || !afterList.every(primitiveToken)) return rows;
-  const beforeSet = new Set(beforeList.map((value) => String(value)));
-  const afterSet = new Set(afterList.map((value) => String(value)));
-  const added = [...afterSet].filter((value) => !beforeSet.has(value)).slice(0, 3);
-  const removed = [...beforeSet].filter((value) => !afterSet.has(value)).slice(0, 3);
-  if (added.length) rows.push({ label: "added", before: "-", after: truncateLogValue(added.join(", "), 80) });
-  if (removed.length) rows.push({ label: "removed", before: truncateLogValue(removed.join(", "), 80), after: "-" });
-  return rows;
-}
-
-function getLogEntityName(entry) {
-  if (entry == null) return null;
-  if (typeof entry === "string" || typeof entry === "number" || typeof entry === "boolean") return String(entry);
-  if (typeof entry !== "object" || Array.isArray(entry)) return null;
-  const byName = String(entry.name ?? "").trim();
-  if (byName) return byName;
-  const byClass = String(entry.class ?? "").trim();
-  if (byClass) return byClass;
-  const byId = String(entry.id ?? "").trim();
-  if (byId) return byId;
-  return null;
-}
-
-function buildNamedArrayRows(beforeValue, afterValue) {
-  const beforeList = Array.isArray(beforeValue) ? beforeValue : [];
-  const afterList = Array.isArray(afterValue) ? afterValue : [];
-  const beforeNames = beforeList.map((entry) => getLogEntityName(entry)).filter(Boolean);
-  const afterNames = afterList.map((entry) => getLogEntityName(entry)).filter(Boolean);
-  const rows = [{ label: "count", before: String(beforeList.length), after: String(afterList.length) }];
-  if (!beforeNames.length && !afterNames.length) return rows;
-  const beforeSet = new Set(beforeNames);
-  const afterSet = new Set(afterNames);
-  const added = [...afterSet].filter((name) => !beforeSet.has(name)).slice(0, 3);
-  const removed = [...beforeSet].filter((name) => !afterSet.has(name)).slice(0, 3);
-  if (added.length) rows.push({ label: "added", before: "-", after: truncateLogValue(added.join(", "), 80) });
-  if (removed.length) rows.push({ label: "removed", before: truncateLogValue(removed.join(", "), 80), after: "-" });
-  return rows;
-}
-
-function buildStructuredChangeRows(beforeValue, afterValue) {
-  if (Array.isArray(beforeValue) || Array.isArray(afterValue)) {
-    const namedRows = buildNamedArrayRows(beforeValue, afterValue);
-    if (namedRows.length > 1) return namedRows;
-    return buildArrayChangeRows(beforeValue, afterValue);
-  }
-  if (
-    (beforeValue && typeof beforeValue === "object" && !Array.isArray(beforeValue))
-    || (afterValue && typeof afterValue === "object" && !Array.isArray(afterValue))
-  ) {
-    return buildObjectChangeRows(beforeValue, afterValue);
-  }
-  return [];
-}
-
-function buildAbilityChangeRows(beforeValue, afterValue) {
-  const rows = [];
-  const abilityKeys = ["str", "dex", "con", "int", "wis", "cha"];
-  abilityKeys.forEach((ability) => {
-    const beforeScore = toNumber(beforeValue?.[ability], Number.NaN);
-    const afterScore = toNumber(afterValue?.[ability], Number.NaN);
-    if (!Number.isFinite(beforeScore) && !Number.isFinite(afterScore)) return;
-    if (beforeScore === afterScore) return;
-    rows.push({
-      label: ABILITY_LABELS[ability] ?? ability.toUpperCase(),
-      before: Number.isFinite(beforeScore) ? String(beforeScore) : "empty",
-      after: Number.isFinite(afterScore) ? String(afterScore) : "empty",
-    });
-  });
-  return rows;
-}
-
-function buildPlayStateRows(beforeValue, afterValue) {
-  const beforePlay = beforeValue && typeof beforeValue === "object" && !Array.isArray(beforeValue) ? beforeValue : {};
-  const afterPlay = afterValue && typeof afterValue === "object" && !Array.isArray(afterValue) ? afterValue : {};
-  const rows = [];
-  const fieldMap = [
-    { key: "hpCurrent", label: "HP" },
-    { key: "hpTemp", label: "Temp HP" },
-    { key: "speed", label: "Speed" },
-    { key: "initiativeBonus", label: "Initiative" },
-    { key: "deathSavesSuccess", label: "Death Saves (Success)" },
-    { key: "deathSavesFail", label: "Death Saves (Fail)" },
-  ];
-  fieldMap.forEach((field) => {
-    const beforeField = beforePlay[field.key];
-    const afterField = afterPlay[field.key];
-    if (serializeForDiff(beforeField) === serializeForDiff(afterField)) return;
-    rows.push({
-      label: field.label,
-      before: summarizeLogValue(beforeField),
-      after: summarizeLogValue(afterField),
-    });
-  });
-  const conditionRows = buildNamedArrayRows(beforePlay.conditions, afterPlay.conditions);
-  if (conditionRows.length > 1) {
-    conditionRows.forEach((row) => rows.push({ ...row, label: row.label === "count" ? "Conditions" : row.label }));
-  }
-  return rows.slice(0, 8);
-}
-
-function buildPlayerFacingChangeEntry(key, beforeValue, afterValue, timestamp) {
-  const sectionLabel = getCharacterLogSectionLabel(key);
-  if (isPlainLogValue(beforeValue) && isPlainLogValue(afterValue)) {
-    return {
-      id: createCharacterLogEntryId(),
-      at: timestamp,
-      sectionKey: key,
-      sectionLabel,
-      summaryParts: buildSummaryPartsForSimpleChange(sectionLabel, beforeValue, afterValue),
-      details: [],
-    };
-  }
-  if (key === "abilities") {
-    const abilityRows = buildAbilityChangeRows(beforeValue, afterValue);
-    return {
-      id: createCharacterLogEntryId(),
-      at: timestamp,
-      sectionKey: key,
-      sectionLabel,
-      summaryParts: [
-        { text: "Updated ", style: "plain" },
-        { text: "ability scores", style: "highlight" },
-      ],
-      details: abilityRows,
-    };
-  }
-  if (key === "inventory" || key === "spells" || key === "feats" || key === "optionalFeatures" || key === "multiclass") {
-    const nounMap = {
-      inventory: "inventory",
-      spells: "spells",
-      feats: "feats",
-      optionalFeatures: "optional features",
-      multiclass: "class levels",
-    };
-    return {
-      id: createCharacterLogEntryId(),
-      at: timestamp,
-      sectionKey: key,
-      sectionLabel,
-      summaryParts: [
-        { text: "Updated ", style: "plain" },
-        { text: nounMap[key] ?? sectionLabel.toLowerCase(), style: "highlight" },
-      ],
-      details: buildNamedArrayRows(beforeValue, afterValue),
-    };
-  }
-  if (key === "play") {
-    return {
-      id: createCharacterLogEntryId(),
-      at: timestamp,
-      sectionKey: key,
-      sectionLabel,
-      summaryParts: [
-        { text: "Updated ", style: "plain" },
-        { text: "character sheet stats", style: "highlight" },
-      ],
-      details: buildPlayStateRows(beforeValue, afterValue),
-    };
-  }
-  if (key === "progression" || key === "classSelection" || key === "hitPointRollOverrides") {
-    return {
-      id: createCharacterLogEntryId(),
-      at: timestamp,
-      sectionKey: key,
-      sectionLabel,
-      summaryParts: [
-        { text: "Updated ", style: "plain" },
-        { text: sectionLabel.toLowerCase(), style: "highlight" },
-      ],
-      details: [],
-    };
-  }
-  const details = buildStructuredChangeRows(beforeValue, afterValue);
-  return {
-    id: createCharacterLogEntryId(),
-    at: timestamp,
-    sectionKey: key,
-    sectionLabel,
-    summaryParts: [
-      { text: "Updated ", style: "plain" },
-      { text: sectionLabel.toLowerCase(), style: "highlight" },
-    ],
-    details: details.slice(0, 6),
-  };
-}
-
-function buildCharacterChangeEntries(previousCharacter, nextCharacter) {
-  const previous = previousCharacter && typeof previousCharacter === "object" && !Array.isArray(previousCharacter) ? previousCharacter : {};
-  const next = nextCharacter && typeof nextCharacter === "object" && !Array.isArray(nextCharacter) ? nextCharacter : {};
-  const ignoredLogKeys = new Set([CHARACTER_SYNC_META_KEY, "editPassword"]);
-  const keyOrder = [
-    "name",
-    "critStyle",
-    "showDiceTray",
-    "level",
-    "race",
-    "background",
-    "class",
-    "subclass",
-    "abilities",
-    "inventory",
-    "spells",
-    "feats",
-    "optionalFeatures",
-    "multiclass",
-    "play",
-    "notes",
-    "progression",
-  ];
-  const allKeys = [...new Set([...Object.keys(previous), ...Object.keys(next)])]
-    .filter((key) => !ignoredLogKeys.has(key))
-    .sort((a, b) => {
-      const aIndex = keyOrder.indexOf(a);
-      const bIndex = keyOrder.indexOf(b);
-      if (aIndex >= 0 && bIndex >= 0) return aIndex - bIndex;
-      if (aIndex >= 0) return -1;
-      if (bIndex >= 0) return 1;
-      return a.localeCompare(b);
-    });
-  const timestamp = new Date().toISOString();
-  const entries = [];
-  allKeys.forEach((key) => {
-    const beforeValue = previous[key];
-    const afterValue = next[key];
-    if (serializeForDiff(beforeValue) === serializeForDiff(afterValue)) return;
-    entries.push(buildPlayerFacingChangeEntry(key, beforeValue, afterValue, timestamp));
-  });
-  return entries;
-}
-
-function captureCharacterLogChanges(character) {
-  const nextFingerprint = buildCharacterFingerprint(character);
-  if (!nextFingerprint || nextFingerprint === uiState.lastCharacterLogFingerprint) return;
-  const nextSnapshot = stripSyncMeta(character) ?? null;
-  const previousSnapshot = uiState.lastCharacterSnapshot;
-  uiState.lastCharacterSnapshot = nextSnapshot;
-  uiState.lastCharacterLogFingerprint = nextFingerprint;
-  if (!previousSnapshot || !nextSnapshot) return;
-  if (previousSnapshot.id !== nextSnapshot.id) {
-    return;
-  }
-  const nextEntries = buildCharacterChangeEntries(previousSnapshot, nextSnapshot);
-  if (!nextEntries.length) return;
-  uiState.characterChangeLog = [...nextEntries, ...uiState.characterChangeLog].slice(0, CHARACTER_CHANGE_LOG_LIMIT);
-}
-
-function appendCharacterLogEntry(entry, options = {}) {
-  const normalized = sanitizeCharacterLogEntry(entry);
-  if (!normalized) return;
-  uiState.characterChangeLog = [normalized, ...uiState.characterChangeLog].slice(0, CHARACTER_CHANGE_LOG_LIMIT);
-  if (options.renderNow !== false && !appState.showOnboardingHome) render(store.getState());
-  if (options.syncRemote !== false) {
-    const snapshot = store.getState();
-    if (isUuid(snapshot.character?.id)) queueRemoteSave(snapshot);
-  }
-}
-
-function appendDiceRollLog({ label, notation, total, rollValues = [], rollMode = "normal" }) {
-  const parsedLabel = String(label ?? "").trim() || "Roll";
-  const parsedNotation = String(notation ?? "").trim();
-  const parsedTotal = Number.isFinite(total) ? String(total) : "n/a";
-  const modeLabel = rollMode === "advantage" ? " (Advantage)" : rollMode === "disadvantage" ? " (Disadvantage)" : "";
-  const detailRows = [];
-  if (parsedNotation) detailRows.push({ label: "Roll", before: parsedNotation, after: parsedTotal });
-  else detailRows.push({ label: "Total", before: "-", after: parsedTotal });
-  if (Array.isArray(rollValues) && rollValues.length) {
-    detailRows.push({
-      label: "Dice",
-      before: "-",
-      after: truncateLogValue(rollValues.join(", "), 80),
-    });
-  }
-  appendCharacterLogEntry({
-    id: createCharacterLogEntryId(),
-    at: new Date().toISOString(),
-    sectionKey: "dice",
-    sectionLabel: "Dice",
-    summaryParts: [
-      { text: "Rolled ", style: "plain" },
-      { text: `${parsedLabel}${modeLabel}`, style: "highlight" },
-      { text: " -> ", style: "plain" },
-      { text: parsedTotal, style: "bold" },
-    ],
-    details: detailRows,
-  });
-}
-
-function compareCharacterRecency(a, b) {
-  const versionDiff = getCharacterVersion(a) - getCharacterVersion(b);
-  if (versionDiff !== 0) return versionDiff;
-  return getCharacterUpdatedAtMs(a) - getCharacterUpdatedAtMs(b);
-}
-
-function isRemoteSameOrNewer(localCharacter, remoteCharacter) {
-  if (!remoteCharacter) return false;
-  if (!localCharacter) return true;
-  return compareCharacterRecency(remoteCharacter, localCharacter) >= 0;
-}
-
-function setPersistenceNotice(message) {
-  const nextMessage = String(message ?? "").trim();
-  if (persistenceNoticeMessage === nextMessage) return;
-  persistenceNoticeMessage = nextMessage;
-  if (!appState.showOnboardingHome) render(store.getState());
-}
-
-function updatePersistenceStatusFromPayload(payload) {
-  const storage = payload?.storage;
-  if (!storage || typeof storage !== "object" || Array.isArray(storage)) return;
-  if (storage.durable) {
-    setPersistenceNotice("");
-    return;
-  }
-  const detail = typeof storage.warning === "string" ? storage.warning.trim() : "";
-  setPersistenceNotice(
-    detail
-      ? `Server persistence is running in temporary non-durable mode (${detail}). Your recent edits are currently only guaranteed in this browser.`
-      : "Server persistence is running in temporary non-durable mode. Your recent edits are currently only guaranteed in this browser."
-  );
-}
-
-function markBrowserOnlyPersistence(error) {
-  const sanitizedMessage =
-    error instanceof Error && error.message
-      ? error.message
-          .replaceAll(/edit password/gi, "password")
-          .replaceAll(/invalid password/gi, "Invalid password")
-      : "";
-  const detail = sanitizedMessage ? ` (${sanitizedMessage})` : "";
-  setPersistenceNotice(
-    `Server sync is currently unavailable${detail}. Your changes are saved in this browser for now, but not confirmed on the server.`
-  );
-}
-
-function renderPersistenceNotice() {
-  if (!persistenceNoticeMessage) return "";
-  return `<p class="muted persistence-warning">${esc(persistenceNoticeMessage)}</p>`;
-}
-
-function getClassCatalogEntry(catalogs, className, classSource = "", preferredSources = []) {
-  return findCatalogEntryByNameWithSelectedSourcePreference(catalogs?.classes, className, classSource, preferredSources);
-}
-
-function getClassHitDieFaces(catalogs, className) {
-  const classEntry = getClassCatalogEntry(catalogs, className);
-  const faces = Math.max(0, toNumber(classEntry?.hd?.faces, 0));
-  return faces > 0 ? faces : 8;
-}
-
-function getFixedHitPointGain(faces) {
-  return Math.max(1, Math.floor(Math.max(1, faces) / 2) + 1);
-}
-
-function sanitizeHitPointRollOverrides(rawOverrides) {
-  if (!rawOverrides || typeof rawOverrides !== "object" || Array.isArray(rawOverrides)) return {};
-  return Object.fromEntries(
-    Object.entries(rawOverrides)
-      .map(([key, value]) => [String(key ?? "").trim(), Math.floor(toNumber(value, NaN))])
-      .filter(([key, value]) => key && Number.isFinite(value) && value > 0)
-  );
-}
 
 function rollDie(faces) {
   const max = Math.max(1, Math.floor(toNumber(faces, 0)));
   return 1 + Math.floor(Math.random() * max);
 }
 
-function normalizeSourceTag(value) {
-  return String(value ?? "").trim().toUpperCase();
-}
+const hitPointRules = createHitPointRules({
+  toNumber,
+  getHitPointBreakdown,
+  getCharacterClassLevels: spellcastingRules.getCharacterClassLevels,
+  getClassHitDieFaces: catalogLookupDomain.getClassHitDieFaces,
+  getClassKey: getSpellClassKey,
+  rollDie,
+});
 
-function buildEntityId(parts) {
-  return parts
-    .map((part) =>
-      String(part ?? "")
-        .trim()
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, "-")
-    )
-    .filter(Boolean)
-    .join("__");
-}
-
-function parseClassFeatureToken(rawToken, fallbackSource = "", classNameHint = "") {
-  const token = String(rawToken ?? "").trim();
-  if (!token) return null;
-  const [nameRaw = "", classNameRaw = "", classSourceRaw = "", levelRaw = "", sourceRaw = ""] = token.split("|");
-  const level = toNumber(levelRaw, NaN);
-  const name = cleanSpellInlineTags(nameRaw);
-  if (!name) return null;
-  const className = String(classNameRaw || classNameHint || "").trim();
-  const source = normalizeSourceTag(sourceRaw || fallbackSource);
-  return {
-    id: buildEntityId(["class-feature", className, classSourceRaw, levelRaw, name, source]),
-    name,
-    level: Number.isFinite(level) ? level : null,
-    className,
-    source,
-    type: "class",
-  };
-}
-
-function parseSubclassFeatureToken(rawToken, fallbackSource = "", fallbackClassName = "", fallbackSubclassName = "") {
-  const token = String(rawToken ?? "").trim();
-  if (!token) return null;
-  const [nameRaw = "", classNameRaw = "", classSourceRaw = "", subclassNameRaw = "", subclassSourceRaw = "", levelRaw = "", sourceRaw = ""] =
-    token.split("|");
-  const level = toNumber(levelRaw, NaN);
-  const name = cleanSpellInlineTags(nameRaw);
-  if (!name) return null;
-  const className = String(classNameRaw || fallbackClassName || "").trim();
-  const subclassName = String(subclassNameRaw || fallbackSubclassName || "").trim();
-  const source = normalizeSourceTag(sourceRaw || fallbackSource || subclassSourceRaw);
-  return {
-    id: buildEntityId(["subclass-feature", className, classSourceRaw, subclassName, subclassSourceRaw, levelRaw, name, source]),
-    name,
-    level: Number.isFinite(level) ? level : null,
-    className,
-    subclassName,
-    source,
-    type: "subclass",
-  };
-}
-
-function getPrimarySubclassSelection(character) {
-  const subclass = character?.classSelection?.subclass;
-  if (subclass && typeof subclass === "object" && String(subclass.name ?? "").trim()) {
-    return {
-      name: String(subclass.name ?? "").trim(),
-      source: normalizeSourceTag(subclass.source),
-      className: String(subclass.className ?? "").trim(),
-      classSource: normalizeSourceTag(subclass.classSource),
-    };
-  }
-
-  const legacyName = String(character?.subclass ?? "").trim();
-  if (!legacyName) return null;
-  return {
-    name: legacyName,
-    source: "",
-    className: String(character?.class ?? "").trim(),
-    classSource: "",
-  };
-}
-
-function getSubclassCatalogEntries(catalogs, className, classSource = "", preferredSources = []) {
-  if (!Array.isArray(catalogs?.subclasses)) return [];
-  const normalizedClass = String(className ?? "").trim().toLowerCase();
-  if (!normalizedClass) return [];
-  const normalizedClassSource = normalizeSourceTag(classSource);
-  const sourceOrder = new Map(
-    (Array.isArray(preferredSources) ? preferredSources : [])
-      .map((source, index) => [normalizeSourceTag(source), index])
-      .filter(([source]) => source)
-  );
-  const unknownSourceOrder = sourceOrder.size + 1000;
-  return catalogs.subclasses
-    .filter((entry) => String(entry?.className ?? "").trim().toLowerCase() === normalizedClass)
-    .filter((entry) => {
-      if (!normalizedClassSource) return true;
-      const entryClassSource = normalizeSourceTag(entry?.classSource);
-      return !entryClassSource || entryClassSource === normalizedClassSource;
-    })
-    .sort((a, b) => {
-      const nameDelta = String(a?.name ?? "").localeCompare(String(b?.name ?? ""));
-      if (nameDelta !== 0) return nameDelta;
-      const aSource = normalizeSourceTag(a?.source);
-      const bSource = normalizeSourceTag(b?.source);
-      const aOrder = sourceOrder.get(aSource) ?? unknownSourceOrder;
-      const bOrder = sourceOrder.get(bSource) ?? unknownSourceOrder;
-      if (aOrder !== bOrder) return aOrder - bOrder;
-      return aSource.localeCompare(bSource);
-    });
-}
-
-function getSelectedSubclassEntry(catalogs, character) {
-  const selected = getPrimarySubclassSelection(character);
-  if (!selected?.name) return null;
-  const classEntry = getClassCatalogEntry(catalogs, character?.class);
-  const classSource = normalizeSourceTag(classEntry?.source);
-  const sourceOrder = getPreferredSourceOrder(character);
-  const candidates = getSubclassCatalogEntries(catalogs, character?.class, classSource, sourceOrder);
-  const selectedName = selected.name.toLowerCase();
-  const selectedSource = normalizeSourceTag(selected.source);
-  const nameMatches = candidates.filter((entry) => String(entry?.name ?? "").trim().toLowerCase() === selectedName);
-  if (!nameMatches.length) return null;
-
-  if (selectedSource) {
-    const sourceMatch = nameMatches.find((entry) => normalizeSourceTag(entry?.source) === selectedSource);
-    if (sourceMatch) return sourceMatch;
-  }
-
-  const preferredSource = normalizeSourceTag(selected.classSource || classSource);
-  if (preferredSource) {
-    const preferredSourceMatch = nameMatches.find((entry) => normalizeSourceTag(entry?.source) === preferredSource);
-    if (preferredSourceMatch) return preferredSourceMatch;
-  }
-
-  for (const source of sourceOrder) {
-    const sourceMatch = nameMatches.find((entry) => normalizeSourceTag(entry?.source) === normalizeSourceTag(source));
-    if (sourceMatch) return sourceMatch;
-  }
-
-  return nameMatches[0] ?? null;
-}
-
-function getClassLevelTracks(character) {
-  const classLevels = getCharacterClassLevels(character);
-  const tracks = [];
-  const primaryClass = String(character?.class ?? "").trim();
-  if (primaryClass) {
-    tracks.push({ className: primaryClass, level: classLevels.primaryLevel, isPrimary: true });
-  }
-  classLevels.multiclass.forEach((entry) => {
-    tracks.push({ className: String(entry.class ?? "").trim(), level: entry.level, isPrimary: false });
-  });
-  return tracks.filter((entry) => entry.className && entry.level > 0);
-}
-
-function getUnlockedFeatures(catalogs, character) {
-  const unlocked = [];
-  const seen = new Set();
-  const tracks = getClassLevelTracks(character);
-  const getOptionLabel = (option) => {
-    if (!option) return "";
-    if (typeof option === "string") return cleanSpellInlineTags(option.split("|")[0]);
-    if (!isRecordObject(option)) return "";
-    if (typeof option.name === "string" && option.name.trim()) return cleanSpellInlineTags(option.name);
-    if (typeof option.optionalfeature === "string") return cleanSpellInlineTags(option.optionalfeature.split("|")[0]);
-    if (typeof option.subclassFeature === "string") return cleanSpellInlineTags(option.subclassFeature.split("|")[0]);
-    if (typeof option.classFeature === "string") return cleanSpellInlineTags(option.classFeature.split("|")[0]);
-    if (typeof option.feature === "string") return cleanSpellInlineTags(option.feature.split("|")[0]);
-    if (typeof option.entry === "string") return cleanSpellInlineTags(option.entry);
-    return "";
-  };
-
-  const collectReferencedTokens = (entry, acc = [], context = {}) => {
-    if (entry == null) return acc;
-    if (Array.isArray(entry)) {
-      entry.forEach((value) => collectReferencedTokens(value, acc, context));
-      return acc;
-    }
-    if (!isRecordObject(entry)) return acc;
-    if (entry.type === "options" && Array.isArray(entry.entries)) {
-      const optionValues = [...new Set(entry.entries.map((option) => getOptionLabel(option)).filter(Boolean))];
-      const maxCount = Math.max(1, Math.min(optionValues.length, Math.floor(toNumber(entry.count, 1))));
-      const modeId = buildEntityId(["feature-mode", context.featureId, context.entryIndex]);
-      const rawModeSelection = character?.play?.featureModes?.[modeId];
-      const currentValues = Array.isArray(rawModeSelection)
-        ? rawModeSelection.map((value) => String(value ?? "").trim())
-        : [String(rawModeSelection ?? "").trim()];
-      const selected = [...new Set(currentValues.filter((value) => value && optionValues.includes(value)))];
-      if (!selected.length) selected.push(...optionValues.slice(0, maxCount));
-      const selectedValues = new Set(selected.slice(0, maxCount));
-      entry.entries.forEach((option) => {
-        const label = getOptionLabel(option);
-        if (!label || !selectedValues.has(label)) return;
-        collectReferencedTokens(option, acc, context);
-      });
-      return acc;
-    }
-    if (entry.type === "refSubclassFeature" && typeof entry.subclassFeature === "string") {
-      acc.push({ type: "subclass", token: entry.subclassFeature });
-    }
-    if (entry.type === "refClassFeature" && typeof entry.classFeature === "string") {
-      acc.push({ type: "class", token: entry.classFeature });
-    }
-    Object.values(entry).forEach((value) => collectReferencedTokens(value, acc, context));
-    return acc;
-  };
-
-  const enqueueFeature = (feature, trackLevel, classNameHint = "", subclassNameHint = "") => {
-    if (!feature || feature.level == null || feature.level > trackLevel || !feature.id) return;
-    if (seen.has(feature.id)) return;
-    seen.add(feature.id);
-    unlocked.push(feature);
-
-    const detail = resolveFeatureEntryFromCatalogs(catalogs, feature);
-    const entries = Array.isArray(detail?.entries) ? detail.entries : [];
-    entries.forEach((entry, entryIndex) => {
-      const refTokens = collectReferencedTokens(entry, [], { featureId: feature.id, entryIndex });
-      refTokens.forEach((ref) => {
-        if (!ref?.token) return;
-        if (ref.type === "subclass") {
-          const parsed = parseSubclassFeatureToken(
-            ref.token,
-            feature.source,
-            classNameHint || feature.className,
-            subclassNameHint || feature.subclassName
-          );
-          if (!parsed || parsed.level == null || parsed.level > trackLevel) return;
-          const nextClassName = parsed.className || classNameHint || feature.className;
-          const nextSubclassName = parsed.subclassName || subclassNameHint || feature.subclassName;
-          enqueueFeature(
-            {
-              ...parsed,
-              className: nextClassName,
-              subclassName: nextSubclassName,
-            },
-            trackLevel,
-            nextClassName,
-            nextSubclassName
-          );
-          return;
-        }
-
-        const parsed = parseClassFeatureToken(ref.token, feature.source, classNameHint || feature.className);
-        if (!parsed || parsed.level == null || parsed.level > trackLevel) return;
-        const nextClassName = parsed.className || classNameHint || feature.className;
-        enqueueFeature(
-          {
-            ...parsed,
-            className: nextClassName,
-          },
-          trackLevel,
-          nextClassName,
-          subclassNameHint || feature.subclassName
-        );
-      });
-    });
-  };
-
-  const sourceOrder = getPreferredSourceOrder(character);
-  tracks.forEach((track) => {
-    const selectedClassSource = track.isPrimary ? character?.classSource : "";
-    const classEntry = getClassCatalogEntry(catalogs, track.className, selectedClassSource, sourceOrder);
-    if (!classEntry) return;
-    const classSource = normalizeSourceTag(classEntry.source);
-    const classFeatures = Array.isArray(classEntry.classFeatures) ? classEntry.classFeatures : [];
-    classFeatures.forEach((featureEntry) => {
-      const token = typeof featureEntry === "string" ? featureEntry : featureEntry?.classFeature;
-      const parsed = parseClassFeatureToken(token, classSource, classEntry.name);
-      if (!parsed || parsed.level == null || parsed.level > track.level) return;
-      enqueueFeature(
-        {
-          ...parsed,
-          className: classEntry.name,
-        },
-        track.level,
-        classEntry.name,
-        ""
-      );
-    });
-
-    if (track.isPrimary) {
-      const subclassEntry = getSelectedSubclassEntry(catalogs, character);
-      if (!subclassEntry) return;
-      const subclassFeatures = Array.isArray(subclassEntry.subclassFeatures) ? subclassEntry.subclassFeatures : [];
-      subclassFeatures.forEach((token) => {
-        const parsed = parseSubclassFeatureToken(token, subclassEntry.source, classEntry.name, subclassEntry.name);
-        if (!parsed || parsed.level == null || parsed.level > track.level) return;
-        const resolvedSubclassName = parsed.subclassName || subclassEntry.shortName || subclassEntry.name;
-        enqueueFeature(
-          {
-            ...parsed,
-            className: classEntry.name,
-            subclassName: resolvedSubclassName,
-          },
-          track.level,
-          classEntry.name,
-          resolvedSubclassName
-        );
-      });
-    }
-  });
-
-  return unlocked.sort((a, b) => {
-    const levelDelta = toNumber(a.level, 0) - toNumber(b.level, 0);
-    if (levelDelta !== 0) return levelDelta;
-    return String(a.name).localeCompare(String(b.name));
-  });
-}
-
-function getFeatSlotsForClass(classEntry, classLevel) {
-  if (!classEntry || classLevel <= 0) return [];
-  const slots = [];
-
-  const normalizeFeatCategoryList = (value) => {
-    if (Array.isArray(value)) return value.map((entry) => String(entry ?? "").trim()).filter(Boolean);
-    const single = String(value ?? "").trim();
-    return single ? [single] : [];
-  };
-
-  const featProgression = Array.isArray(classEntry.featProgression) ? classEntry.featProgression : [];
-  featProgression.forEach((progressionEntry, progressionIndex) => {
-    const progression = progressionEntry?.progression;
-    if (!progression || typeof progression !== "object") return;
-    const slotType = progressionEntry?.name ? cleanSpellInlineTags(progressionEntry.name) : "Feat";
-    const featCategories = normalizeFeatCategoryList(progressionEntry?.category);
-    Object.entries(progression).forEach(([levelRaw, countRaw]) => {
-      const level = toNumber(levelRaw, NaN);
-      const count = Math.max(0, toNumber(countRaw, 0));
-      if (!Number.isFinite(level) || level > classLevel || count <= 0) return;
-      for (let idx = 0; idx < count; idx += 1) {
-        const id = buildEntityId(["feat-slot", classEntry.name, classEntry.source, slotType, level, progressionIndex, idx]);
-        slots.push({
-          id,
-          className: classEntry.name,
-          classSource: normalizeSourceTag(classEntry.source),
-          level,
-          count: 1,
-          slotType,
-          featCategories,
-        });
-      }
-    });
-  });
-
-  if (slots.length) return slots;
-
-  const classFeatures = Array.isArray(classEntry.classFeatures) ? classEntry.classFeatures : [];
-  classFeatures.forEach((featureEntry, featureIndex) => {
-    const token = typeof featureEntry === "string" ? featureEntry : featureEntry?.classFeature;
-    const parsed = parseClassFeatureToken(token, classEntry.source, classEntry.name);
-    if (!parsed || parsed.level == null || parsed.level > classLevel) return;
-    if (!ASI_FEATURE_NAME_REGEX.test(parsed.name)) return;
-    const id = buildEntityId(["feat-slot", classEntry.name, classEntry.source, "asi", parsed.level, featureIndex]);
-    slots.push({
-      id,
-      className: classEntry.name,
-      classSource: normalizeSourceTag(classEntry.source),
-      level: parsed.level,
-      count: 1,
-      slotType: "Ability Score Improvement",
-      featCategories: [],
-    });
-  });
-  return slots;
-}
-
-function getFeatSlotsForEntity(entry, context = {}) {
-  if (!entry || typeof entry !== "object") return [];
-  const featDefinitions = Array.isArray(entry?.feats) ? entry.feats : [];
-  if (!featDefinitions.length) return [];
-
-  const normalizeFeatCategoryList = (value) => {
-    if (Array.isArray(value)) return value.map((item) => String(item ?? "").trim()).filter(Boolean);
-    const single = String(value ?? "").trim();
-    return single ? [single] : [];
-  };
-
-  const entityType = String(context.type ?? "entity").trim().toLowerCase() || "entity";
-  const entityName = String(context.name ?? entry?.name ?? "").trim() || "Feat Source";
-  const entitySource = normalizeSourceTag(context.source ?? entry?.source);
-  const level = Math.max(1, Math.floor(toNumber(context.level, 1)));
-  const slotType = String(context.slotType ?? "Feat").trim() || "Feat";
-
-  const slots = [];
-  featDefinitions.forEach((featDef, featIndex) => {
-    let count = 0;
-    let featCategories = [];
-
-    if (typeof featDef === "number" || Number.isFinite(toNumber(featDef, NaN))) {
-      count = Math.max(0, Math.floor(toNumber(featDef, 0)));
-    } else if (featDef && typeof featDef === "object" && !Array.isArray(featDef)) {
-      if (Number.isFinite(toNumber(featDef.any, NaN))) {
-        count = Math.max(count, Math.floor(toNumber(featDef.any, 0)));
-      }
-      if (featDef.anyFromCategory && typeof featDef.anyFromCategory === "object" && !Array.isArray(featDef.anyFromCategory)) {
-        const categoryCount = Math.max(0, Math.floor(toNumber(featDef.anyFromCategory.count, 1)));
-        count = Math.max(count, categoryCount);
-        featCategories = normalizeFeatCategoryList(featDef.anyFromCategory.category);
-      }
-      if (Array.isArray(featDef.from)) {
-        const fromCount = Math.max(0, Math.floor(toNumber(featDef.count, 1)));
-        count = Math.max(count, fromCount);
-      }
-    }
-
-    if (count <= 0) return;
-    for (let slotIndex = 0; slotIndex < count; slotIndex += 1) {
-      const id = buildEntityId(["feat-slot", entityType, entityName, entitySource || "unknown", level, featIndex, slotIndex]);
-      slots.push({
-        id,
-        className: entityName,
-        classSource: entitySource,
-        level,
-        count: 1,
-        slotType,
-        featCategories,
-      });
-    }
-  });
-
-  return slots;
-}
-
-function getFeatSlotsForSubclass(subclassEntry, classLevel) {
-  if (!subclassEntry || classLevel <= 0) return [];
-  const normalizeFeatCategoryList = (value) => {
-    if (Array.isArray(value)) return value.map((entry) => String(entry ?? "").trim()).filter(Boolean);
-    const single = String(value ?? "").trim();
-    return single ? [single] : [];
-  };
-  const slots = [];
-  const featProgression = Array.isArray(subclassEntry?.featProgression) ? subclassEntry.featProgression : [];
-  featProgression.forEach((progressionEntry, progressionIndex) => {
-    const progression = progressionEntry?.progression;
-    if (!progression || typeof progression !== "object") return;
-    const slotType = progressionEntry?.name ? cleanSpellInlineTags(progressionEntry.name) : "Feat";
-    const featCategories = normalizeFeatCategoryList(progressionEntry?.category);
-    Object.entries(progression).forEach(([levelRaw, countRaw]) => {
-      const level = toNumber(levelRaw, NaN);
-      const count = Math.max(0, toNumber(countRaw, 0));
-      if (!Number.isFinite(level) || level > classLevel || count <= 0) return;
-      for (let idx = 0; idx < count; idx += 1) {
-        const id = buildEntityId([
-          "feat-slot",
-          "subclass",
-          subclassEntry.className,
-          subclassEntry.classSource,
-          subclassEntry.name,
-          subclassEntry.source,
-          slotType,
-          level,
-          progressionIndex,
-          idx,
-        ]);
-        slots.push({
-          id,
-          className: String(subclassEntry?.className ?? "").trim(),
-          classSource: normalizeSourceTag(subclassEntry?.classSource),
-          subclassName: String(subclassEntry?.name ?? "").trim(),
-          level,
-          count: 1,
-          slotType,
-          featCategories,
-        });
-      }
-    });
-  });
-  return slots;
-}
-
-function getFeatSlots(catalogs, character) {
-  const sourceOrder = getPreferredSourceOrder(character);
-  const raceEntry = getEffectiveRaceEntry(catalogs, character, sourceOrder);
-  const backgroundEntry = findCatalogEntryByNameWithSelectedSourcePreference(
-    catalogs?.backgrounds,
-    character?.background,
-    character?.backgroundSource,
-    sourceOrder
-  );
-
-  const raceSlots = getFeatSlotsForEntity(raceEntry, {
-    type: "race",
-    name: String(character?.subrace ?? "").trim() ? `${String(raceEntry?.name ?? "").trim()} (${String(character.subrace).trim()})` : raceEntry?.name,
-    source: raceEntry?.source,
-    level: 1,
-    slotType: "Feat",
-  });
-  const backgroundSlots = getFeatSlotsForEntity(backgroundEntry, {
-    type: "background",
-    name: backgroundEntry?.name,
-    source: backgroundEntry?.source,
-    level: 1,
-    slotType: "Feat",
-  });
-
-  const tracks = getClassLevelTracks(character);
-  const selectedPrimarySubclass = getSelectedSubclassEntry(catalogs, character);
-  const slots = tracks.flatMap((track) => {
-    const classEntry = getClassCatalogEntry(catalogs, track.className);
-    const classSlots = getFeatSlotsForClass(classEntry, track.level);
-    if (!track.isPrimary || !selectedPrimarySubclass) return classSlots;
-    const subclassClassName = String(selectedPrimarySubclass?.className ?? "").trim().toLowerCase();
-    const trackClassName = String(track?.className ?? "").trim().toLowerCase();
-    if (!subclassClassName || subclassClassName !== trackClassName) return classSlots;
-    return [...classSlots, ...getFeatSlotsForSubclass(selectedPrimarySubclass, track.level)];
-  });
-  return [...raceSlots, ...backgroundSlots, ...slots].sort((a, b) => {
-    const levelDelta = a.level - b.level;
-    if (levelDelta !== 0) return levelDelta;
-    const classDelta = String(a.className).localeCompare(String(b.className));
-    if (classDelta !== 0) return classDelta;
-    return String(a.slotType).localeCompare(String(b.slotType));
-  });
-}
-
-function normalizeOptionalFeatureTypeList(value) {
-  if (Array.isArray(value)) return value.map((entry) => String(entry ?? "").trim()).filter(Boolean);
-  const single = String(value ?? "").trim();
-  return single ? [single] : [];
-}
-
-function getProgressionCountAtLevel(progression, classLevel) {
-  if (Array.isArray(progression)) {
-    const idx = Math.max(0, Math.min(progression.length - 1, classLevel - 1));
-    return Math.max(0, toNumber(progression[idx], 0));
-  }
-  if (isRecordObject(progression)) {
-    let count = 0;
-    Object.entries(progression).forEach(([levelRaw, countRaw]) => {
-      const level = toNumber(levelRaw, NaN);
-      if (!Number.isFinite(level) || level > classLevel) return;
-      count = Math.max(count, Math.max(0, toNumber(countRaw, 0)));
-    });
-    return count;
-  }
-  return 0;
-}
-
-function getOptionalFeatureSlotsForClass(classEntry, classLevel) {
-  if (!classEntry || classLevel <= 0) return [];
-  const slots = [];
-  const groups = Array.isArray(classEntry?.optionalfeatureProgression) ? classEntry.optionalfeatureProgression : [];
-  groups.forEach((group, groupIndex) => {
-    const count = getProgressionCountAtLevel(group?.progression, classLevel);
-    if (count <= 0) return;
-    const featureTypes = normalizeOptionalFeatureTypeList(group?.featureType);
-    const featureType = featureTypes[0] || "";
-    const slotType = cleanSpellInlineTags(group?.name || "Optional Feature");
-    for (let idx = 0; idx < count; idx += 1) {
-      const id = buildEntityId(["optional-slot", classEntry.name, classEntry.source, slotType, featureType, classLevel, groupIndex, idx]);
-      slots.push({
-        id,
-        className: classEntry.name,
-        classSource: normalizeSourceTag(classEntry.source),
-        level: classLevel,
-        count: 1,
-        slotType,
-        featureType,
-      });
-    }
-  });
-  return slots;
-}
-
-function getOptionalFeatureSlotsForSubclass(subclassEntry, classLevel) {
-  if (!subclassEntry || classLevel <= 0) return [];
-  const slots = [];
-  const groups = Array.isArray(subclassEntry?.optionalfeatureProgression) ? subclassEntry.optionalfeatureProgression : [];
-  groups.forEach((group, groupIndex) => {
-    const count = getProgressionCountAtLevel(group?.progression, classLevel);
-    if (count <= 0) return;
-    const featureTypes = normalizeOptionalFeatureTypeList(group?.featureType);
-    const featureType = featureTypes[0] || "";
-    const slotType = cleanSpellInlineTags(group?.name || "Optional Feature");
-    for (let idx = 0; idx < count; idx += 1) {
-      const id = buildEntityId([
-        "optional-slot",
-        "subclass",
-        subclassEntry.className,
-        subclassEntry.classSource,
-        subclassEntry.name,
-        subclassEntry.source,
-        slotType,
-        featureType,
-        classLevel,
-        groupIndex,
-        idx,
-      ]);
-      slots.push({
-        id,
-        className: String(subclassEntry?.className ?? "").trim(),
-        classSource: normalizeSourceTag(subclassEntry?.classSource),
-        subclassName: String(subclassEntry?.name ?? "").trim(),
-        level: classLevel,
-        count: 1,
-        slotType,
-        featureType,
-      });
-    }
-  });
-  return slots;
-}
-
-function getOptionalFeatureSlots(catalogs, character) {
-  const tracks = getClassLevelTracks(character);
-  const selectedPrimarySubclass = getSelectedSubclassEntry(catalogs, character);
-  return tracks
-    .flatMap((track) => {
-      const classEntry = getClassCatalogEntry(catalogs, track.className);
-      const classSlots = getOptionalFeatureSlotsForClass(classEntry, track.level);
-      if (!track.isPrimary || !selectedPrimarySubclass) return classSlots;
-      const subclassClassName = String(selectedPrimarySubclass?.className ?? "").trim().toLowerCase();
-      const trackClassName = String(track?.className ?? "").trim().toLowerCase();
-      if (!subclassClassName || subclassClassName !== trackClassName) return classSlots;
-      return [...classSlots, ...getOptionalFeatureSlotsForSubclass(selectedPrimarySubclass, track.level)];
-    })
-    .sort((a, b) => {
-      const levelDelta = a.level - b.level;
-      if (levelDelta !== 0) return levelDelta;
-      const classDelta = String(a.className).localeCompare(String(b.className));
-      if (classDelta !== 0) return classDelta;
-      return String(a.slotType).localeCompare(String(b.slotType));
-    });
-}
-
-function parseCountToken(value, fallback = 0) {
-  const normalized = String(value ?? "")
-    .trim()
-    .toLowerCase();
-  if (!normalized) return fallback;
-  if (NUMBER_WORDS[normalized] != null) return NUMBER_WORDS[normalized];
-  const parsed = Number.parseInt(normalized, 10);
-  return Number.isFinite(parsed) ? parsed : fallback;
-}
-
-function getClassLevelMap(character) {
-  const map = new Map();
-  getClassLevelTracks(character).forEach((track) => {
-    const key = String(track.className ?? "").trim().toLowerCase();
-    if (!key) return;
-    map.set(key, Math.max(toNumber(map.get(key), 0), toNumber(track.level, 0)));
-  });
-  return map;
-}
-
-function getProficiencyBonusByLevel(level) {
-  const normalizedLevel = Math.max(1, Math.floor(toNumber(level, 1)));
-  return Math.max(2, Math.floor((normalizedLevel - 1) / 4) + 2);
-}
-
-function normalizeResourceLabel(value) {
-  return cleanSpellInlineTags(String(value ?? ""))
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, " ")
-    .replace(/\s+/g, " ")
-    .replace(/\bpoints\b/g, "point")
-    .replace(/\bdice\b/g, "die")
-    .replace(/\brages\b/g, "rage")
-    .trim();
-}
-
-function getLabelTokenSet(value) {
-  return new Set(
-    normalizeResourceLabel(value)
-      .split(" ")
-      .map((token) => token.trim())
-      .filter(Boolean)
-  );
-}
-
-function scoreResourceLabelMatch(left, right) {
-  const normalizedLeft = normalizeResourceLabel(left);
-  const normalizedRight = normalizeResourceLabel(right);
-  if (!normalizedLeft || !normalizedRight) return 0;
-  if (normalizedLeft === normalizedRight) return 100;
-  if (normalizedLeft.includes(normalizedRight) || normalizedRight.includes(normalizedLeft)) return 60;
-  const leftTokens = getLabelTokenSet(normalizedLeft);
-  const rightTokens = getLabelTokenSet(normalizedRight);
-  if (!leftTokens.size || !rightTokens.size) return 0;
-  let overlap = 0;
-  leftTokens.forEach((token) => {
-    if (rightTokens.has(token)) overlap += 1;
-  });
-  return overlap;
-}
-
-function getResourceWordMultiplier(value) {
-  const normalized = String(value ?? "")
-    .trim()
-    .toLowerCase();
-  if (!normalized) return 1;
-  if (normalized === "twice" || normalized === "double") return 2;
-  if (normalized === "thrice" || normalized === "triple") return 3;
-  const timesMatch = normalized.match(/(\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+times?/i);
-  if (timesMatch?.[1]) return Math.max(1, parseCountToken(timesMatch[1], 1));
-  return Math.max(1, parseCountToken(normalized, 1));
-}
-
-function flattenTableCellToText(cell) {
-  if (cell == null) return "";
-  if (typeof cell === "string" || typeof cell === "number") return cleanSpellInlineTags(String(cell));
-  if (Array.isArray(cell)) return cell.map((item) => flattenTableCellToText(item)).filter(Boolean).join(" / ");
-  if (typeof cell !== "object") return "";
-  if (typeof cell.entry === "string") return cleanSpellInlineTags(cell.entry);
-  if (typeof cell.text === "string") return cleanSpellInlineTags(cell.text);
-  if (typeof cell.value === "string" || typeof cell.value === "number") return cleanSpellInlineTags(String(cell.value));
-  if (typeof cell.roll?.exact === "number") return String(cell.roll.exact);
-  if (typeof cell.roll?.min === "number" && typeof cell.roll?.max === "number") return `${cell.roll.min}-${cell.roll.max}`;
-  if (typeof cell.roll?.min === "number") return String(cell.roll.min);
-  if (typeof cell.name === "string") return cleanSpellInlineTags(cell.name);
-  return "";
-}
-
-function extractTableRowsFromEntries(entry) {
-  if (entry == null) return [];
-  if (Array.isArray(entry)) return entry.flatMap((it) => extractTableRowsFromEntries(it));
-  if (typeof entry !== "object") return [];
-  const tables = [];
-  if (entry.type === "table" && Array.isArray(entry.rows)) tables.push(entry);
-  if (Array.isArray(entry.entries)) tables.push(...extractTableRowsFromEntries(entry.entries));
-  if (Array.isArray(entry.items)) tables.push(...extractTableRowsFromEntries(entry.items));
-  if (entry.entry && typeof entry.entry === "object") tables.push(...extractTableRowsFromEntries(entry.entry));
-  return tables;
-}
-
-function parseResourceCountFromTable(detail, classLevel) {
-  const tables = extractTableRowsFromEntries(detail?.entries ?? []);
-  const normalizedClassLevel = Math.max(1, Math.floor(toNumber(classLevel, 1)));
-  const quantityColumnRegex = /\b(number|uses?|dice?|die|points?|charges?|pool|tokens?)\b/i;
-  const levelColumnRegex = /\blevel\b/i;
-  let bestMatch = null;
-  tables.forEach((table) => {
-    const colLabels = Array.isArray(table?.colLabels) ? table.colLabels.map((label) => cleanSpellInlineTags(String(label ?? ""))) : [];
-    if (!colLabels.length) return;
-    const levelIndex = colLabels.findIndex((label) => levelColumnRegex.test(label));
-    const quantityIndex = colLabels.findIndex((label, idx) => idx !== levelIndex && quantityColumnRegex.test(label));
-    if (levelIndex < 0 || quantityIndex < 0) return;
-    const rows = Array.isArray(table?.rows) ? table.rows : [];
-    rows.forEach((row) => {
-      const cells = Array.isArray(row) ? row : [];
-      const levelCell = flattenTableCellToText(cells[levelIndex]);
-      const quantityCell = flattenTableCellToText(cells[quantityIndex]);
-      const levelValue = toNumber(String(levelCell).match(/\d+/)?.[0], Number.NaN);
-      const quantityValue = toNumber(String(quantityCell).match(/\d+/)?.[0], Number.NaN);
-      if (!Number.isFinite(levelValue) || levelValue > normalizedClassLevel) return;
-      if (!Number.isFinite(quantityValue) || quantityValue <= 0) return;
-      if (!bestMatch || levelValue > bestMatch.level) {
-        bestMatch = {
-          level: levelValue,
-          count: Math.floor(quantityValue),
-          label: colLabels[quantityIndex],
-        };
-      }
-    });
-  });
-  if (!bestMatch) return null;
-  return {
-    max: Math.max(0, bestMatch.count),
-    resourceName: cleanSpellInlineTags(String(bestMatch.label ?? "")).trim(),
-  };
-}
-
-function parseResourceCountFromProficiencyBonus(lines, proficiencyBonus) {
-  const pb = Math.max(0, toNumber(proficiencyBonus, 0));
-  if (pb <= 0) return null;
-  const resourceContextRegex = /\b(dice?|die|charges?|points?|pool|uses?|tokens?|trinkets?)\b/i;
-  const resourceNounRegex = /\b(dice?|die|charges?|points?|pool|uses?|tokens?|trinkets?|times?)\b/i;
-  const proficiencyRegex = /equal to\s+(?:(twice|double|thrice|triple|\d+\s+times?|one\s+time|two\s+times?|three\s+times?|four\s+times?|five\s+times?|six\s+times?|seven\s+times?|eight\s+times?|nine\s+times?|ten\s+times?)[\s-]+)?your proficiency bonus/i;
-  for (const line of lines) {
-    if (!resourceContextRegex.test(line)) continue;
-    const match = line.match(proficiencyRegex);
-    if (!match) continue;
-    const nounMatch = line.match(/(?:number|times?|maximum number)\s+of\s+(?:these\s+)?([a-z][a-z\s'-]{1,48}?)(?:\s+equal to|\bthat\b|\bwhich\b|[,.])/i);
-    if (nounMatch?.[1] && !resourceNounRegex.test(String(nounMatch[1] ?? ""))) continue;
-    if (!nounMatch && !/\b(times?|uses?)\b/i.test(line)) continue;
-    const multiplier = getResourceWordMultiplier(match[1] ?? "one");
-    const max = Math.max(0, pb * multiplier);
-    return {
-      max,
-      resourceName: nounMatch?.[1] ? toTitleCase(nounMatch[1]) : "Uses",
-    };
-  }
-  return null;
-}
-
-function inferResourceLabelFromLines(lines, fallback = "") {
-  const patterns = [
-    /represented by your\s+([a-z][a-z\s'-]{1,64}?(?:dice?|die|charges?|points?|tokens?|uses?))/i,
-    /called\s+([a-z][a-z\s'-]{1,64}?(?:dice?|die|charges?|points?|tokens?|uses?))/i,
-    /your\s+([a-z][a-z\s'-]{1,64}?(?:dice?|die|charges?|points?|tokens?|uses?))/i,
-  ];
-  for (const line of lines) {
-    for (const pattern of patterns) {
-      const match = line.match(pattern);
-      if (!match?.[1]) continue;
-      const candidate = toTitleCase(match[1]).trim();
-      if (candidate) return candidate;
-    }
-  }
-  return String(fallback ?? "").trim();
-}
-
-function parseExplicitResourceCostFromLines(lines) {
-  const joined = lines.join(" ");
-  const explicitRegex =
-    /(?:expend|spend)(?:ing|ed)?\s+(a|an|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d+)\s+([a-z][a-z\s'-]{1,64}?(?:dice?|die|charges?|points?|tokens?|uses?))/i;
-  const explicitMatch = joined.match(explicitRegex);
-  if (explicitMatch) {
-    return {
-      amount: Math.max(1, parseCountToken(explicitMatch[1], 1)),
-      resourceLabel: toTitleCase(explicitMatch[2]),
-    };
-  }
-  const passiveRegex = /([a-z][a-z\s'-]{1,64}?(?:dice?|die|charges?|points?|tokens?|uses?))\s+is expended when you use/i;
-  const passiveMatch = joined.match(passiveRegex);
-  if (passiveMatch) {
-    return {
-      amount: 1,
-      resourceLabel: toTitleCase(passiveMatch[1]),
-    };
-  }
-  const passiveGenericRegex = /([a-z][a-z\s'-]{1,64}?(?:dice?|die|charges?|points?|tokens?|uses?))\s+is expended\b/i;
-  const passiveGenericMatch = joined.match(passiveGenericRegex);
-  if (passiveGenericMatch) {
-    return {
-      amount: 1,
-      resourceLabel: toTitleCase(passiveGenericMatch[1]),
-    };
-  }
-  const rollThenExpendRegex =
-    /roll\s+(a|an|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d+)\s+([a-z][a-z\s'-]{1,64}?(?:dice?|die|charges?|points?|tokens?|uses?)).{0,800}?expend\s+the\s+(?:same\s+)?(?:die|dice|charge|charges|point|points|token|tokens|use|uses)\b/i;
-  const rollThenExpendMatch = joined.match(rollThenExpendRegex);
-  if (rollThenExpendMatch) {
-    return {
-      amount: Math.max(1, parseCountToken(rollThenExpendMatch[1], 1)),
-      resourceLabel: toTitleCase(rollThenExpendMatch[2]),
-    };
-  }
-  const rollThenPassiveRegex =
-    /roll\s+(a|an|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d+)\s+([a-z][a-z\s'-]{1,64}?(?:dice?|die|charges?|points?|tokens?|uses?)).{0,800}?the\s+(?:same\s+)?(?:die|dice|charge|charges|point|points|token|tokens|use|uses)\s+is expended\b/i;
-  const rollThenPassiveMatch = joined.match(rollThenPassiveRegex);
-  if (rollThenPassiveMatch) {
-    return {
-      amount: Math.max(1, parseCountToken(rollThenPassiveMatch[1], 1)),
-      resourceLabel: toTitleCase(rollThenPassiveMatch[2]),
-    };
-  }
-  return null;
-}
-
-function findBestFeatureUseTrackerKey(featureUses, resourceLabel, preferredKey = "") {
-  const trackers =
-    featureUses && typeof featureUses === "object" && !Array.isArray(featureUses)
-      ? Object.entries(featureUses).filter(([, tracker]) => tracker && typeof tracker === "object")
-      : [];
-  if (!trackers.length || !resourceLabel) return "";
-  let bestKey = "";
-  let bestScore = 0;
-  trackers.forEach(([key, tracker]) => {
-    const name = String(tracker?.name ?? "").trim();
-    if (!name) return;
-    let score = scoreResourceLabelMatch(name, resourceLabel);
-    if (key === preferredKey && score > 0) score += 10;
-    if (score > bestScore) {
-      bestScore = score;
-      bestKey = key;
-      return;
-    }
-    if (score === bestScore && score > 0) {
-      const isCurrentTable = /table-effect/i.test(bestKey);
-      const isNextTable = /table-effect/i.test(key);
-      if (isCurrentTable && !isNextTable) bestKey = key;
-    }
-  });
-  if (bestScore < 1) return "";
-  return bestKey;
-}
-
-function getClassLevelForFeature(character, feature) {
-  const className = String(feature?.className ?? "").trim().toLowerCase();
-  if (!className) return Math.max(1, getCharacterHighestClassLevel(character));
-  const classLevelMap = getClassLevelMap(character);
-  const classLevel = toNumber(classLevelMap.get(className), 0);
-  if (classLevel > 0) return classLevel;
-  return Math.max(1, getCharacterHighestClassLevel(character));
-}
-
-function parseDieFacesByClassLevel(lines, classLevel) {
-  const normalizedLevel = Math.max(1, Math.floor(toNumber(classLevel, 1)));
-  let baseFaces = 0;
-  for (const line of lines) {
-    const baseMatch = line.match(/(?:each(?:\s+is)?|are|is)\s+(?:a|an)?\s*d(\d+)/i);
-    if (baseMatch?.[1]) {
-      baseFaces = Math.max(baseFaces, toNumber(baseMatch[1], 0));
-      if (baseFaces > 0) break;
-    }
-  }
-  const thresholds = [];
-  lines.forEach((line) => {
-    const matches = [...line.matchAll(/at\s+(\d{1,2})(?:st|nd|rd|th)?\s+level(?:\s*\([^)]*\))?\s*\(?\s*d(\d+)\s*\)?/gi)];
-    matches.forEach((match) => {
-      const level = toNumber(match[1], 0);
-      const faces = toNumber(match[2], 0);
-      if (level > 0 && faces > 0) thresholds.push({ level, faces });
-    });
-  });
-  thresholds.sort((a, b) => a.level - b.level);
-  let bestFaces = baseFaces;
-  thresholds.forEach((entry) => {
-    if (normalizedLevel >= entry.level) bestFaces = Math.max(bestFaces, entry.faces);
-  });
-  return bestFaces > 0 ? bestFaces : 0;
-}
-
-function inferResourceDieFacesFromUnlockedFeatures(catalogs, character, resourceLabel, fallbackClassLevel = 1) {
-  const unlockedFeatures = Array.isArray(character?.progression?.unlockedFeatures)
-    ? character.progression.unlockedFeatures
-    : [];
-  let bestFaces = 0;
-  unlockedFeatures.forEach((feature) => {
-    const detail = resolveFeatureEntryFromCatalogs(catalogs, feature);
-    const lines = getRuleDescriptionLinesForParsing(detail);
-    const classLevel = getClassLevelForFeature(character, feature) || fallbackClassLevel;
-    const descriptor = getResourceDescriptorFromEntry(detail, feature?.name, classLevel);
-    if (!descriptor || scoreResourceLabelMatch(descriptor.name, resourceLabel) < 1) return;
-    const faces = parseDieFacesByClassLevel(lines, classLevel);
-    if (faces > bestFaces) bestFaces = faces;
-  });
-  return bestFaces;
-}
-
-function getSuperiorityDieFacesByClassLevel(level) {
-  const normalizedLevel = Math.max(1, Math.floor(toNumber(level, 1)));
-  if (normalizedLevel >= 18) return 12;
-  if (normalizedLevel >= 10) return 10;
-  return 8;
-}
-
-function getActivationRollNotation(catalogs, character, feature, lines, resourceLabel, amount) {
-  if (/superiority die|superiority dice/i.test(String(resourceLabel ?? ""))) {
-    const classLevel = getClassLevelForFeature(character, feature);
-    const faces = getSuperiorityDieFacesByClassLevel(classLevel);
-    const count = Math.max(1, Math.floor(toNumber(amount, 1)));
-    return `${count}d${faces}`;
-  }
-  const joined = lines.join(" ");
-  if (!/\broll\b/i.test(joined)) return "";
-  const rollResourceRegex = /roll\s+(a|an|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d+)\s+([a-z][a-z\s'-]{1,64}?(?:dice?|die|charges?|points?|tokens?|uses?))/i;
-  const rollResourceMatch = joined.match(rollResourceRegex);
-  if (!rollResourceMatch) return "";
-  const rolledLabel = toTitleCase(rollResourceMatch[2]);
-  if (scoreResourceLabelMatch(rolledLabel, resourceLabel) < 1) return "";
-  const notationMatch = joined.match(/\b(\d+)d(\d+)\b/i);
-  if (notationMatch?.[0]) return String(notationMatch[0]).replace(/\s+/g, "");
-  if (!/\b(die|dice)\b/i.test(resourceLabel)) return "";
-  const classLevel = getClassLevelForFeature(character, feature);
-  const faces = inferResourceDieFacesFromUnlockedFeatures(catalogs, character, resourceLabel, classLevel);
-  if (faces <= 0) return "";
-  const count = Math.max(1, Math.floor(toNumber(amount, 1)));
-  return `${count}d${faces}`;
-}
-
-function hasFirstUseFreeAfterLongRestRule(lines) {
-  const text = lines.join(" ").toLowerCase();
-  return /first time you use this power after each long rest[, ]+you (?:do not|don't) expend/i.test(text);
-}
-
-function inferFirstUseFreeFromResourcePool(catalogs, character, resourceLabel, currentFeatureId = "") {
-  if (!resourceLabel) return false;
-  const unlockedFeatures = Array.isArray(character?.progression?.unlockedFeatures)
-    ? character.progression.unlockedFeatures
-    : [];
-  return unlockedFeatures.some((entry) => {
-    const featureId = String(entry?.id ?? "").trim();
-    if (featureId && currentFeatureId && featureId === currentFeatureId) return false;
-    const classLevel = getClassLevelForFeature(character, entry);
-    const detail = resolveFeatureEntryFromCatalogs(catalogs, entry);
-    const lines = getRuleDescriptionLinesForParsing(detail);
-    if (!hasFirstUseFreeAfterLongRestRule(lines)) return false;
-    const descriptor = getResourceDescriptorFromEntry(detail, entry?.name, classLevel);
-    if (!descriptor) return false;
-    return scoreResourceLabelMatch(descriptor.name, resourceLabel) > 0;
-  });
-}
-
-function getResourceRechargeHint(lines) {
-  const text = lines.join(" ").toLowerCase();
-  if (/once per day|once a day/.test(text)) return "day";
-  if (/short or long rest/.test(text)) return "shortOrLong";
-  if (/long rest/.test(text) && /short rest/.test(text)) return "shortOrLong";
-  if (/long rest/.test(text)) return "long";
-  if (/short rest/.test(text)) return "short";
-  return "";
-}
-
-function getAdditionalThresholdsForCombatSuperiority(lines) {
-  const thresholds = new Set();
-  lines.forEach((line) => {
-    if (!/superiority die/i.test(line)) return;
-    if (!/(gain|additional|another|one more)/i.test(line)) return;
-
-    const atLevelMatches = [...line.matchAll(/at\s+(\d{1,2})(?:st|nd|rd|th)?\s+level/gi)];
-    atLevelMatches.forEach((match) => {
-      const level = toNumber(match[1], 0);
-      if (level > 0) thresholds.add(level);
-    });
-
-    const levelListMatch = line.match(/levels?\s+(\d{1,2})(?:\s*\([^)]+\))?(?:\s+and\s+(\d{1,2}))?/i);
-    if (levelListMatch) {
-      const first = toNumber(levelListMatch[1], 0);
-      const second = toNumber(levelListMatch[2], 0);
-      if (first > 0) thresholds.add(first);
-      if (second > 0) thresholds.add(second);
-    }
-  });
-  return [...thresholds.values()];
-}
-
-function getResourceDescriptorFromEntry(detail, fallbackName, classLevel = 0) {
-  const lines = getRuleDescriptionLinesForParsing(detail);
-  const recharge = getResourceRechargeHint(lines);
-  let max = 0;
-  let resourceName = cleanSpellInlineTags(detail?.consumes?.name ?? "");
-
-  const usesRaw = detail?.uses;
-  if (usesRaw != null) {
-    if (typeof usesRaw === "number") max = Math.max(0, usesRaw);
-    else if (typeof usesRaw === "string") max = Math.max(0, parseCountToken(usesRaw, 0));
-  }
-
-  if (max <= 0) {
-    const proficiencyBonus = getProficiencyBonusByLevel(classLevel);
-    const pbBased = parseResourceCountFromProficiencyBonus(lines, proficiencyBonus);
-    if (pbBased && pbBased.max > 0) {
-      max = pbBased.max;
-      if (!resourceName && pbBased.resourceName) resourceName = pbBased.resourceName;
-    }
-  }
-
-  if (max <= 0) {
-    const fromTable = parseResourceCountFromTable(detail, classLevel);
-    if (fromTable && fromTable.max > 0) {
-      max = fromTable.max;
-      if (!resourceName && fromTable.resourceName) resourceName = fromTable.resourceName;
-    }
-  }
-
-  if (max <= 0) {
-    for (const line of lines) {
-      const generic = line.match(
-        /you have\s+(\d+|a|an|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+([a-z][a-z\s'-]{1,48}?)(?:,|\s+which|\s+that|\.)/i
-      );
-      if (!generic) continue;
-      const noun = String(generic[2] ?? "").toLowerCase();
-      if (!/\b(dice?|die|charge|charges|point|points|pool|use|uses|token|tokens)\b/.test(noun)) continue;
-      max = parseCountToken(generic[1], 0);
-      if (!resourceName) resourceName = toTitleCase(generic[2]);
-      break;
-    }
-  }
-
-  if (max <= 0) {
-    const text = lines.join(" ").toLowerCase();
-    const hasOnceUsePattern =
-      /\bonce per day\b/.test(text)
-      || /\bonce a day\b/.test(text)
-      || /\byou can use (?:this|it) once\b/.test(text)
-      || /\bonce before you finish a (?:short|long) rest\b/.test(text)
-      || /\bonce you use this (?:feature|ability|benefit)\b/.test(text)
-      || /\byou can't (?:do so|use (?:this|it)) again until you finish a (?:short|long) rest\b/.test(text)
-      || /\byou can(?:not|'t) (?:do so|use (?:this|it)) again until you finish a (?:short|long) rest\b/.test(text);
-    if (hasOnceUsePattern) max = 1;
-  }
-
-  const normalizedName = String(resourceName || fallbackName || "").toLowerCase();
-  if (max > 0 && /superiority die|superiority dice/.test(normalizedName)) {
-    const thresholds = getAdditionalThresholdsForCombatSuperiority(lines);
-    thresholds.forEach((level) => {
-      if (classLevel >= level) max += 1;
-    });
-  }
-
-  if (max <= 0) return null;
-  if (/^spellcasting$/i.test(String(fallbackName ?? "").trim())) return null;
-  const normalizedResourceName = String(resourceName ?? "").trim();
-  const needsInferredName =
-    !normalizedResourceName
-    || /^(uses?|dice?|die|number|pool)$/i.test(normalizedResourceName);
-  const nextResourceName = needsInferredName
-    ? inferResourceLabelFromLines(lines, normalizedResourceName)
-    : normalizedResourceName;
-  return {
-    name: nextResourceName || cleanSpellInlineTags(fallbackName || "Feature Uses"),
-    max,
-    recharge,
-  };
-}
-
-function getAutoResourceMaxFromFeatureName(featureName) {
-  const name = String(featureName ?? "").trim();
-  if (!name) return 0;
-  if (/action surge/i.test(name)) {
-    if (/three uses/i.test(name)) return 3;
-    if (/two uses/i.test(name)) return 2;
-    return 1;
-  }
-  if (/indomitable/i.test(name)) {
-    if (/three uses/i.test(name)) return 3;
-    if (/two uses/i.test(name)) return 2;
-    return 1;
-  }
-  if (/second wind/i.test(name)) return 1;
-  return 0;
-}
-
-function getAutoResourcesFromFeatures(features) {
-  return features
-    .map((feature) => {
-      const max = getAutoResourceMaxFromFeatureName(feature?.name);
-      if (max <= 0) return null;
-      return {
-        autoId: `${AUTO_RESOURCE_ID_PREFIX}${feature.id}`,
-        name: cleanSpellInlineTags(feature.name),
-        current: max,
-        max,
-        recharge: "",
-      };
-    })
-    .filter(Boolean);
-}
-
-function getSpeciesTraitId(raceEntry, traitName) {
-  const source = normalizeSourceTag(raceEntry?.source);
-  const slug = String(traitName ?? "")
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-");
-  return `species:${source}:${slug}`;
-}
-
-function getAutoResourcesFromRaceTraits(catalogs, character) {
-  const sourceOrder = getPreferredSourceOrder(character);
-  const raceEntry = getEffectiveRaceEntry(catalogs, character, sourceOrder);
-  if (!isRecordObject(raceEntry)) return [];
-  const traitEntries = Array.isArray(raceEntry?.entries) ? raceEntry.entries : [];
-  const ignoredTraitNames = new Set(["age", "alignment", "size", "language", "languages", "creature type"]);
-  const byId = new Map();
-  traitEntries.forEach((entry) => {
-    if (!isRecordObject(entry)) return;
-    const name = String(entry?.name ?? "").trim();
-    if (!name || ignoredTraitNames.has(name.toLowerCase())) return;
-    const descriptor = getResourceDescriptorFromEntry(entry, name, Math.max(1, toNumber(character?.level, 1)));
-    if (!descriptor || descriptor.max <= 0) return;
-    const id = getSpeciesTraitId(raceEntry, name);
-    byId.set(`${AUTO_RESOURCE_ID_PREFIX}${id}`, {
-      autoId: `${AUTO_RESOURCE_ID_PREFIX}${id}`,
-      name: descriptor.name,
-      current: descriptor.max,
-      max: descriptor.max,
-      recharge: descriptor.recharge,
-    });
-  });
-  return [...byId.values()];
-}
-
-function getAutoResourcesFromRules(catalogs, character, features, feats, optionalFeatures) {
-  const classLevelMap = getClassLevelMap(character);
-  const byId = new Map();
-
-  features.forEach((feature) => {
-    const detail = resolveFeatureEntryFromCatalogs(catalogs, feature);
-    const classLevel = toNumber(classLevelMap.get(String(feature.className ?? "").trim().toLowerCase()), 0);
-    const descriptor = getResourceDescriptorFromEntry(detail, feature.name, classLevel);
-    if (descriptor) {
-      byId.set(`${AUTO_RESOURCE_ID_PREFIX}${feature.id}`, {
-        autoId: `${AUTO_RESOURCE_ID_PREFIX}${feature.id}`,
-        name: descriptor.name,
-        current: descriptor.max,
-        max: descriptor.max,
-        recharge: descriptor.recharge,
-      });
-      return;
-    }
-
-    const fallbackMax = getAutoResourceMaxFromFeatureName(feature?.name);
-    if (fallbackMax <= 0) return;
-    byId.set(`${AUTO_RESOURCE_ID_PREFIX}${feature.id}`, {
-      autoId: `${AUTO_RESOURCE_ID_PREFIX}${feature.id}`,
-      name: cleanSpellInlineTags(feature.name),
-      current: fallbackMax,
-      max: fallbackMax,
-      recharge: "",
-    });
-  });
-
-  (Array.isArray(feats) ? feats : []).forEach((feat) => {
-    const featDetail = (catalogs?.feats ?? []).find((entry) => buildEntityId(["feat", entry?.name, entry?.source]) === feat.id);
-    const descriptor = getResourceDescriptorFromEntry(featDetail, feat.name, getCharacterHighestClassLevel(character));
-    if (!descriptor) return;
-    byId.set(`${AUTO_RESOURCE_ID_PREFIX}${feat.id}`, {
-      autoId: `${AUTO_RESOURCE_ID_PREFIX}${feat.id}`,
-      name: descriptor.name,
-      current: descriptor.max,
-      max: descriptor.max,
-      recharge: descriptor.recharge,
-    });
-  });
-
-  (Array.isArray(optionalFeatures) ? optionalFeatures : []).forEach((feature) => {
-    const optionalFeatureDetail = (catalogs?.optionalFeatures ?? []).find(
-      (entry) => buildEntityId(["optionalfeature", entry?.name, entry?.source]) === feature.id
-    );
-    const descriptor = getResourceDescriptorFromEntry(optionalFeatureDetail, feature.name, getCharacterHighestClassLevel(character));
-    if (!descriptor) return;
-    byId.set(`${AUTO_RESOURCE_ID_PREFIX}${feature.id}`, {
-      autoId: `${AUTO_RESOURCE_ID_PREFIX}${feature.id}`,
-      name: descriptor.name,
-      current: descriptor.max,
-      max: descriptor.max,
-      recharge: descriptor.recharge,
-    });
-  });
-
-  getAutoResourcesFromRaceTraits(catalogs, character).forEach((tracker) => {
-    byId.set(String(tracker?.autoId ?? ""), tracker);
-  });
-
-  return [...byId.values()];
-}
-
-function getAutoResourcesFromClassTableEffects(catalogs, character, unlockedFeatures, classTableEffects) {
-  const classLevelMap = getClassLevelMap(character);
-  const candidatesByClass = new Map();
-  (Array.isArray(unlockedFeatures) ? unlockedFeatures : []).forEach((feature) => {
-    const className = String(feature?.className ?? "").trim();
-    if (!className) return;
-    const classKey = className.toLowerCase();
-    const detail = resolveFeatureEntryFromCatalogs(catalogs, feature);
-    const classLevel = toNumber(classLevelMap.get(classKey), 0);
-    const descriptor = getResourceDescriptorFromEntry(detail, feature?.name, classLevel);
-    const rechargeHint = getResourceRechargeHint(getRuleDescriptionLinesForParsing(detail));
-    const list = candidatesByClass.get(classKey) ?? [];
-    if (descriptor) {
-      list.push({
-        label: String(descriptor?.name ?? "").trim(),
-        recharge: String(descriptor?.recharge ?? ""),
-        source: "descriptor",
-      });
-    }
-    if (rechargeHint) {
-      list.push({
-        label: String(feature?.name ?? "").trim(),
-        recharge: rechargeHint,
-        source: "feature",
-      });
-    }
-    if (list.length) candidatesByClass.set(classKey, list);
-  });
-
-  return (Array.isArray(classTableEffects) ? classTableEffects : [])
-    .map((effect) => {
-      const id = String(effect?.id ?? "").trim();
-      const label = String(effect?.label ?? "").trim();
-      const classKey = String(effect?.className ?? "").trim().toLowerCase();
-      const valueText = String(effect?.value ?? "").trim();
-      if (!id || !label || !classKey || !valueText) return null;
-      const max = toNumber(valueText.match(/[+\-]?\d+/)?.[0], Number.NaN);
-      if (!Number.isFinite(max) || max <= 0) return null;
-      const candidates = candidatesByClass.get(classKey) ?? [];
-      let best = null;
-      let bestScore = 0;
-      candidates.forEach((candidate) => {
-        const score = scoreResourceLabelMatch(label, candidate?.label);
-        if (score > bestScore) {
-          bestScore = score;
-          best = candidate;
-        }
-      });
-      if (!best || bestScore < 1) return null;
-      if (best.source !== "descriptor" && !String(best?.recharge ?? "").trim()) return null;
-      return {
-        autoId: `${AUTO_RESOURCE_ID_PREFIX}${id}`,
-        name: label,
-        current: max,
-        max,
-        recharge: String(best?.recharge ?? ""),
-      };
-    })
-    .filter(Boolean);
-}
-
-function getFeatureActivationDescriptor(catalogs, character, feature, featureUses) {
-  if (!feature || typeof feature !== "object") return null;
-  const featureId = String(feature?.id ?? "").trim();
-  let detail = resolveFeatureEntryFromCatalogs(catalogs, feature);
-  if (!detail && featureId) {
-    detail =
-      (Array.isArray(catalogs?.optionalFeatures)
-        ? catalogs.optionalFeatures.find((entry) => buildEntityId(["optionalfeature", entry?.name, entry?.source]) === featureId)
-        : null)
-      || (Array.isArray(catalogs?.feats)
-        ? catalogs.feats.find((entry) => buildEntityId(["feat", entry?.name, entry?.source]) === featureId)
-        : null)
-      || null;
-  }
-  if (!detail) return null;
-  const lines = getRuleDescriptionLinesForParsing(detail);
-  const cost = parseExplicitResourceCostFromLines(lines);
-  if (!cost || cost.amount < 1 || !cost.resourceLabel) return null;
-  const preferredKey = `${AUTO_RESOURCE_ID_PREFIX}${featureId}`;
-  const trackerKey = findBestFeatureUseTrackerKey(featureUses, cost.resourceLabel, preferredKey);
-  if (!trackerKey) return null;
-  const tracker =
-    featureUses && typeof featureUses === "object" && !Array.isArray(featureUses) ? featureUses[trackerKey] : null;
-  const current = Math.max(0, toNumber(tracker?.current, 0));
-  const max = Math.max(0, toNumber(tracker?.max, 0));
-  const firstUseFreeAfterLongRest =
-    hasFirstUseFreeAfterLongRestRule(lines)
-    || inferFirstUseFreeFromResourcePool(catalogs, character, cost.resourceLabel, featureId);
-  const rollNotation = getActivationRollNotation(catalogs, character, feature, lines, cost.resourceLabel, cost.amount);
-  return {
-    featureId,
-    trackerKey,
-    amount: Math.max(1, Math.floor(toNumber(cost.amount, 1))),
-    resourceLabel: String(cost.resourceLabel ?? "").trim(),
-    current,
-    max,
-    firstUseFreeAfterLongRest,
-    rollNotation,
-  };
-}
-
-function parseFeatureRefValue(value, kind = "subclass") {
-  const parts = String(value ?? "")
-    .split("|")
-    .map((part) => String(part ?? "").trim());
-  if (!parts[0]) return null;
-  if (kind === "class") {
-    const levelRaw = parts[3] ?? "";
-    const level = toNumber(levelRaw, Number.NaN);
-    return {
-      name: parts[0] || "",
-      className: parts[1] || "",
-      source: normalizeSourceTag(parts[2] || ""),
-      level: Number.isFinite(level) ? level : Number.NaN,
-    };
-  }
-  const levelRaw = parts[5] ?? "";
-  const level = toNumber(levelRaw, Number.NaN);
-  return {
-    name: parts[0] || "",
-    className: parts[1] || "",
-    classSource: normalizeSourceTag(parts[2] || ""),
-    subclassName: parts[3] || "",
-    source: normalizeSourceTag(parts[4] || ""),
-    level: Number.isFinite(level) ? level : Number.NaN,
-  };
-}
-
-function collectFeatureRefStrings(entries, refs = []) {
-  if (entries == null) return refs;
-  if (Array.isArray(entries)) {
-    entries.forEach((entry) => collectFeatureRefStrings(entry, refs));
-    return refs;
-  }
-  if (!isRecordObject(entries)) return refs;
-  const subclassRef = String(entries?.subclassFeature ?? "").trim();
-  if (subclassRef) refs.push({ type: "subclass", value: subclassRef });
-  const classRef = String(entries?.classFeature ?? "").trim();
-  if (classRef) refs.push({ type: "class", value: classRef });
-  if (Array.isArray(entries.entries)) collectFeatureRefStrings(entries.entries, refs);
-  if (Array.isArray(entries.items)) collectFeatureRefStrings(entries.items, refs);
-  if (isRecordObject(entries.entry)) collectFeatureRefStrings(entries.entry, refs);
-  return refs;
-}
-
-function getReferencedUnlockedFeatureIds(catalogs, unlockedFeatures) {
-  const features = Array.isArray(unlockedFeatures) ? unlockedFeatures : [];
-  if (!features.length) return [];
-  const matchesFeatureRef = (feature, ref) => {
-    const featureName = String(feature?.name ?? "").trim().toLowerCase();
-    const className = String(feature?.className ?? "").trim().toLowerCase();
-    const source = normalizeSourceTag(feature?.source);
-    const level = toNumber(feature?.level, Number.NaN);
-    if (featureName !== String(ref?.name ?? "").trim().toLowerCase()) return false;
-    if (className !== String(ref?.className ?? "").trim().toLowerCase()) return false;
-    if (ref?.source && source && source !== ref.source) return false;
-    if (Number.isFinite(ref?.level) && Number.isFinite(level) && level !== ref.level) return false;
-    if (ref?.subclassName != null) {
-      const subclassName = String(feature?.subclassName ?? "").trim().toLowerCase();
-      if (subclassName !== String(ref?.subclassName ?? "").trim().toLowerCase()) return false;
-    }
-    return true;
-  };
-  const referencedIds = new Set();
-  features.forEach((feature) => {
-    const parentId = String(feature?.id ?? "").trim();
-    if (!parentId) return;
-    const detail = resolveFeatureEntryFromCatalogs(catalogs, feature);
-    if (!detail) return;
-    const refs = collectFeatureRefStrings(detail?.entries ?? []);
-    refs.forEach((rawRef) => {
-      const parsed =
-        rawRef.type === "class"
-          ? parseFeatureRefValue(rawRef.value, "class")
-          : parseFeatureRefValue(rawRef.value, "subclass");
-      if (!parsed) return;
-      const matched = features.find((candidate) => {
-        const candidateId = String(candidate?.id ?? "").trim();
-        if (!candidateId || candidateId === parentId) return false;
-        return matchesFeatureRef(candidate, parsed);
-      });
-      if (!matched?.id) return;
-      referencedIds.add(String(matched.id));
-    });
-  });
-  return [...referencedIds.values()];
-}
-
-function syncAutoFeatureUses(play, trackers) {
-  const previous =
-    play?.featureUses && typeof play.featureUses === "object" && !Array.isArray(play.featureUses)
-      ? play.featureUses
-      : {};
-  const next = {};
-  trackers.forEach((tracker) => {
-    const key = String(tracker?.autoId ?? "").trim();
-    if (!key) return;
-    const prev = previous[key];
-    const prevCurrent = prev && typeof prev === "object" ? toNumber(prev.current, tracker.max) : tracker.max;
-    const max = Math.max(0, toNumber(tracker.max, 0));
-    next[key] = {
-      name: String(tracker.name ?? ""),
-      max,
-      current: Math.max(0, Math.min(max, prevCurrent)),
-      recharge: String(tracker.recharge ?? ""),
-    };
-  });
-  return next;
-}
-
-function extractSpellNameFromGrant(value) {
-  if (typeof value === "string") return cleanSpellInlineTags(value.split("|")[0].replace(/#c$/i, "").trim());
-  if (isRecordObject(value) && typeof value.spell === "string") {
-    return cleanSpellInlineTags(value.spell.split("|")[0].replace(/#c$/i, "").trim());
-  }
-  return "";
-}
-
-const AUTO_SPELL_GRANT_PRIORITY = {
-  expanded: 1,
-  innate: 2,
-  known: 3,
-  prepared: 4,
-};
-
-function collectAdditionalSpellGrantsFromEntries(entries, classLevel) {
-  const grants = new Map();
-  const addFromSpellList = (list, grantType) => {
-    (Array.isArray(list) ? list : []).forEach((entry) => {
-      const name = extractSpellNameFromGrant(entry);
-      if (!name) return;
-      const key = name.toLowerCase();
-      const current = grants.get(key);
-      const currentPriority = AUTO_SPELL_GRANT_PRIORITY[current?.grantType] ?? 0;
-      const nextPriority = AUTO_SPELL_GRANT_PRIORITY[grantType] ?? 0;
-      if (!current || nextPriority >= currentPriority) grants.set(key, { name, grantType });
-    });
-  };
-  (Array.isArray(entries) ? entries : []).forEach((block) => {
-    if (!isRecordObject(block)) return;
-    ["prepared", "known", "innate", "expanded"].forEach((key) => {
-      const bucket = block[key];
-      if (!isRecordObject(bucket)) return;
-      Object.entries(bucket).forEach(([levelRaw, list]) => {
-        const unlockLevel = toNumber(levelRaw, NaN);
-        if (!Number.isFinite(unlockLevel) || unlockLevel > classLevel) return;
-        addFromSpellList(list, key);
-      });
-    });
-  });
-  return [...grants.values()];
-}
-
-function getAutoGrantedSpellData(catalogs, character) {
-  const catalogNameByLower = new Map(
-    (Array.isArray(catalogs?.spells) ? catalogs.spells : [])
-      .map((spell) => String(spell?.name ?? "").trim())
-      .filter(Boolean)
-      .map((name) => [name.toLowerCase(), name])
-  );
-  const grants = new Map();
-  const addGrant = (rawName, grantType) => {
-    const cleaned = cleanSpellInlineTags(rawName);
-    if (!cleaned) return;
-    const key = cleaned.toLowerCase();
-    const canonical = catalogNameByLower.get(key) ?? cleaned;
-    const current = grants.get(key);
-    const currentPriority = AUTO_SPELL_GRANT_PRIORITY[current?.grantType] ?? 0;
-    const nextPriority = AUTO_SPELL_GRANT_PRIORITY[grantType] ?? 0;
-    if (!current || nextPriority >= currentPriority) grants.set(key, { name: canonical, grantType });
-  };
-  const tracks = getClassLevelTracks(character);
-  const raceEntry = getEffectiveRaceEntry(catalogs, character, getPreferredSourceOrder(character));
-  collectAdditionalSpellGrantsFromEntries(raceEntry?.additionalSpells, Math.max(1, toNumber(character?.level, 1))).forEach((grant) =>
-    addGrant(grant.name, grant.grantType)
-  );
-  tracks.forEach((track) => {
-    const classEntry = getClassCatalogEntry(catalogs, track.className);
-    if (!classEntry) return;
-    collectAdditionalSpellGrantsFromEntries(classEntry.additionalSpells, track.level).forEach((grant) =>
-      addGrant(grant.name, grant.grantType)
-    );
-    if (!track.isPrimary) return;
-    const subclassEntry = getSelectedSubclassEntry(catalogs, character);
-    if (!subclassEntry) return;
-    collectAdditionalSpellGrantsFromEntries(subclassEntry.additionalSpells, track.level).forEach((grant) =>
-      addGrant(grant.name, grant.grantType)
-    );
-  });
-  const classLevelMap = getClassLevelMap(character);
-  getUnlockedFeatures(catalogs, character).forEach((feature) => {
-    const detail = resolveFeatureEntryFromCatalogs(catalogs, feature);
-    if (!detail) return;
-    const classLevel = toNumber(classLevelMap.get(String(feature?.className ?? "").trim().toLowerCase()), toNumber(character?.level, 1));
-    collectAdditionalSpellGrantsFromEntries(detail?.additionalSpells, Math.max(1, classLevel)).forEach((grant) =>
-      addGrant(grant.name, grant.grantType)
-    );
-  });
-  const autoPreparedSpells = {};
-  const autoSpellGrantTypes = {};
-  [...grants.entries()].forEach(([key, grant]) => {
-    autoPreparedSpells[key] = true;
-    autoSpellGrantTypes[key] = grant.grantType;
-  });
-  return {
-    names: [...grants.values()].map((grant) => grant.name),
-    autoPreparedSpells,
-    autoSpellGrantTypes,
-  };
-}
-
-const FULL_LIST_PREPARED_CASTER_KEYS = new Set(["cleric", "druid", "paladin", "artificer"]);
-
-function classUsesFullPreparedSpellList(classEntry) {
-  if (!isRecordObject(classEntry) || !classEntry.preparedSpells) return false;
-  const classKey = getClassKey(classEntry.name);
-  if (!FULL_LIST_PREPARED_CASTER_KEYS.has(classKey)) return false;
-  if (Array.isArray(classEntry.spellsKnownProgression) && classEntry.spellsKnownProgression.length) return false;
-  if (Array.isArray(classEntry.spellsKnownProgressionFixed) && classEntry.spellsKnownProgressionFixed.length) return false;
-  if (isRecordObject(classEntry.spellsKnownProgressionFixedByLevel)
-    && Object.keys(classEntry.spellsKnownProgressionFixedByLevel).length) return false;
-  return true;
-}
-
-function getClassMaxPreparedSpellLevel(catalogs, className, classLevel) {
-  const defaults = getClassSpellSlotDefaults(catalogs, className, classLevel);
-  return SPELL_SLOT_LEVELS.reduce((highest, slotLevel) => {
-    if (toNumber(defaults?.[String(slotLevel)], 0) > 0) return slotLevel;
-    return highest;
-  }, 0);
-}
-
-function doesSpellListClass(spell, classKey) {
-  if (!spell || !classKey) return false;
-  const classLookup = spell?.spellSourceEntry?.class;
-  if (!isRecordObject(classLookup)) return false;
-  return Object.values(classLookup).some((sourceMap) =>
-    Object.keys(sourceMap ?? {}).some((className) => getClassKey(className) === classKey)
-  );
-}
-
-function getAutoClassListSpellNames(catalogs, character) {
-  const classAutoSpellRulesByKey = new Map();
-  getClassLevelTracks(character).forEach((track) => {
-    const classEntry = getClassCatalogEntry(catalogs, track.className);
-    if (!classUsesFullPreparedSpellList(classEntry)) return;
-    const classKey = getClassKey(classEntry.name);
-    if (!classKey) return;
-    const maxSpellLevel = getClassMaxPreparedSpellLevel(catalogs, classEntry.name, track.level);
-    const hasCantripProgression = Array.isArray(classEntry?.cantripProgression) && classEntry.cantripProgression.length > 0;
-    const previousRule = classAutoSpellRulesByKey.get(classKey) ?? { maxSpellLevel: 0, autoIncludeCantrips: !hasCantripProgression };
-    classAutoSpellRulesByKey.set(classKey, {
-      maxSpellLevel: Math.max(previousRule.maxSpellLevel, maxSpellLevel),
-      autoIncludeCantrips: previousRule.autoIncludeCantrips || !hasCantripProgression,
-    });
-  });
-  if (!classAutoSpellRulesByKey.size) return [];
-
-  const spells = Array.isArray(catalogs?.spells) ? catalogs.spells : [];
-  const names = new Map();
-  spells.forEach((spell) => {
-    const spellLevel = Math.max(0, toNumber(spell?.level, 0));
-    const isAvailable = [...classAutoSpellRulesByKey.entries()].some(([classKey, rule]) => {
-      if (!doesSpellListClass(spell, classKey)) return false;
-      if (spellLevel === 0) return Boolean(rule?.autoIncludeCantrips);
-      return spellLevel <= toNumber(rule?.maxSpellLevel, 0);
-    });
-    if (!isAvailable) return;
-    const name = String(spell?.name ?? "").trim();
-    if (!name) return;
-    const key = name.toLowerCase();
-    if (!names.has(key)) names.set(key, name);
-  });
-  return [...names.values()];
-}
-
-function getClassTableEffects(catalogs, character) {
-  const formatClassTableRollNotation = (toRoll) => {
-    if (typeof toRoll === "string") {
-      const notation = extractSimpleNotation(toRoll);
-      return notation || String(toRoll).replace(/\s+/g, "");
-    }
-    const terms = Array.isArray(toRoll) ? toRoll : isRecordObject(toRoll) ? [toRoll] : [];
-    const notation = terms
-      .map((term) => {
-        if (typeof term === "string") return extractSimpleNotation(term);
-        if (!isRecordObject(term)) return "";
-        const count = Math.max(1, toNumber(term.number, 1));
-        const faces = Math.max(0, toNumber(term.faces, 0));
-        if (!faces) return "";
-        return `${count}d${faces}`;
-      })
-      .filter(Boolean)
-      .join("+");
-    return extractSimpleNotation(notation);
-  };
-
-  const effects = [];
-  const tracks = getClassLevelTracks(character);
-  tracks.forEach((track) => {
-    const classEntry = getClassCatalogEntry(catalogs, track.className);
-    if (!classEntry) return;
-    const groups = Array.isArray(classEntry.classTableGroups) ? classEntry.classTableGroups : [];
-    const levelIndex = Math.max(0, Math.min(19, toNumber(track.level, 1) - 1));
-    groups.forEach((group, groupIndex) => {
-      const labels = Array.isArray(group?.colLabels) ? group.colLabels : [];
-      const rows = Array.isArray(group?.rows) ? group.rows : [];
-      const row = Array.isArray(rows[levelIndex]) ? rows[levelIndex] : null;
-      if (!row) return;
-      labels.forEach((labelRaw, idx) => {
-        const label = cleanSpellInlineTags(labelRaw);
-        const key = label.toLowerCase();
-        if (!label) return;
-        if (!/(point|die|dice|movement|speed|rage|inspiration|mastery|indomitable|channel divinity|sneak attack|martial arts|wild shape|sorcery|ki)/i.test(key)) {
-          return;
-        }
-        const value = row[idx];
-        let effectValue = "";
-        let kind = "text";
-        if (isRecordObject(value) && value.toRoll != null) {
-          effectValue = formatClassTableRollNotation(value.toRoll);
-          kind = "dice";
-        } else if (isRecordObject(value) && value.type === "bonus") {
-          effectValue = signed(toNumber(value.value, 0));
-          kind = "number";
-        } else if (isRecordObject(value) && value.type === "bonusSpeed") {
-          effectValue = `+${Math.max(0, toNumber(value.value, 0))} ft`;
-          kind = "number";
-        } else if (typeof value === "number" || Number.isFinite(toNumber(value, NaN))) {
-          effectValue = String(Math.max(0, toNumber(value, 0)));
-          kind = "number";
-        } else {
-          effectValue = String(value ?? "").trim();
-        }
-        if (!effectValue) return;
-        effects.push({
-          id: buildEntityId(["table-effect", classEntry.name, groupIndex, idx, label]),
-          className: classEntry.name,
-          label,
-          kind,
-          value: effectValue,
-          rollNotation: kind === "dice" ? extractSimpleNotation(effectValue) : "",
-        });
-      });
-    });
-  });
-  return effects;
-}
-
-function extractFeatureModeDescriptors(catalogs, features) {
-  const getOptionLabel = (option) => {
-    if (!option) return "";
-    if (typeof option === "string") return cleanSpellInlineTags(option.split("|")[0]);
-    if (!isRecordObject(option)) return "";
-    if (typeof option.name === "string" && option.name.trim()) return cleanSpellInlineTags(option.name);
-    if (typeof option.optionalfeature === "string") return cleanSpellInlineTags(option.optionalfeature.split("|")[0]);
-    if (typeof option.subclassFeature === "string") return cleanSpellInlineTags(option.subclassFeature.split("|")[0]);
-    if (typeof option.classFeature === "string") return cleanSpellInlineTags(option.classFeature.split("|")[0]);
-    if (typeof option.feature === "string") return cleanSpellInlineTags(option.feature.split("|")[0]);
-    if (typeof option.entry === "string") return cleanSpellInlineTags(option.entry);
-    return "";
-  };
-
-  const normalizeModeCount = (raw) => {
-    const parsed = Math.max(1, Math.floor(toNumber(raw, 1)));
-    return Number.isFinite(parsed) ? parsed : 1;
-  };
-
-  const modes = [];
-  const collectOptionEntries = (entry, out = []) => {
-    if (entry == null) return out;
-    if (Array.isArray(entry)) {
-      entry.forEach((value) => collectOptionEntries(value, out));
-      return out;
-    }
-    if (!isRecordObject(entry)) return out;
-    if (entry.type === "options" && Array.isArray(entry.entries)) out.push(entry);
-    Object.values(entry).forEach((value) => collectOptionEntries(value, out));
-    return out;
-  };
-  (Array.isArray(features) ? features : []).forEach((feature) => {
-    const detail = resolveFeatureEntryFromCatalogs(catalogs, feature);
-    const optionEntries = collectOptionEntries(detail?.entries ?? []);
-    optionEntries.forEach((entry, entryIndex) => {
-      if (!isRecordObject(entry) || entry.type !== "options" || !Array.isArray(entry.entries)) return;
-      const optionValues = [...new Set(entry.entries.map((option) => getOptionLabel(option)).filter(Boolean))];
-      const count = Math.min(optionValues.length, normalizeModeCount(entry.count));
-      if (optionValues.length < 2 || count < 1) return;
-      modes.push({
-        id: buildEntityId(["feature-mode", feature.id, entryIndex]),
-        featureId: feature.id,
-        featureName: feature.name,
-        className: feature.className,
-        optionValues,
-        count,
-      });
-    });
-  });
-  return modes;
-}
-
-function recomputeCharacterProgression(catalogs, character) {
-  const unlockedFeatures = getUnlockedFeatures(catalogs, character);
-  const featSlots = getFeatSlots(catalogs, character);
-  const optionalFeatureSlots = getOptionalFeatureSlots(catalogs, character);
-  const classTableEffects = getClassTableEffects(catalogs, character);
-  const featureModes = extractFeatureModeDescriptors(catalogs, unlockedFeatures);
-  const existingFeats = Array.isArray(character?.feats) ? character.feats : [];
-  const existingOptionalFeatures = Array.isArray(character?.optionalFeatures) ? character.optionalFeatures : [];
-  const slotIds = new Set(featSlots.map((slot) => slot.id));
-  const optionalSlotIds = new Set(optionalFeatureSlots.map((slot) => slot.id));
-  const nextFeats = existingFeats.filter((feat) => feat && feat.name && (!feat.slotId || slotIds.has(feat.slotId)));
-  const nextOptionalFeatures = existingOptionalFeatures.filter(
-    (feature) => feature && feature.name && (!feature.slotId || optionalSlotIds.has(feature.slotId))
-  );
-  const selectedFeatIds = nextFeats.map((feat) => feat.id).filter(Boolean);
-  const selectedOptionalFeatureIds = nextOptionalFeatures.map((feature) => feature.id).filter(Boolean);
-  const pendingFeatSlotIds = featSlots.filter((slot) => !nextFeats.some((feat) => feat.slotId === slot.id)).map((slot) => slot.id);
-  const pendingOptionalFeatureSlotIds = optionalFeatureSlots
-    .filter((slot) => !nextOptionalFeatures.some((feature) => feature.slotId === slot.id))
-    .map((slot) => slot.id);
-  return {
-    unlockedFeatures,
-    featSlots,
-    pendingFeatSlotIds,
-    selectedFeatIds,
-    optionalFeatureSlots,
-    pendingOptionalFeatureSlotIds,
-    selectedOptionalFeatureIds,
-    classTableEffects,
-    featureModes,
-  };
-}
-
-function resolveFeatureEntryFromCatalogs(catalogs, feature) {
-  if (!feature) return null;
-  const normalizedName = String(feature.name ?? "").trim().toLowerCase();
-  const normalizedClassName = String(feature.className ?? "").trim().toLowerCase();
-  const level = toNumber(feature.level, 0);
-  const featureSource = normalizeSourceTag(feature.source);
-
-  if (feature.type === "subclass") {
-    const normalizedSubclassName = String(feature.subclassName ?? "").trim().toLowerCase();
-    const matches = (catalogs?.subclassFeatures ?? []).filter((entry) => {
-      const entryName = String(entry?.name ?? "").trim().toLowerCase();
-      const entryClassName = String(entry?.className ?? "").trim().toLowerCase();
-      const entrySubclassName = String(entry?.subclassShortName ?? "").trim().toLowerCase();
-      const entryLevel = toNumber(entry?.level, 0);
-      if (entryName !== normalizedName || entryClassName !== normalizedClassName || entryLevel !== level) return false;
-      if (normalizedSubclassName && entrySubclassName !== normalizedSubclassName) return false;
-      if (!featureSource) return true;
-      return normalizeSourceTag(entry?.source) === featureSource;
-    });
-    const match = matches[0] ?? null;
-    if (!match) return null;
-    if (Array.isArray(match?.entries) && match.entries.length) return match;
-    const copy = isRecordObject(match?._copy) ? match._copy : null;
-    if (!copy) return match;
-    const copiedName = String(copy?.name ?? "").trim().toLowerCase();
-    const copiedClassName = String(copy?.className ?? "").trim().toLowerCase();
-    const copiedSubclassName = String(copy?.subclassShortName ?? "").trim().toLowerCase();
-    const copiedLevel = toNumber(copy?.level, NaN);
-    const copiedSource = normalizeSourceTag(copy?.source);
-    const copiedEntry = (catalogs?.subclassFeatures ?? []).find((entry) => {
-      if (String(entry?.name ?? "").trim().toLowerCase() !== copiedName) return false;
-      if (String(entry?.className ?? "").trim().toLowerCase() !== copiedClassName) return false;
-      if (String(entry?.subclassShortName ?? "").trim().toLowerCase() !== copiedSubclassName) return false;
-      if (Number.isFinite(copiedLevel) && toNumber(entry?.level, NaN) !== copiedLevel) return false;
-      if (copiedSource && normalizeSourceTag(entry?.source) !== copiedSource) return false;
-      return true;
-    });
-    return copiedEntry ?? match;
-  }
-
-  const matches = (catalogs?.classFeatures ?? []).filter((entry) => {
-    const entryName = String(entry?.name ?? "").trim().toLowerCase();
-    const entryClassName = String(entry?.className ?? "").trim().toLowerCase();
-    const entryLevel = toNumber(entry?.level, 0);
-    if (entryName !== normalizedName || entryClassName !== normalizedClassName || entryLevel !== level) return false;
-    if (!featureSource) return true;
-    return normalizeSourceTag(entry?.source) === featureSource;
-  });
-  const match = matches[0] ?? null;
-  if (!match) return null;
-  if (Array.isArray(match?.entries) && match.entries.length) return match;
-  const copy = isRecordObject(match?._copy) ? match._copy : null;
-  if (!copy) return match;
-  const copiedName = String(copy?.name ?? "").trim().toLowerCase();
-  const copiedClassName = String(copy?.className ?? "").trim().toLowerCase();
-  const copiedLevel = toNumber(copy?.level, NaN);
-  const copiedSource = normalizeSourceTag(copy?.source);
-  const copiedEntry = (catalogs?.classFeatures ?? []).find((entry) => {
-    if (String(entry?.name ?? "").trim().toLowerCase() !== copiedName) return false;
-    if (String(entry?.className ?? "").trim().toLowerCase() !== copiedClassName) return false;
-    if (Number.isFinite(copiedLevel) && toNumber(entry?.level, NaN) !== copiedLevel) return false;
-    if (copiedSource && normalizeSourceTag(entry?.source) !== copiedSource) return false;
-    return true;
-  });
-  return copiedEntry ?? match;
-}
-
-function getRuleDescriptionLines(entry) {
-  return collectSpellEntryLines(entry?.entries ?? [], 0, { includeTables: false }).filter(Boolean);
-}
-
-function getRuleDescriptionLinesForParsing(entry) {
-  return collectSpellEntryLines(entry?.entries ?? [], 0, { includeTables: true }).filter(Boolean);
-}
-
-function openFeatureDetailsModal(state, featureId) {
-  const feature = (state.character?.progression?.unlockedFeatures ?? []).find((it) => it.id === featureId);
-  if (!feature) return;
-  const detail = resolveFeatureEntryFromCatalogs(state.catalogs, feature);
-  const lines = getRuleDescriptionLines(detail);
-  const bodyHtml = lines.length
-    ? lines
-        .map((line) => {
-          const body = renderTextWithInlineDiceButtons(line);
-          return `<p>${body}</p>`;
-        })
-        .join("")
-    : "<p class='muted'>No description is available for this feature.</p>";
-  const metaRows = [
-    { label: "Type", value: feature.type === "subclass" ? "Subclass Feature" : "Class Feature" },
-    { label: "Class", value: feature.className || "" },
-    { label: "Subclass", value: feature.subclassName || "" },
-    { label: "Level", value: feature.level ? String(feature.level) : "" },
-    { label: "Source", value: detail?.sourceLabel ?? detail?.source ?? feature.source ?? "" },
-  ].filter((row) => row.value);
-  const close = openModal({
-    title: feature.name,
-    bodyHtml: `
-      <div class="spell-meta-grid">
-        ${metaRows.map((row) => `<div><strong>${esc(row.label)}:</strong> ${esc(row.value)}</div>`).join("")}
-      </div>
-      <div class="spell-description">${bodyHtml}</div>
-    `,
-    actions: [{ label: "Close", secondary: true, onClick: (done) => done() }],
-  });
-  document.querySelectorAll("[data-spell-roll]").forEach((button) => {
-    button.addEventListener("click", () => {
-      const notation = button.dataset.spellRoll;
-      if (!notation) return;
-      close();
-      rollVisualNotation(feature.name, notation);
-    });
-  });
-}
-
-function openFeatDetailsModal(state, featId) {
-  const feat = (state.character?.feats ?? []).find((it) => it.id === featId);
-  if (!feat) return;
-  const detail = (state.catalogs?.feats ?? []).find((entry) => buildEntityId(["feat", entry?.name, entry?.source]) === featId) ?? null;
-  const lines = getRuleDescriptionLines(detail);
-  const bodyHtml = lines.length
-    ? lines
-        .map((line) => {
-          const body = renderTextWithInlineDiceButtons(line);
-          return `<p>${body}</p>`;
-        })
-        .join("")
-    : "<p class='muted'>No description is available for this feat.</p>";
-  const metaRows = [
-    { label: "Source", value: detail?.sourceLabel ?? detail?.source ?? feat.source ?? "" },
-    { label: "Granted At Level", value: feat.levelGranted ? String(feat.levelGranted) : "" },
-    { label: "Via", value: feat.via || "" },
-  ].filter((row) => row.value);
-  const close = openModal({
-    title: feat.name,
-    bodyHtml: `
-      <div class="spell-meta-grid">
-        ${metaRows.map((row) => `<div><strong>${esc(row.label)}:</strong> ${esc(row.value)}</div>`).join("")}
-      </div>
-      <div class="spell-description">${bodyHtml}</div>
-    `,
-    actions: [{ label: "Close", secondary: true, onClick: (done) => done() }],
-  });
-  document.querySelectorAll("[data-spell-roll]").forEach((button) => {
-    button.addEventListener("click", () => {
-      const notation = button.dataset.spellRoll;
-      if (!notation) return;
-      close();
-      rollVisualNotation(feat.name, notation);
-    });
-  });
-}
-
-function openOptionalFeatureDetailsModal(state, featureId) {
-  const selectedFeature = (state.character?.optionalFeatures ?? []).find((it) => it.id === featureId);
-  if (!selectedFeature) return;
-  const detail =
-    (state.catalogs?.optionalFeatures ?? []).find((entry) => buildEntityId(["optionalfeature", entry?.name, entry?.source]) === featureId)
-    ?? null;
-  const lines = getRuleDescriptionLines(detail);
-  const bodyHtml = lines.length
-    ? lines
-        .map((line) => {
-          const body = renderTextWithInlineDiceButtons(line);
-          return `<p>${body}</p>`;
-        })
-        .join("")
-    : "<p class='muted'>No description is available for this optional feature.</p>";
-  const featureTypes = Array.isArray(detail?.featureType)
-    ? detail.featureType.map((entry) => String(entry ?? "").trim()).filter(Boolean)
-    : [String(detail?.featureType ?? selectedFeature?.featureType ?? "").trim()].filter(Boolean);
-  const metaRows = [
-    { label: "Source", value: detail?.sourceLabel ?? detail?.source ?? selectedFeature?.source ?? "" },
-    { label: "Granted At Level", value: selectedFeature.levelGranted ? String(selectedFeature.levelGranted) : "" },
-    { label: "Class", value: selectedFeature.className || "" },
-    { label: "Type", value: selectedFeature.slotType || "" },
-    { label: "Feature Type", value: featureTypes.join(", ") },
-  ].filter((row) => row.value);
-  const close = openModal({
-    title: selectedFeature.name,
-    bodyHtml: `
-      <div class="spell-meta-grid">
-        ${metaRows.map((row) => `<div><strong>${esc(row.label)}:</strong> ${esc(row.value)}</div>`).join("")}
-      </div>
-      <div class="spell-description">${bodyHtml}</div>
-    `,
-    actions: [{ label: "Close", secondary: true, onClick: (done) => done() }],
-  });
-  document.querySelectorAll("[data-spell-roll]").forEach((button) => {
-    button.addEventListener("click", () => {
-      const notation = button.dataset.spellRoll;
-      if (!notation) return;
-      close();
-      rollVisualNotation(selectedFeature.name, notation);
-    });
-  });
-}
-
-function openSpeciesTraitDetailsModal(state, traitName) {
-  const selectedTraitName = String(traitName ?? "").trim();
-  if (!selectedTraitName) return;
-  const sourceOrder = getPreferredSourceOrder(state.character);
-  const raceEntry = getEffectiveRaceEntry(state.catalogs, state.character, sourceOrder);
-  if (!raceEntry) return;
-  const ignoredTraitNames = new Set(["age", "alignment", "size", "language", "languages", "creature type"]);
-  const traitEntry = (Array.isArray(raceEntry?.entries) ? raceEntry.entries : []).find((entry) => {
-    if (!entry || typeof entry !== "object") return false;
-    const name = String(entry?.name ?? "").trim();
-    if (!name) return false;
-    if (ignoredTraitNames.has(name.toLowerCase())) return false;
-    return name.toLowerCase() === selectedTraitName.toLowerCase();
-  });
-  const lines = getRuleDescriptionLines(traitEntry);
-  const bodyHtml = lines.length
-    ? lines
-        .map((line) => {
-          const body = renderTextWithInlineDiceButtons(line);
-          return `<p>${body}</p>`;
-        })
-        .join("")
-    : "<p class='muted'>No description is available for this trait.</p>";
-  const raceName = String(raceEntry?.name ?? state.character?.race ?? "").trim();
-  const close = openModal({
-    title: selectedTraitName,
-    bodyHtml: `
-      <div class="spell-meta-grid">
-        <div><strong>Type:</strong> Species Trait</div>
-        ${raceName ? `<div><strong>Species:</strong> ${esc(raceName)}</div>` : ""}
-        <div><strong>Source:</strong> ${esc(raceEntry?.sourceLabel ?? raceEntry?.source ?? "")}</div>
-      </div>
-      <div class="spell-description">${bodyHtml}</div>
-    `,
-    actions: [{ label: "Close", secondary: true, onClick: (done) => done() }],
-  });
-  document.querySelectorAll("[data-spell-roll]").forEach((button) => {
-    button.addEventListener("click", () => {
-      const notation = button.dataset.spellRoll;
-      if (!notation) return;
-      close();
-      rollVisualNotation(selectedTraitName, notation);
-    });
-  });
-}
-
-function getClassSaveProficiencies(catalogs, className) {
-  const classEntry = getClassCatalogEntry(catalogs, className);
-  const profs = classEntry?.proficiency;
-  if (!Array.isArray(profs)) return {};
-
-  return SAVE_ABILITIES.reduce((acc, ability) => {
-    acc[ability] = profs.includes(ability);
-    return acc;
-  }, {});
-}
-
-function isRecordObject(value) {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function findCatalogEntryByName(entries, selectedName) {
-  if (!Array.isArray(entries)) return null;
-  const normalized = String(selectedName ?? "").trim().toLowerCase();
-  if (!normalized) return null;
-  return entries.find((entry) => String(entry?.name ?? "").trim().toLowerCase() === normalized) ?? null;
-}
-
-function getPreferredSourceOrder(character) {
-  const allowedSources = getCharacterAllowedSources(character).map((source) => normalizeSourceTag(source)).filter(Boolean);
-  const sourcePreset = String(character?.sourcePreset ?? "").trim();
-  const preferred = [...allowedSources];
-  const hasPhb = preferred.includes("PHB");
-  const hasXphb = preferred.includes("XPHB");
-  if (!hasPhb || !hasXphb) return preferred;
-  const xphbFirst = sourcePreset === "set2024";
-  const ordered = preferred.filter((source) => source !== "PHB" && source !== "XPHB");
-  if (xphbFirst) return ["XPHB", "PHB", ...ordered];
-  return ["PHB", "XPHB", ...ordered];
-}
-
-function findCatalogEntryByNameWithSourcePreference(entries, selectedName, preferredSources = []) {
-  const matches = findCatalogEntriesByName(entries, selectedName);
-  if (!matches.length) return null;
-  if (matches.length === 1) return matches[0];
-  const sourceOrder = (Array.isArray(preferredSources) ? preferredSources : [])
-    .map((entry) => normalizeSourceTag(entry))
-    .filter(Boolean);
-  for (const source of sourceOrder) {
-    const match = matches.find((entry) => normalizeSourceTag(entry?.source) === source);
-    if (match) return match;
-  }
-  return matches[0];
-}
-
-function findCatalogEntryByNameWithSelectedSourcePreference(entries, selectedName, selectedSource = "", preferredSources = []) {
-  const matches = findCatalogEntriesByName(entries, selectedName);
-  if (!matches.length) return null;
-  if (matches.length === 1) return matches[0];
-  const normalizedSource = normalizeSourceTag(selectedSource);
-  if (normalizedSource) {
-    const selectedMatch = matches.find((entry) => normalizeSourceTag(entry?.source) === normalizedSource);
-    if (selectedMatch) return selectedMatch;
-  }
-  return findCatalogEntryByNameWithSourcePreference(matches, selectedName, preferredSources);
-}
-
-function findCatalogEntriesByName(entries, selectedName) {
-  if (!Array.isArray(entries)) return [];
-  const normalized = String(selectedName ?? "").trim().toLowerCase();
-  if (!normalized) return [];
-  return entries.filter((entry) => String(entry?.name ?? "").trim().toLowerCase() === normalized);
-}
-
-function findCatalogEntryByNameAndSource(entries, selectedName, selectedSource = "") {
-  const byName = findCatalogEntriesByName(entries, selectedName);
-  if (!byName.length) return null;
-  const source = normalizeSourceTag(selectedSource);
-  if (!source) return byName.length === 1 ? byName[0] : null;
-  return byName.find((entry) => normalizeSourceTag(entry?.source) === source) ?? null;
-}
-
-function getSubraceCatalogEntries(catalogs, raceName, raceSource = "", preferredSources = []) {
-  const subraces = Array.isArray(catalogs?.subraces) ? catalogs.subraces : [];
-  const normalizedRaceName = String(raceName ?? "").trim().toLowerCase();
-  if (!normalizedRaceName) return [];
-  const normalizedRaceSource = normalizeSourceTag(raceSource);
-  const filtered = subraces.filter((entry) => {
-    const entryRaceName = String(entry?.raceName ?? "").trim().toLowerCase();
-    if (!entryRaceName || entryRaceName !== normalizedRaceName) return false;
-    if (!normalizedRaceSource) return true;
-    return normalizeSourceTag(entry?.raceSource ?? entry?.source) === normalizedRaceSource;
-  });
-  if (!filtered.length) return [];
-  const sourceOrder = new Map(
-    (Array.isArray(preferredSources) ? preferredSources : [])
-      .map((source, index) => [normalizeSourceTag(source), index])
-      .filter(([source]) => source)
-  );
-  const fallbackOrder = sourceOrder.size + 1000;
-  return [...filtered].sort((a, b) => {
-    const nameDelta = String(a?.name ?? "").localeCompare(String(b?.name ?? ""));
-    if (nameDelta !== 0) return nameDelta;
-    const aSource = normalizeSourceTag(a?.source);
-    const bSource = normalizeSourceTag(b?.source);
-    const aOrder = sourceOrder.get(aSource) ?? fallbackOrder;
-    const bOrder = sourceOrder.get(bSource) ?? fallbackOrder;
-    if (aOrder !== bOrder) return aOrder - bOrder;
-    return aSource.localeCompare(bSource);
-  });
-}
-
-function getDefaultUnnamedSubraceEntry(entries) {
-  const list = Array.isArray(entries) ? entries : [];
-  return (
-    list.find((entry) => !String(entry?.name ?? "").trim())
-    ?? null
-  );
-}
-
-function mergeAbilityScoreData(baseAbility, subraceAbility, options = {}) {
-  const shouldOverride = options.override === true;
-  const baseOption = Array.isArray(baseAbility) ? baseAbility.find((entry) => isRecordObject(entry)) : null;
-  const subraceOption = Array.isArray(subraceAbility) ? subraceAbility.find((entry) => isRecordObject(entry)) : null;
-  if (shouldOverride || !baseOption) return subraceOption ? [structuredClone(subraceOption)] : [];
-  if (!subraceOption) return [structuredClone(baseOption)];
-  const mergedOption = {};
-  SAVE_ABILITIES.forEach((ability) => {
-    const total = Math.max(0, toNumber(baseOption?.[ability], 0) + toNumber(subraceOption?.[ability], 0));
-    if (total > 0) mergedOption[ability] = total;
-  });
-  const baseChoose = Array.isArray(baseOption?.choose)
-    ? baseOption.choose.filter((entry) => isRecordObject(entry))
-    : isRecordObject(baseOption?.choose)
-      ? [baseOption.choose]
-      : [];
-  const subraceChoose = Array.isArray(subraceOption?.choose)
-    ? subraceOption.choose.filter((entry) => isRecordObject(entry))
-    : isRecordObject(subraceOption?.choose)
-      ? [subraceOption.choose]
-      : [];
-  const combinedChoose = [...baseChoose, ...subraceChoose].map((entry) => structuredClone(entry));
-  if (combinedChoose.length === 1) mergedOption.choose = combinedChoose[0];
-  else if (combinedChoose.length > 1) mergedOption.choose = combinedChoose;
-  return Object.keys(mergedOption).length ? [mergedOption] : [];
-}
-
-function mergeRaceAndSubrace(baseRace, subrace) {
-  if (!isRecordObject(baseRace)) return null;
-  if (!isRecordObject(subrace)) return { ...baseRace };
-  const overwrite = isRecordObject(subrace?.overwrite) ? subrace.overwrite : {};
-  const merged = { ...baseRace };
-  const isHumanVariant =
-    String(subrace?.name ?? "").trim().toLowerCase() === "variant"
-    && String(subrace?.raceName ?? "").trim().toLowerCase() === "human";
-  const concatArrayKeys = new Set([
-    "entries",
-    "skillProficiencies",
-    "toolProficiencies",
-    "weaponProficiencies",
-    "armorProficiencies",
-    "languageProficiencies",
-    "resist",
-    "immune",
-    "conditionImmune",
-    "vulnerable",
-    "traitTags",
-    "feats",
-  ]);
-  Object.entries(subrace).forEach(([key, value]) => {
-    if ([
-      "name",
-      "source",
-      "raceName",
-      "raceSource",
-      "overwrite",
-      "_versions",
-      "hasFluff",
-      "hasFluffImages",
-    ].includes(key)) {
-      return;
-    }
-    if (key === "ability") {
-      const shouldOverride = overwrite?.ability === true || isHumanVariant;
-      merged.ability = mergeAbilityScoreData(baseRace?.ability, value, { override: shouldOverride });
-      return;
-    }
-    if (key === "additionalSpells") {
-      // Most subraces replace the base innate spell package when present.
-      merged.additionalSpells = Array.isArray(value) ? structuredClone(value) : [];
-      return;
-    }
-    if (overwrite?.[key] === true) {
-      merged[key] = Array.isArray(value) ? structuredClone(value) : isRecordObject(value) ? { ...value } : value;
-      return;
-    }
-    if (concatArrayKeys.has(key) && Array.isArray(value)) {
-      const baseValue = Array.isArray(baseRace?.[key]) ? baseRace[key] : [];
-      merged[key] = [...baseValue, ...value];
-      return;
-    }
-    if (isRecordObject(value) && isRecordObject(baseRace?.[key])) {
-      merged[key] = { ...baseRace[key], ...value };
-      return;
-    }
-    merged[key] = Array.isArray(value) ? structuredClone(value) : isRecordObject(value) ? { ...value } : value;
-  });
-  merged.subrace = String(subrace?.name ?? "").trim();
-  merged.subraceSource = normalizeSourceTag(subrace?.source);
-  merged.subraceSourceLabel = subrace?.sourceLabel ?? SOURCE_LABELS[normalizeSourceTag(subrace?.source)] ?? subrace?.source ?? "";
-  return merged;
-}
-
-function getEffectiveRaceEntry(catalogs, character, preferredSources = []) {
-  const sourceOrder = preferredSources.length ? preferredSources : getPreferredSourceOrder(character);
-  const baseRace = findCatalogEntryByNameWithSelectedSourcePreference(
-    catalogs?.races,
-    character?.race,
-    character?.raceSource,
-    sourceOrder
-  );
-  if (!baseRace) return null;
-  const subraceOptions = getSubraceCatalogEntries(catalogs, baseRace?.name, baseRace?.source, sourceOrder);
-  const selectedSubrace = findCatalogEntryByNameWithSelectedSourcePreference(
-    subraceOptions,
-    character?.subrace,
-    character?.subraceSource,
-    sourceOrder
-  );
-  const implicitBaseSubrace = getDefaultUnnamedSubraceEntry(subraceOptions);
-  return mergeRaceAndSubrace(baseRace, selectedSubrace ?? implicitBaseSubrace);
-}
-
-function resolveImportedFeats(catalogs, feats) {
-  if (!Array.isArray(feats)) return [];
-  const entries = Array.isArray(catalogs?.feats) ? catalogs.feats : [];
-  return feats
-    .map((feat) => {
-      const name = String(feat?.name ?? "").trim();
-      if (!name) return null;
-      const source = String(feat?.source ?? "").trim();
-      const matched = findCatalogEntryByNameAndSource(entries, name, source);
-      const canonical = matched
-        ? {
-            name: String(matched.name ?? "").trim(),
-            source: normalizeSourceTag(matched.source),
-            id: buildEntityId(["feat", matched.name, matched.source]),
-          }
-        : {
-            name,
-            source,
-            id: String(feat?.id ?? "").trim() || buildEntityId(["feat", name, source || "unknown"]),
-          };
-      return {
-        ...feat,
-        ...canonical,
-      };
-    })
-    .filter((feat) => feat && feat.name);
-}
-
-function resolveImportedOptionalFeatures(catalogs, optionalFeatures) {
-  if (!Array.isArray(optionalFeatures)) return [];
-  const entries = Array.isArray(catalogs?.optionalFeatures) ? catalogs.optionalFeatures : [];
-  return optionalFeatures
-    .map((feature) => {
-      const name = String(feature?.name ?? "").trim();
-      if (!name) return null;
-      const source = String(feature?.source ?? "").trim();
-      const matched = findCatalogEntryByNameAndSource(entries, name, source);
-      const canonical = matched
-        ? {
-            name: String(matched.name ?? "").trim(),
-            source: normalizeSourceTag(matched.source),
-            id: buildEntityId(["optionalfeature", matched.name, matched.source]),
-          }
-        : {
-            name,
-            source,
-            id: String(feature?.id ?? "").trim() || buildEntityId(["optionalfeature", name, source || "unknown"]),
-          };
-      return {
-        ...feature,
-        ...canonical,
-      };
-    })
-    .filter((feature) => feature && feature.name);
-}
-
-function resolveImportedCharacterSelections(catalogs, character) {
-  return {
-    feats: resolveImportedFeats(catalogs, character?.feats),
-    optionalFeatures: resolveImportedOptionalFeatures(catalogs, character?.optionalFeatures),
-  };
-}
-
-function normalizeAbilityKey(value) {
-  const key = String(value ?? "").trim().toLowerCase();
-  return SAVE_ABILITIES.includes(key) ? key : "";
-}
-
-function normalizeSkillKey(value) {
-  const token = String(value ?? "")
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z]/g, "");
-  return SKILL_KEY_BY_CANONICAL[token] ?? "";
-}
-
-function getEmptyAbilityMap() {
-  return SAVE_ABILITIES.reduce((acc, ability) => {
-    acc[ability] = 0;
-    return acc;
-  }, {});
-}
-
-function getAutoChoiceSelectionMap(play, sourceKey) {
-  if (!isRecordObject(play?.autoChoiceSelections)) return {};
-  const selected = play.autoChoiceSelections[sourceKey];
-  return isRecordObject(selected) ? selected : {};
-}
-
-function normalizeChoiceToken(value) {
-  return String(value ?? "")
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]/g, "");
-}
-
-function getAutoChoiceSelectedValues(play, sourceKey, choiceId, from, count) {
-  const selectionMap = getAutoChoiceSelectionMap(play, sourceKey);
-  const storedRaw = selectionMap[choiceId];
-  const fromByToken = new Map(
-    from
-      .map((entry) => [normalizeChoiceToken(entry), entry])
-      .filter(([token, entry]) => token && entry)
-  );
-  const stored = (Array.isArray(storedRaw) ? storedRaw : [])
-    .map((entry) => normalizeChoiceToken(entry))
-    .filter((token) => fromByToken.has(token));
-  const uniqueStored = stored.filter((token, index) => stored.indexOf(token) === index);
-  if (!uniqueStored.length) return from.slice(0, Math.max(0, Math.min(from.length, count)));
-  const normalizedByOrder = from.filter((entry) => uniqueStored.includes(normalizeChoiceToken(entry)));
-  return normalizedByOrder.slice(0, Math.max(0, Math.min(from.length, count)));
-}
-
-function getStoredAutoChoiceSelectedValues(play, sourceKey, choiceId, from, count, options = {}) {
-  const shouldAllowDuplicates =
-    options?.allowDuplicates === true
-    || (options?.allowDuplicates == null && String(sourceKey ?? "").startsWith("asi:"));
-  const preserveStoredOrder = Boolean(options?.preserveStoredOrder) || shouldAllowDuplicates;
-  const selectionMap = getAutoChoiceSelectionMap(play, sourceKey);
-  const storedRaw = selectionMap[choiceId];
-  const fromByToken = new Map(
-    from
-      .map((entry) => [normalizeChoiceToken(entry), entry])
-      .filter(([token, entry]) => token && entry)
-  );
-  const stored = (Array.isArray(storedRaw) ? storedRaw : [])
-    .map((entry) => normalizeChoiceToken(entry))
-    .filter((token) => fromByToken.has(token));
-  if (preserveStoredOrder) {
-    if (!stored.length) return from.slice(0, Math.max(0, Math.min(from.length, count)));
-    const ordered = stored
-      .map((token) => fromByToken.get(token))
-      .filter(Boolean);
-    if (shouldAllowDuplicates) {
-      return ordered.slice(0, Math.max(0, count));
-    }
-    const seen = new Set();
-    const uniqueOrdered = ordered.filter((entry) => {
-      const token = normalizeChoiceToken(entry);
-      if (!token || seen.has(token)) return false;
-      seen.add(token);
-      return true;
-    });
-    return uniqueOrdered.slice(0, Math.max(0, count));
-  }
-  const uniqueStored = stored.filter((token, index) => stored.indexOf(token) === index);
-  const normalizedByOrder = from.filter((entry) => uniqueStored.includes(normalizeChoiceToken(entry)));
-  return normalizedByOrder.slice(0, Math.max(0, Math.min(from.length, count)));
-}
-
-function applyAbilityChoiceBonuses(choice, bonuses, context) {
-  if (!choice) return;
-  const weighted = isRecordObject(choice.weighted) ? choice.weighted : null;
-  const fromRaw = Array.isArray(weighted?.from) ? weighted.from : Array.isArray(choice.from) ? choice.from : [];
-  const from = fromRaw
-    .map((entry) => normalizeAbilityKey(entry))
-    .filter(Boolean)
-    .filter((ability, index, list) => list.indexOf(ability) === index);
-  if (!from.length) return;
-  const weightValues = Array.isArray(weighted?.weights)
-    ? weighted.weights.map((entry) => Math.max(0, toNumber(entry, 0))).filter((entry) => entry > 0)
-    : [];
-  const fallbackAmount = Math.max(1, toNumber(choice.amount ?? weighted?.amount, 1));
-  const countFromWeights = weightValues.length;
-  const countFromChoice = Math.max(0, toNumber(choice.count ?? weighted?.count, 0));
-  const count = Math.max(1, Math.min(from.length, countFromChoice || countFromWeights || 1));
-  const choiceId = `a:${context.optionIndex}:choose:${context.choiceIndex}`;
-  const selected = getStoredAutoChoiceSelectedValues(context.play, context.sourceKey, choiceId, from, count, {
-    allowDuplicates: false,
-    preserveStoredOrder: weightValues.length > 1,
-  });
-  selected.forEach((ability, index) => {
-    const amount = Math.max(1, toNumber(weightValues[index], fallbackAmount));
-    bonuses[ability] = Math.max(0, toNumber(bonuses[ability], 0) + amount);
-  });
-}
-
-function getAbilityBonusesFromEntity(entry, sourceKey, play) {
-  const bonuses = getEmptyAbilityMap();
-  const options = Array.isArray(entry?.ability) ? entry.ability : [];
-  const optionIndex = options.findIndex((option) => isRecordObject(option));
-  const selected = optionIndex >= 0 ? options[optionIndex] : null;
-  if (!selected) return bonuses;
-  let abilityChoiceIndex = 0;
-  Object.entries(selected).forEach(([key, value]) => {
-    const ability = normalizeAbilityKey(key);
-    if (ability) {
-      const amount = Math.max(0, toNumber(value, 0));
-      bonuses[ability] = Math.max(0, toNumber(bonuses[ability], 0) + amount);
-      return;
-    }
-    if (key === "choose") {
-      if (Array.isArray(value)) {
-        value.forEach((choice) => {
-          applyAbilityChoiceBonuses(choice, bonuses, { play, sourceKey, optionIndex, choiceIndex: abilityChoiceIndex });
-          abilityChoiceIndex += 1;
-        });
-      } else if (isRecordObject(value)) {
-        applyAbilityChoiceBonuses(value, bonuses, { play, sourceKey, optionIndex, choiceIndex: abilityChoiceIndex });
-        abilityChoiceIndex += 1;
-      }
-    }
-  });
-  return bonuses;
-}
-
-function getSelectedFeatAndOptionalFeatureEntries(catalogs, character, sourceOrder) {
-  const selectedFeats = Array.isArray(character?.feats) ? character.feats : [];
-  const featEntries = selectedFeats
-    .map((feat) => {
-      const entry = findCatalogEntryByNameWithSelectedSourcePreference(catalogs?.feats, feat?.name, feat?.source, sourceOrder);
-      if (!entry) return null;
-      const sourceKey = `feat:${String(feat?.id ?? "").trim() || buildEntityId(["feat", feat?.name, feat?.source])}`;
-      return { entry, sourceKey };
-    })
-    .filter(Boolean);
-  const selectedOptionalFeatures = Array.isArray(character?.optionalFeatures) ? character.optionalFeatures : [];
-  const optionalFeatureEntries = selectedOptionalFeatures
-    .map((feature) => {
-      const entry = findCatalogEntryByNameWithSelectedSourcePreference(catalogs?.optionalFeatures, feature?.name, feature?.source, sourceOrder);
-      if (!entry) return null;
-      const sourceKey = `optional-feature:${
-        String(feature?.id ?? "").trim() || buildEntityId(["optionalfeature", feature?.name, feature?.source])
-      }`;
-      return { entry, sourceKey };
-    })
-    .filter(Boolean);
-  return { featEntries, optionalFeatureEntries };
-}
-
-function getAutomaticAbilityBonuses(catalogs, character, play) {
-  const sourceOrder = getPreferredSourceOrder(character);
-  const raceEntry = getEffectiveRaceEntry(catalogs, character, sourceOrder);
-  const backgroundEntry = findCatalogEntryByNameWithSelectedSourcePreference(
-    catalogs?.backgrounds,
-    character?.background,
-    character?.backgroundSource,
-    sourceOrder
-  );
-  const raceBonuses = getAbilityBonusesFromEntity(raceEntry, "race", play);
-  const backgroundBonuses = getAbilityBonusesFromEntity(backgroundEntry, "background", play);
-  const { featEntries, optionalFeatureEntries } = getSelectedFeatAndOptionalFeatureEntries(catalogs, character, sourceOrder);
-  const featBonuses = getEmptyAbilityMap();
-  featEntries.forEach(({ entry, sourceKey }) => {
-    const bonuses = getAbilityBonusesFromEntity(entry, sourceKey, play);
-    SAVE_ABILITIES.forEach((ability) => {
-      featBonuses[ability] = Math.max(0, toNumber(featBonuses?.[ability], 0) + toNumber(bonuses?.[ability], 0));
-    });
-  });
-  const optionalFeatureBonuses = getEmptyAbilityMap();
-  optionalFeatureEntries.forEach(({ entry, sourceKey }) => {
-    const bonuses = getAbilityBonusesFromEntity(entry, sourceKey, play);
-    SAVE_ABILITIES.forEach((ability) => {
-      optionalFeatureBonuses[ability] = Math.max(
-        0,
-        toNumber(optionalFeatureBonuses?.[ability], 0) + toNumber(bonuses?.[ability], 0)
-      );
-    });
-  });
-  const featSlots = Array.isArray(character?.progression?.featSlots) ? character.progression.featSlots : [];
-  const selectedFeatSlotIds = new Set(
-    (Array.isArray(character?.feats) ? character.feats : [])
-      .map((feat) => String(feat?.slotId ?? "").trim())
-      .filter(Boolean)
-  );
-  const asiBonuses = getEmptyAbilityMap();
-  featSlots
-    .filter((slot) => ASI_FEATURE_NAME_REGEX.test(String(slot?.slotType ?? "")))
-    .filter((slot) => !selectedFeatSlotIds.has(String(slot?.id ?? "").trim()))
-    .forEach((slot) => {
-      const sourceKey = `asi:${String(slot?.id ?? "").trim()}`;
-      if (!sourceKey) return;
-      const selectedAbilities = getStoredAutoChoiceSelectedValues(play, sourceKey, "a:0:choose:0", SAVE_ABILITIES, 2);
-      selectedAbilities.forEach((ability) => {
-        asiBonuses[ability] = Math.max(0, toNumber(asiBonuses[ability], 0) + 1);
-      });
-    });
-  return SAVE_ABILITIES.reduce((acc, ability) => {
-    acc[ability] = Math.max(
-      0,
-      toNumber(raceBonuses[ability], 0)
-        + toNumber(backgroundBonuses[ability], 0)
-        + toNumber(asiBonuses[ability], 0)
-        + toNumber(featBonuses[ability], 0)
-        + toNumber(optionalFeatureBonuses[ability], 0)
-    );
-    return acc;
-  }, {});
-}
-
-function mergeProficienciesWithOverrides(auto, overrides, keys) {
-  return keys.reduce((acc, key) => {
-    const overrideValue = overrides?.[key];
-    if (typeof overrideValue === "boolean") {
-      acc[key] = overrideValue;
-      return acc;
-    }
-    acc[key] = Boolean(auto?.[key]);
-    return acc;
-  }, {});
-}
-
-function deriveLegacyProficiencyOverrides(current, auto, keys) {
-  const overrides = {};
-  keys.forEach((key) => {
-    const currentValue = Boolean(current?.[key]);
-    const autoValue = Boolean(auto?.[key]);
-    if (currentValue !== autoValue) overrides[key] = currentValue;
-  });
-  return overrides;
-}
-
-function hasStoredProficiencyState(stateMap, keys) {
-  return keys.some((key) => typeof stateMap?.[key] === "boolean");
-}
-
-function normalizeSkillProficiencyMode(value, fallback = SKILL_PROFICIENCY_NONE) {
-  const mode = String(value ?? "").trim().toLowerCase();
-  return SKILL_PROFICIENCY_MODES.includes(mode) ? mode : fallback;
-}
-
-function isSkillModeProficient(mode) {
-  return mode === SKILL_PROFICIENCY_PROFICIENT || mode === SKILL_PROFICIENCY_EXPERTISE;
-}
-
-function hasStoredSkillModeState(stateMap, keys) {
-  return keys.some((key) => SKILL_PROFICIENCY_MODES.includes(String(stateMap?.[key] ?? "").trim().toLowerCase()));
-}
-
-function mapSkillModesToProficiencyMap(modeMap, keys) {
-  return keys.reduce((acc, key) => {
-    acc[key] = isSkillModeProficient(normalizeSkillProficiencyMode(modeMap?.[key], SKILL_PROFICIENCY_NONE));
-    return acc;
-  }, {});
-}
-
-function mergeSkillModesWithOverrides(autoModes, overrides, keys) {
-  return keys.reduce((acc, key) => {
-    const overrideMode = normalizeSkillProficiencyMode(overrides?.[key], "");
-    if (overrideMode) {
-      acc[key] = overrideMode;
-      return acc;
-    }
-    acc[key] = normalizeSkillProficiencyMode(autoModes?.[key], SKILL_PROFICIENCY_NONE);
-    return acc;
-  }, {});
-}
-
-function getClassLevelByName(character, className) {
-  const target = String(className ?? "").trim().toLowerCase();
-  if (!target) return 0;
-  const { primaryLevel, multiclass } = getCharacterClassLevels(character);
-  let total = 0;
-  if (String(character?.class ?? "").trim().toLowerCase() === target) total += primaryLevel;
-  multiclass.forEach((entry) => {
-    if (String(entry?.class ?? "").trim().toLowerCase() === target) total += Math.max(0, toNumber(entry?.level, 0));
-  });
-  return total;
-}
-
-function applySkillProficiencyOption(activeSkills, option, context) {
-  if (!isRecordObject(option)) return;
-  const fixedSkillKeys = Object.entries(option)
-    .filter(([key, value]) => key !== "choose" && key !== "any" && value === true)
-    .map(([key]) => normalizeSkillKey(key))
-    .filter(Boolean);
-  fixedSkillKeys.forEach((skillKey) => activeSkills.add(skillKey));
-
-  const anyCount = Math.max(0, toNumber(option.any, 0));
-  if (anyCount > 0) {
-    const pool = SKILLS.map((skill) => skill.key).filter((skillKey) => !activeSkills.has(skillKey));
-    const anyChoiceId = `s:${context.optionIndex}:any`;
-    const selected = getAutoChoiceSelectedValues(context.play, context.sourceKey, anyChoiceId, pool, anyCount);
-    selected.forEach((skillKey) => activeSkills.add(skillKey));
-  }
-
-  const choose = isRecordObject(option.choose) ? option.choose : null;
-  if (!choose) return;
-  const from = (Array.isArray(choose.from) ? choose.from : [])
-    .map((entry) => normalizeSkillKey(entry))
-    .filter(Boolean)
-    .filter((skillKey, index, list) => list.indexOf(skillKey) === index);
-  if (!from.length) return;
-  const count = Math.max(1, toNumber(choose.count, 1));
-  const pool = from.filter((skillKey) => !activeSkills.has(skillKey));
-  const chooseChoiceId = `s:${context.optionIndex}:choose`;
-  const selected = getAutoChoiceSelectedValues(context.play, context.sourceKey, chooseChoiceId, pool, count);
-  selected.forEach((skillKey) => activeSkills.add(skillKey));
-}
-
-function collectSkillProficienciesFromEntity(entry, sourceKey, play) {
-  const activeSkills = new Set();
-  const options = Array.isArray(entry?.skillProficiencies) ? entry.skillProficiencies : [];
-  const optionIndex = options.findIndex((option) => isRecordObject(option));
-  const firstOption = optionIndex >= 0 ? options[optionIndex] : null;
-  if (firstOption) applySkillProficiencyOption(activeSkills, firstOption, { play, sourceKey, optionIndex });
-  return activeSkills;
-}
-
-function collectSkillProficienciesFromClassEntry(classEntry, play, sourceKey = "class") {
-  const activeSkills = new Set();
-  const skills = Array.isArray(classEntry?.startingProficiencies?.skills) ? classEntry.startingProficiencies.skills : [];
-  skills.forEach((entry, optionIndex) => {
-    if (typeof entry === "string") {
-      const skillKey = normalizeSkillKey(entry);
-      if (skillKey) activeSkills.add(skillKey);
-      return;
-    }
-    const choose = isRecordObject(entry?.choose) ? entry.choose : null;
-    if (!choose) return;
-    const from = (Array.isArray(choose.from) ? choose.from : [])
-      .map((value) => normalizeSkillKey(value))
-      .filter(Boolean)
-      .filter((skillKey, index, list) => list.indexOf(skillKey) === index);
-    if (!from.length) return;
-    const count = Math.max(1, Math.min(from.length, toNumber(choose.count, 1)));
-    const choiceId = `cs:${optionIndex}:choose`;
-    const selected = getAutoChoiceSelectedValues(play, sourceKey, choiceId, from, count);
-    selected.forEach((skillKey) => activeSkills.add(skillKey));
-  });
-  return activeSkills;
-}
-
-function getAutomaticSaveProficiencies(catalogs, character) {
-  const auto = { ...getClassSaveProficiencies(catalogs, character?.class) };
-  const sourceOrder = getPreferredSourceOrder(character);
-  const raceEntry = getEffectiveRaceEntry(catalogs, character, sourceOrder);
-  const backgroundEntry = findCatalogEntryByNameWithSelectedSourcePreference(
-    catalogs?.backgrounds,
-    character?.background,
-    character?.backgroundSource,
-    sourceOrder
-  );
-  const { featEntries, optionalFeatureEntries } = getSelectedFeatAndOptionalFeatureEntries(catalogs, character, sourceOrder);
-  [raceEntry, backgroundEntry, ...featEntries.map((item) => item.entry), ...optionalFeatureEntries.map((item) => item.entry)].forEach((entry) => {
-    const saveOptions = Array.isArray(entry?.saveProficiencies) ? entry.saveProficiencies : [];
-    const selected = saveOptions.find((option) => isRecordObject(option)) ?? null;
-    if (!selected) return;
-    Object.entries(selected).forEach(([key, value]) => {
-      const ability = normalizeAbilityKey(key);
-      if (!ability || value !== true) return;
-      auto[ability] = true;
-    });
-  });
-  return SAVE_ABILITIES.reduce((acc, ability) => {
-    acc[ability] = Boolean(auto?.[ability]);
-    return acc;
-  }, {});
-}
-
-function getAutomaticSkillProficiencies(catalogs, character, play) {
-  const sourceOrder = getPreferredSourceOrder(character);
-  const classEntry = getClassCatalogEntry(catalogs, character?.class, character?.classSource, sourceOrder);
-  const raceEntry = getEffectiveRaceEntry(catalogs, character, sourceOrder);
-  const backgroundEntry = findCatalogEntryByNameWithSelectedSourcePreference(
-    catalogs?.backgrounds,
-    character?.background,
-    character?.backgroundSource,
-    sourceOrder
-  );
-  const { featEntries, optionalFeatureEntries } = getSelectedFeatAndOptionalFeatureEntries(catalogs, character, sourceOrder);
-  const activeSkills = new Set();
-  if (classEntry) {
-    const className = String(classEntry?.name ?? character?.class ?? "").trim().toLowerCase();
-    collectSkillProficienciesFromClassEntry(classEntry, play, `class:${className || "primary"}`).forEach((skillKey) =>
-      activeSkills.add(skillKey)
-    );
-  }
-  [raceEntry, backgroundEntry].forEach((entry) => {
-    const sourceKey = entry === raceEntry ? "race" : "background";
-    collectSkillProficienciesFromEntity(entry, sourceKey, play).forEach((skillKey) => activeSkills.add(skillKey));
-  });
-  featEntries.forEach(({ entry, sourceKey }) => {
-    collectSkillProficienciesFromEntity(entry, sourceKey, play).forEach((skillKey) => activeSkills.add(skillKey));
-  });
-  optionalFeatureEntries.forEach(({ entry, sourceKey }) => {
-    collectSkillProficienciesFromEntity(entry, sourceKey, play).forEach((skillKey) => activeSkills.add(skillKey));
-  });
-  return SKILLS.reduce((acc, skill) => {
-    acc[skill.key] = activeSkills.has(skill.key);
-    return acc;
-  }, {});
-}
-
-function getAutomaticSkillProficiencyModes(catalogs, character, play) {
-  const baseProficiencies = getAutomaticSkillProficiencies(catalogs, character, play);
-  const modes = SKILLS.reduce((acc, skill) => {
-    acc[skill.key] = baseProficiencies?.[skill.key] ? SKILL_PROFICIENCY_PROFICIENT : SKILL_PROFICIENCY_NONE;
-    return acc;
-  }, {});
-  const bardLevel = getClassLevelByName(character, "bard");
-  if (bardLevel >= 2) {
-    SKILLS.forEach((skill) => {
-      if (modes[skill.key] === SKILL_PROFICIENCY_NONE) modes[skill.key] = SKILL_PROFICIENCY_HALF;
-    });
-  }
-  return modes;
-}
-
-function formatSourceSummaryLabel(value) {
-  const token = String(value ?? "").trim();
-  if (!token) return "";
-  return cleanSpellInlineTags(token)
-    .toLowerCase()
-    .replace(/(^|[\s(/-])([a-z])/g, (match, prefix, letter) => `${prefix}${letter.toUpperCase()}`)
-    .replace(/([a-z])([A-Z])/g, "$1 $2")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function normalizeSummaryLabel(value) {
-  return formatSourceSummaryLabel(value).toLowerCase();
-}
-
-function createSummaryCollector() {
-  const byLabel = new Map();
-  const add = (label, source = "") => {
-    const normalized = normalizeSummaryLabel(label);
-    if (!normalized) return;
-    if (!byLabel.has(normalized)) byLabel.set(normalized, { label: formatSourceSummaryLabel(label), sourceSet: new Set() });
-    if (source) byLabel.get(normalized).sourceSet.add(formatSourceSummaryLabel(source));
-  };
-  const list = () =>
-    [...byLabel.values()]
-      .map((entry) => ({
-        label: entry.label,
-        sources: [...entry.sourceSet].filter(Boolean).sort((a, b) => a.localeCompare(b)),
-      }))
-      .sort((a, b) => a.label.localeCompare(b.label));
-  return { add, list };
-}
-
-function formatToolCategoryLabel(key, count = 1) {
-  const normalized = normalizeToolCategoryKey(key);
-  const total = Math.max(1, toNumber(count, 1));
-  if (normalized === "any") return total > 1 ? `Any tools (${total})` : "Any tool";
-  if (normalized === "anytool") return total > 1 ? `Any tools (${total})` : "Any tool";
-  if (normalized === "anyartisantool") return total > 1 ? `Any artisan's tools (${total})` : "Any artisan's tool";
-  if (normalized === "anymusicalinstrument") return total > 1 ? `Any musical instruments (${total})` : "Any musical instrument";
-  if (normalized === "anygamingset") return total > 1 ? `Any gaming sets (${total})` : "Any gaming set";
-  const cleaned = formatSourceSummaryLabel(key);
-  if (!cleaned) return "";
-  return total > 1 ? `${cleaned} (${total})` : cleaned;
-}
-
-function normalizeToolTypeCode(value) {
-  return String(value ?? "")
-    .split("|")[0]
-    .trim()
-    .toUpperCase();
-}
-
-function normalizeToolCategoryKey(value) {
-  const raw = String(value ?? "").trim();
-  if (!raw) return "";
-  const compact = raw.replace(/['’]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "");
-  if (compact === "any") return "any";
-  if (compact === "anytool") return "anytool";
-  if (compact === "anyartisantool" || compact === "anyartisanstool") return "anyartisantool";
-  if (compact === "anymusicalinstrument") return "anymusicalinstrument";
-  if (compact === "anygamingset") return "anygamingset";
-  const words = raw
-    .replace(/([a-z])([A-Z])/g, "$1 $2")
-    .replace(/['’]/g, "")
-    .toLowerCase()
-    .split(/[^a-z0-9]+/)
-    .filter(Boolean)
-    .map((word) => (word.endsWith("s") && word.length > 3 ? word.slice(0, -1) : word));
-  if (!words.length) return "";
-  if (words.length === 1 && words[0] === "any") return "any";
-  if (!words.includes("any")) return words.join("");
-  if (words.includes("artisan") && words.includes("tool")) return "anyartisantool";
-  if (words.includes("musical") && words.includes("instrument")) return "anymusicalinstrument";
-  if (words.includes("gaming") && words.includes("set")) return "anygamingset";
-  if (words.includes("tool")) return "anytool";
-  return words.join("");
-}
-
-function isMundaneToolCatalogItem(entry) {
-  if (!isRecordObject(entry)) return false;
-  const rarity = String(entry?.rarity ?? "").trim().toLowerCase();
-  const hasAttunement = String(entry?.reqAttune ?? "").trim().length > 0;
-  const isMundaneRarity = !rarity || rarity === "none" || rarity === "unknown";
-  return isMundaneRarity && !hasAttunement;
-}
-
-function getToolPoolsFromCatalogs(catalogs) {
-  const items = Array.isArray(catalogs?.items) ? catalogs.items : [];
-  const normalizeToolName = (value) => formatSourceSummaryLabel(value).toLowerCase();
-  const dedupeByName = (list) =>
-    list.filter((entry, index, arr) => arr.findIndex((other) => normalizeToolName(other) === normalizeToolName(entry)) === index);
-  const allTools = dedupeByName(
-    items
-      .filter((entry) => ["AT", "INS", "GS", "T"].includes(normalizeToolTypeCode(entry?.type ?? entry?.itemType)))
-      .filter((entry) => isMundaneToolCatalogItem(entry))
-      .map((entry) => formatSourceSummaryLabel(entry?.name))
-      .filter(Boolean)
-      .sort((a, b) => a.localeCompare(b))
-  );
-  const artisansTools = dedupeByName(
-    items
-      .filter((entry) => normalizeToolTypeCode(entry?.type ?? entry?.itemType) === "AT")
-      .filter((entry) => isMundaneToolCatalogItem(entry))
-      .map((entry) => formatSourceSummaryLabel(entry?.name))
-      .filter(Boolean)
-      .sort((a, b) => a.localeCompare(b))
-  );
-  const musicalInstruments = dedupeByName(
-    items
-      .filter((entry) => normalizeToolTypeCode(entry?.type ?? entry?.itemType) === "INS")
-      .filter((entry) => isMundaneToolCatalogItem(entry))
-      .map((entry) => formatSourceSummaryLabel(entry?.name))
-      .filter(Boolean)
-      .sort((a, b) => a.localeCompare(b))
-  );
-  const gamingSets = dedupeByName(
-    items
-      .filter((entry) => normalizeToolTypeCode(entry?.type ?? entry?.itemType) === "GS")
-      .filter((entry) => isMundaneToolCatalogItem(entry))
-      .map((entry) => formatSourceSummaryLabel(entry?.name))
-      .filter(Boolean)
-      .sort((a, b) => a.localeCompare(b))
-  );
-  return { allTools, artisansTools, musicalInstruments, gamingSets };
-}
-
-function getToolPoolForCategory(categoryKey, pools) {
-  const normalized = normalizeToolCategoryKey(categoryKey);
-  if (normalized === "any" || normalized === "anytool") return pools.allTools;
-  if (normalized === "anyartisantool") return pools.artisansTools;
-  if (normalized === "anymusicalinstrument") return pools.musicalInstruments;
-  if (normalized === "anygamingset") return pools.gamingSets;
-  return [];
-}
-
-function addToolProficienciesFromStructuredSpec(collector, spec, sourceLabel = "", options = {}) {
-  if (!Array.isArray(spec)) return;
-  const sourceKey = String(options?.sourceKey ?? "").trim();
-  const play = options?.play;
-  const pools = options?.pools ?? getToolPoolsFromCatalogs(options?.catalogs);
-  spec.forEach((entry, optionIndex) => {
-    if (typeof entry === "string") {
-      const label = formatSourceSummaryLabel(entry);
-      if (label) collector.add(label, sourceLabel);
-      return;
-    }
-    if (!isRecordObject(entry)) return;
-    Object.entries(entry).forEach(([key, value]) => {
-      if (key === "choose" && isRecordObject(value)) {
-        const from = (Array.isArray(value.from) ? value.from : [])
-          .map((item) => formatSourceSummaryLabel(item))
-          .filter(Boolean);
-        const count = Math.max(1, toNumber(value.count, 1));
-        if (sourceKey && from.length) {
-          const choiceId = `t:${optionIndex}:choose`;
-          const selected = getStoredAutoChoiceSelectedValues(play, sourceKey, choiceId, from, count, {
-            allowDuplicates: false,
-            preserveStoredOrder: false,
-          });
-          if (selected.length) {
-            selected.forEach((selectedTool) => collector.add(selectedTool, sourceLabel));
-            return;
-          }
-        }
-        if (from.length) {
-          collector.add(`Choose ${count} tool${count > 1 ? "s" : ""}`, sourceLabel);
-        }
-        return;
-      }
-      if (value === true) {
-        collector.add(formatToolCategoryLabel(key, 1), sourceLabel);
-        return;
-      }
-      if (Number.isFinite(toNumber(value, NaN)) && toNumber(value, 0) > 0) {
-        const count = Math.max(1, toNumber(value, 1));
-        const pool = getToolPoolForCategory(key, pools);
-        if (sourceKey && pool.length) {
-          const choiceId = `t:${optionIndex}:${String(key ?? "").trim().toLowerCase()}`;
-          const selected = getStoredAutoChoiceSelectedValues(play, sourceKey, choiceId, pool, count, {
-            allowDuplicates: false,
-            preserveStoredOrder: false,
-          });
-          if (selected.length) {
-            selected.forEach((selectedTool) => collector.add(selectedTool, sourceLabel));
-            return;
-          }
-        }
-        collector.add(formatToolCategoryLabel(key, count), sourceLabel);
-      }
-    });
-  });
-}
-
-function formatDefenseTypeLabel(value) {
-  const normalized = String(value ?? "").trim().toLowerCase();
-  if (!normalized) return "";
-  const words = normalized.split(/[^a-z0-9]+/).filter(Boolean);
-  if (!words.length) return "";
-  return words
-    .map((word) => (word.length <= 2 ? word.toUpperCase() : word[0].toUpperCase() + word.slice(1)))
-    .join(" ");
-}
-
-function addDefenseEntries(collector, entries, sourceLabel = "", options = {}) {
-  const singular = String(options?.singular ?? "type").trim();
-  const sourceKey = String(options?.sourceKey ?? "").trim();
-  const play = isRecordObject(options?.play) ? options.play : null;
-  const entryKey = String(options?.entryKey ?? "").trim();
-  if (!Array.isArray(entries)) return;
-  entries.forEach((entry, optionIndex) => {
-    if (typeof entry === "string") {
-      const label = formatDefenseTypeLabel(entry);
-      if (label) collector.add(label, sourceLabel);
-      return;
-    }
-    if (!isRecordObject(entry)) return;
-    const choose = isRecordObject(entry.choose) ? entry.choose : null;
-    if (!choose) return;
-    const from = (Array.isArray(choose.from) ? choose.from : [])
-      .map((item) => formatDefenseTypeLabel(item))
-      .filter(Boolean);
-    const count = Math.max(1, toNumber(choose.count, 1));
-    if (!from.length) return;
-    if (sourceKey && play && entryKey) {
-      const choiceId = `d:${entryKey}:${optionIndex}:choose`;
-      const selected = getStoredAutoChoiceSelectedValues(play, sourceKey, choiceId, from, count, {
-        allowDuplicates: false,
-        preserveStoredOrder: false,
-      });
-      if (selected.length) {
-        selected.forEach((selectedType) => collector.add(selectedType, sourceLabel));
-        return;
-      }
-    }
-    collector.add(`Choose ${count} ${singular}${count > 1 ? "s" : ""}: ${from.join(", ")}`, sourceLabel);
-  });
-}
-
-function getCharacterToolAndDefenseSummary(catalogs, character) {
-  const sourceOrder = getPreferredSourceOrder(character);
-  const raceEntry = getEffectiveRaceEntry(catalogs, character, sourceOrder);
-  const backgroundEntry = findCatalogEntryByNameWithSelectedSourcePreference(
-    catalogs?.backgrounds,
-    character?.background,
-    character?.backgroundSource,
-    sourceOrder
-  );
-  const classEntry = getClassCatalogEntry(catalogs, character?.class, character?.classSource, sourceOrder);
-  const toolCollector = createSummaryCollector();
-  const resistanceCollector = createSummaryCollector();
-  const immunityCollector = createSummaryCollector();
-  const conditionImmunityCollector = createSummaryCollector();
-  const vulnerabilityCollector = createSummaryCollector();
-  const toolPools = getToolPoolsFromCatalogs(catalogs);
-
-  addToolProficienciesFromStructuredSpec(toolCollector, raceEntry?.toolProficiencies, "Race", {
-    sourceKey: "race",
-    play: character?.play,
-    pools: toolPools,
-  });
-  addToolProficienciesFromStructuredSpec(toolCollector, backgroundEntry?.toolProficiencies, "Background", {
-    sourceKey: "background",
-    play: character?.play,
-    pools: toolPools,
-  });
-  const classSourceKey = `class:${String(classEntry?.name ?? character?.class ?? "").trim().toLowerCase() || "primary"}`;
-  addToolProficienciesFromStructuredSpec(toolCollector, classEntry?.startingProficiencies?.toolProficiencies, "Class", {
-    sourceKey: classSourceKey,
-    play: character?.play,
-    pools: toolPools,
-  });
-  const classHasStructuredTools = Array.isArray(classEntry?.startingProficiencies?.toolProficiencies)
-    && classEntry.startingProficiencies.toolProficiencies.length > 0;
-  if (!classHasStructuredTools && Array.isArray(classEntry?.startingProficiencies?.tools)) {
-    classEntry.startingProficiencies.tools.forEach((tool) => toolCollector.add(tool, "Class"));
-  }
-
-  const multiclassEntries = Array.isArray(character?.multiclass) ? character.multiclass : [];
-  multiclassEntries.forEach((entry) => {
-    const className = String(entry?.class ?? "").trim();
-    if (!className) return;
-    const classCatalogEntry = getClassCatalogEntry(catalogs, className, "", sourceOrder);
-    const tools = classCatalogEntry?.multiclassing?.proficienciesGained?.tools;
-    const multiclassHasStructuredTools = Array.isArray(classCatalogEntry?.multiclassing?.proficienciesGained?.toolProficiencies)
-      && classCatalogEntry.multiclassing.proficienciesGained.toolProficiencies.length > 0;
-    if (!multiclassHasStructuredTools && Array.isArray(tools)) {
-      tools.forEach((tool) => toolCollector.add(tool, "Multiclass"));
-    }
-    const multiclassSourceKey = `multiclass:${className.toLowerCase() || "class"}`;
-    addToolProficienciesFromStructuredSpec(
-      toolCollector,
-      classCatalogEntry?.multiclassing?.proficienciesGained?.toolProficiencies,
-      "Multiclass",
-      {
-        sourceKey: multiclassSourceKey,
-        play: character?.play,
-        pools: toolPools,
-      }
-    );
-  });
-
-  const feats = Array.isArray(character?.feats) ? character.feats : [];
-  feats.forEach((feat) => {
-    const featEntry = findCatalogEntryByNameWithSelectedSourcePreference(catalogs?.feats, feat?.name, feat?.source, sourceOrder);
-    if (!featEntry) return;
-    addToolProficienciesFromStructuredSpec(toolCollector, featEntry?.toolProficiencies, "Feat", { pools: toolPools });
-    addDefenseEntries(resistanceCollector, featEntry?.resist, "Feat", { singular: "resistance" });
-    addDefenseEntries(immunityCollector, featEntry?.immune, "Feat", { singular: "immunity" });
-    addDefenseEntries(conditionImmunityCollector, featEntry?.conditionImmune, "Feat", { singular: "condition immunity" });
-    addDefenseEntries(vulnerabilityCollector, featEntry?.vulnerable, "Feat", { singular: "vulnerability" });
-  });
-
-  const optionalFeatures = Array.isArray(character?.optionalFeatures) ? character.optionalFeatures : [];
-  optionalFeatures.forEach((feature) => {
-    const entry = findCatalogEntryByNameWithSelectedSourcePreference(
-      catalogs?.optionalFeatures,
-      feature?.name,
-      feature?.source,
-      sourceOrder
-    );
-    if (!entry) return;
-    addToolProficienciesFromStructuredSpec(toolCollector, entry?.toolProficiencies, "Optional Feature", { pools: toolPools });
-    addDefenseEntries(resistanceCollector, entry?.resist, "Optional Feature", { singular: "resistance" });
-    addDefenseEntries(immunityCollector, entry?.immune, "Optional Feature", { singular: "immunity" });
-    addDefenseEntries(conditionImmunityCollector, entry?.conditionImmune, "Optional Feature", { singular: "condition immunity" });
-    addDefenseEntries(vulnerabilityCollector, entry?.vulnerable, "Optional Feature", { singular: "vulnerability" });
-  });
-
-  addDefenseEntries(resistanceCollector, raceEntry?.resist, "Race", {
-    singular: "resistance",
-    sourceKey: "race",
-    play: character?.play,
-    entryKey: "resist",
-  });
-  addDefenseEntries(immunityCollector, raceEntry?.immune, "Race", {
-    singular: "immunity",
-    sourceKey: "race",
-    play: character?.play,
-    entryKey: "immune",
-  });
-  addDefenseEntries(conditionImmunityCollector, raceEntry?.conditionImmune, "Race", {
-    singular: "condition immunity",
-    sourceKey: "race",
-    play: character?.play,
-    entryKey: "conditionImmune",
-  });
-  addDefenseEntries(vulnerabilityCollector, raceEntry?.vulnerable, "Race", {
-    singular: "vulnerability",
-    sourceKey: "race",
-    play: character?.play,
-    entryKey: "vulnerable",
-  });
-
-  return {
-    tools: toolCollector.list(),
-    resistances: resistanceCollector.list(),
-    immunities: immunityCollector.list(),
-    conditionImmunities: conditionImmunityCollector.list(),
-    vulnerabilities: vulnerabilityCollector.list(),
-  };
-}
-
-function optionList(options, selected, config = {}) {
-  const includeSourceInValue = Boolean(config?.includeSourceInValue);
-  const selectedSource = normalizeSourceTag(config?.selectedSource);
-  const entries = Array.isArray(options) ? options : [];
-  const selectedName = String(selected ?? "").trim().toLowerCase();
-  const selectedIndex = entries.findIndex((entry) => {
-    const entryName = String(entry?.name ?? "").trim().toLowerCase();
-    if (!selectedName || entryName !== selectedName) return false;
-    if (!selectedSource) return true;
-    return normalizeSourceTag(entry?.source) === selectedSource;
-  });
-  return entries
-    .map(
-      (opt, index) =>
-        `<option value="${esc(includeSourceInValue ? `${String(opt?.name ?? "")}|${String(opt?.source ?? "")}` : opt.name)}" ${
-          index === selectedIndex ? "selected" : ""
-        }>${esc(opt.name)} (${esc(
-          opt.sourceLabel ?? opt.source ?? "Unknown Source"
-        )})</option>`
-    )
-    .join("");
-}
-
-function getSubclassSelectOptions(state) {
-  const sourceOrder = getPreferredSourceOrder(state.character);
-  const classEntry = getClassCatalogEntry(state.catalogs, state.character.class, state.character?.classSource, sourceOrder);
-  const selected = getPrimarySubclassSelection(state.character);
-  const classSource = normalizeSourceTag(classEntry?.source);
-  const options = getSubclassCatalogEntries(state.catalogs, state.character.class, classSource, sourceOrder);
-  return options.map((entry) => {
-    const isSelected =
-      selected &&
-      String(selected.name ?? "").trim().toLowerCase() === String(entry?.name ?? "").trim().toLowerCase() &&
-      (!selected.source || normalizeSourceTag(selected.source) === normalizeSourceTag(entry?.source));
-    const subclassSource = normalizeSourceTag(entry?.source);
-    const subclassSourceLabel = entry?.sourceLabel ?? SOURCE_LABELS[subclassSource] ?? entry?.source ?? "";
-    const subclassClassSource = normalizeSourceTag(entry?.classSource);
-    const subclassClassSourceLabel = SOURCE_LABELS[subclassClassSource] ?? entry?.classSource ?? "";
-    const sourceLabel =
-      subclassClassSource && subclassClassSource !== subclassSource && subclassClassSourceLabel
-        ? `${subclassSourceLabel} | Class: ${subclassClassSourceLabel}`
-        : subclassSourceLabel;
-    return {
-      name: String(entry?.name ?? ""),
-      source: String(entry?.source ?? ""),
-      sourceLabel,
-      isSelected,
-    };
-  });
-}
-
-function getFeatSlotsWithSelection(character) {
-  const progression = character?.progression ?? {};
-  const slots = Array.isArray(progression.featSlots) ? progression.featSlots : [];
-  const feats = Array.isArray(character?.feats) ? character.feats : [];
-  return slots.map((slot) => ({
-    ...slot,
-    feat: feats.find((feat) => feat.slotId === slot.id) ?? null,
-  }));
-}
-
-function getOptionalFeatureSlotsWithSelection(character) {
-  const progression = character?.progression ?? {};
-  const slots = Array.isArray(progression.optionalFeatureSlots) ? progression.optionalFeatureSlots : [];
-  const selected = Array.isArray(character?.optionalFeatures) ? character.optionalFeatures : [];
-  return slots.map((slot) => ({
-    ...slot,
-    optionalFeature: selected.find((feature) => feature.slotId === slot.id) ?? null,
-  }));
-}
-
-function getCharacterHighestClassLevel(character) {
-  const tracks = getClassLevelTracks(character);
-  return tracks.reduce((highest, track) => Math.max(highest, toNumber(track.level, 0)), 0);
-}
-
-function doesCharacterMeetFeatPrerequisites(character, feat) {
-  const prerequisites = Array.isArray(feat?.prerequisite) ? feat.prerequisite : [];
-  if (!prerequisites.length) return true;
-  const highestClassLevel = getCharacterHighestClassLevel(character);
-
-  return prerequisites.some((entry) => {
-    if (!entry || typeof entry !== "object") return true;
-    const abilityRequirements = Object.entries(entry).filter(([key, value]) => ABILITY_LABELS[key] && Number.isFinite(toNumber(value, NaN)));
-    const hasAbilityFailure = abilityRequirements.some(([ability, value]) => toNumber(character?.abilities?.[ability], 0) < toNumber(value, 0));
-    if (hasAbilityFailure) return false;
-    if (entry.level && typeof entry.level === "object") {
-      const minLevel = toNumber(entry.level.level, 0);
-      if (minLevel > 0 && highestClassLevel < minLevel) return false;
-    }
-    return true;
-  });
-}
-
-function doesCharacterMeetOptionalFeaturePrerequisites(character, optionalFeature) {
-  const prerequisites = Array.isArray(optionalFeature?.prerequisite) ? optionalFeature.prerequisite : [];
-  if (!prerequisites.length) return true;
-  const highestClassLevel = getCharacterHighestClassLevel(character);
-  return prerequisites.some((entry) => {
-    if (!isRecordObject(entry)) return true;
-    const levelRequirement = toNumber(entry.level, NaN);
-    if (Number.isFinite(levelRequirement) && highestClassLevel < levelRequirement) return false;
-    return true;
-  });
-}
-
-function getEmptySpellSlotDefaults() {
-  const defaults = Object.fromEntries(SPELL_SLOT_LEVELS.map((level) => [String(level), 0]));
-  return defaults;
-}
-
-function getClassSpellSlotDefaults(catalogs, className, classLevel) {
-  const defaults = getEmptySpellSlotDefaults();
-  if (!catalogs || !Array.isArray(catalogs.classes)) return defaults;
-
-  const normalizedClassName = String(className ?? "").trim().toLowerCase();
-  if (!normalizedClassName) return defaults;
-
-  const classEntry = catalogs.classes.find((entry) => String(entry?.name ?? "").trim().toLowerCase() === normalizedClassName);
-  if (!classEntry || !Array.isArray(classEntry.classTableGroups)) return defaults;
-
-  const levelIndex = Math.max(0, Math.min(19, toNumber(classLevel, 1) - 1));
-  const progressionGroup = classEntry.classTableGroups.find((group) => Array.isArray(group?.rowsSpellProgression));
-  const progressionRows = progressionGroup?.rowsSpellProgression;
-  const row = Array.isArray(progressionRows?.[levelIndex]) ? progressionRows[levelIndex] : null;
-  if (!row) return defaults;
-
-  SPELL_SLOT_LEVELS.forEach((slotLevel, idx) => {
-    defaults[String(slotLevel)] = Math.max(0, toNumber(row[idx], 0));
-  });
-  return defaults;
-}
-
-function getSpellProgressionRows(catalogs, className) {
-  if (!catalogs || !Array.isArray(catalogs.classes)) return null;
-  const normalizedClassName = String(className ?? "").trim().toLowerCase();
-  if (!normalizedClassName) return null;
-  const classEntry = catalogs.classes.find((entry) => String(entry?.name ?? "").trim().toLowerCase() === normalizedClassName);
-  if (!classEntry || !Array.isArray(classEntry.classTableGroups)) return null;
-  const progressionGroup = classEntry.classTableGroups.find((group) => Array.isArray(group?.rowsSpellProgression));
-  return Array.isArray(progressionGroup?.rowsSpellProgression) ? progressionGroup.rowsSpellProgression : null;
-}
-
-function getClassCasterType(catalogs, className) {
-  const classKey = getClassKey(className);
-  if (classKey === "warlock") return "pact";
-
-  const rows = getSpellProgressionRows(catalogs, className);
-  const level20Row = Array.isArray(rows?.[19]) ? rows[19] : null;
-  if (!level20Row) return "none";
-
-  const totalSlots = level20Row.reduce((sum, value) => sum + Math.max(0, toNumber(value, 0)), 0);
-  const highestSlotLevel = level20Row.reduce((highest, value, idx) => {
-    if (toNumber(value, 0) > 0) return Math.max(highest, idx + 1);
-    return highest;
-  }, 0);
-
-  // Pact magic does not use multiclass spellcasting slot progression.
-  if (highestSlotLevel > 0 && totalSlots <= 4) return "pact";
-  if (highestSlotLevel >= 9) return "full";
-  if (highestSlotLevel >= 5) return "half";
-  if (highestSlotLevel >= 4) return "third";
-  return "none";
-}
-
-function getClassCasterContribution(catalogs, className, classLevel) {
-  const casterType = getClassCasterType(catalogs, className);
-  const classKey = getClassKey(className);
-  const level = Math.max(0, toNumber(classLevel, 0));
-  if (casterType === "full") return level;
-  if (casterType === "half") {
-    if (classKey === "artificer") return Math.ceil(level / 2);
-    return Math.floor(level / 2);
-  }
-  if (casterType === "third") return Math.floor(level / 3);
-  return 0;
-}
-
-function getCharacterClassLevels(character) {
-  const totalLevel = Math.max(1, Math.min(20, toNumber(character?.level, 1)));
-  const multiclassEntries = Array.isArray(character?.multiclass) ? character.multiclass : [];
-  const cleanedMulticlass = multiclassEntries
-    .map((entry) => ({
-      class: String(entry?.class ?? "").trim(),
-      level: Math.max(1, Math.min(20, toNumber(entry?.level, 1))),
-    }))
-    .filter((entry) => entry.class);
-  const multiclassTotal = cleanedMulticlass.reduce((sum, entry) => sum + entry.level, 0);
-  const primaryLevel = Math.max(1, totalLevel - multiclassTotal);
-  return { totalLevel, primaryLevel, multiclass: cleanedMulticlass };
-}
-
-function getAdditionalHitPointEntries(catalogs, character) {
-  const { primaryLevel, multiclass } = getCharacterClassLevels(character);
-  const primaryClassName = String(character?.class ?? "").trim();
-  const entries = [];
-  const primaryFaces = getClassHitDieFaces(catalogs, primaryClassName);
-  const primaryKey = getClassKey(primaryClassName) || "primary";
-
-  for (let level = 2; level <= primaryLevel; level += 1) {
-    entries.push({
-      key: `${primaryKey}:${level}`,
-      className: primaryClassName || "Primary class",
-      classLevel: level,
-      faces: primaryFaces,
-    });
-  }
-
-  multiclass.forEach((entry) => {
-    const className = String(entry.class ?? "").trim();
-    const faces = getClassHitDieFaces(catalogs, className);
-    const classKey = getClassKey(className) || "multiclass";
-    for (let level = 1; level <= entry.level; level += 1) {
-      entries.push({
-        key: `${classKey}:${level}`,
-        className,
-        classLevel: level,
-        faces,
-      });
-    }
-  });
-  return entries;
-}
-
-function getCharacterMaxHp(catalogs, character, options = {}) {
-  return getHitPointBreakdown(catalogs, character, options).total;
-}
-
-function buildLevelUpHitPointPlan(catalogs, currentCharacter, draft) {
-  const currentCharacterDraft = {
-    ...currentCharacter,
-    class: draft.primaryClass,
-    level: draft.totalLevel,
-    multiclass: draft.multiclass,
-  };
-  const currentOverrides = sanitizeHitPointRollOverrides(currentCharacter?.hitPointRollOverrides);
-  const currentEntries = getAdditionalHitPointEntries(catalogs, currentCharacter);
-  const nextEntries = getAdditionalHitPointEntries(catalogs, currentCharacterDraft);
-  const currentEntryKeys = new Set(currentEntries.map((entry) => entry.key));
-  const nextEntryKeys = new Set(nextEntries.map((entry) => entry.key));
-  const gainedEntries = nextEntries.filter((entry) => !currentEntryKeys.has(entry.key));
-  const lostEntries = currentEntries.filter((entry) => !nextEntryKeys.has(entry.key));
-  const choicesRaw = draft?.hitPointChoices;
-  const draftChoices = choicesRaw && typeof choicesRaw === "object" && !Array.isArray(choicesRaw) ? choicesRaw : {};
-  const nextRollOverrides = Object.fromEntries(Object.entries(currentOverrides).filter(([key]) => nextEntryKeys.has(key)));
-  const resolvedGainedEntries = gainedEntries.map((entry) => {
-    const draftChoice = draftChoices?.[entry.key];
-    const method = draftChoice?.method === "roll" ? "roll" : "fixed";
-    let rollValue = Math.floor(toNumber(draftChoice?.rollValue, NaN));
-    if (!(Number.isFinite(rollValue) && rollValue >= 1 && rollValue <= entry.faces)) {
-      rollValue = method === "roll" ? rollDie(entry.faces) : null;
-    }
-    const fixedValue = getFixedHitPointGain(entry.faces);
-    const baseGain = method === "roll" ? rollValue : fixedValue;
-    if (method === "roll" && Number.isFinite(rollValue)) nextRollOverrides[entry.key] = rollValue;
-    else delete nextRollOverrides[entry.key];
-    return {
-      ...entry,
-      method,
-      rollValue,
-      fixedValue,
-      baseGain,
-    };
-  });
-  const { totalLevel: currentTotalLevel } = getCharacterClassLevels(currentCharacter);
-  const { totalLevel: nextTotalLevel } = getCharacterClassLevels(currentCharacterDraft);
-  const levelDelta = nextTotalLevel - currentTotalLevel;
-  const conMod = Math.floor((toNumber(currentCharacter?.abilities?.con, 10) - 10) / 2);
-  const baseDelta = resolvedGainedEntries.reduce((sum, entry) => sum + Math.max(1, toNumber(entry.baseGain, 0)), 0)
-    - lostEntries.reduce((sum, entry) => {
-      const rolled = Math.floor(toNumber(currentOverrides[entry.key], NaN));
-      if (Number.isFinite(rolled) && rolled >= 1 && rolled <= entry.faces) return sum + rolled;
-      return sum + getFixedHitPointGain(entry.faces);
-    }, 0);
-  const conDelta = conMod * levelDelta;
-  const currentHpBreakdown = getHitPointBreakdown(catalogs, currentCharacter, { rollOverrides: currentOverrides });
-  const nextHpBreakdown = getHitPointBreakdown(catalogs, currentCharacterDraft, { rollOverrides: nextRollOverrides });
-  const currentMaxHp = currentHpBreakdown.total;
-  const nextMaxHp = nextHpBreakdown.total;
-  const featDelta = nextHpBreakdown.featBonusHp - currentHpBreakdown.featBonusHp;
-  return {
-    levelDelta,
-    conMod,
-    currentMaxHp,
-    nextMaxHp,
-    totalDelta: nextMaxHp - currentMaxHp,
-    baseDelta,
-    conDelta,
-    featDelta,
-    gainedEntries: resolvedGainedEntries,
-    nextRollOverrides,
-  };
-}
-
-function getFullCasterSpellSlotsByLevel(catalogs, casterLevel) {
-  const defaults = getEmptySpellSlotDefaults();
-  const level = Math.max(0, Math.min(20, toNumber(casterLevel, 0)));
-  if (level <= 0 || !Array.isArray(catalogs?.classes)) return defaults;
-
-  const fullCaster = catalogs.classes.find((entry) => getClassCasterType(catalogs, entry?.name) === "full");
-  const rows = getSpellProgressionRows(catalogs, fullCaster?.name);
-  const row = Array.isArray(rows?.[level - 1]) ? rows[level - 1] : null;
-  if (!row) return defaults;
-  SPELL_SLOT_LEVELS.forEach((slotLevel, idx) => {
-    defaults[String(slotLevel)] = Math.max(0, toNumber(row[idx], 0));
-  });
-  return defaults;
-}
-
-function getCharacterSpellSlotDefaults(catalogs, character) {
-  const defaults = getEmptySpellSlotDefaults();
-  const primaryClassName = String(character?.class ?? "").trim();
-  if (!primaryClassName) return defaults;
-  const sourceOrder = getPreferredSourceOrder(character);
-  const primaryClassEntry = getClassCatalogEntry(catalogs, primaryClassName, character?.classSource, sourceOrder);
-  const resolvedPrimaryClassName = String(primaryClassEntry?.name ?? primaryClassName).trim();
-
-  const { primaryLevel, multiclass } = getCharacterClassLevels(character);
-  if (!multiclass.length) {
-    return getClassSpellSlotDefaults(catalogs, resolvedPrimaryClassName, primaryLevel);
-  }
-
-  const casterLevel = getClassCasterContribution(catalogs, resolvedPrimaryClassName, primaryLevel)
-    + multiclass.reduce((sum, entry) => sum + getClassCasterContribution(catalogs, entry.class, entry.level), 0);
-  return getFullCasterSpellSlotsByLevel(catalogs, casterLevel);
-}
-
-function getSpellSlotValues(play, defaults, level) {
-  const key = String(level);
-  const slot = play.spellSlots?.[key] ?? { max: 0, used: 0 };
-  const hasUserOverride = Boolean(play.spellSlotUserOverrides?.[key]);
-  const overrideMax = hasUserOverride ? play.spellSlotMaxOverrides?.[key] : null;
-  const baseMax = overrideMax == null ? toNumber(defaults?.[key], toNumber(slot.max, 0)) : toNumber(overrideMax, 0);
-  const max = Math.max(0, baseMax);
-  const used = Math.max(0, Math.min(max, toNumber(slot.used, 0)));
-  const isOverridden = hasUserOverride && overrideMax != null;
-  return { max, used, isOverridden };
-}
-
-function getSpellSlotRow(play, defaults, level) {
-  const { max, used } = getSpellSlotValues(play, defaults, level);
-  return `
-    <div class="spell-slot-card">
-      <div class="spell-slot-top">
-        <span class="spell-slot-level">Level ${level}</span>
-        <div class="spell-slot-inline">
-          <span class="spell-slot-used">Slots <strong>${Math.max(0, max - used)}/${max}</strong></span>
-        <div class="spell-slot-actions">
-            <button type="button" class="spell-slot-btn" data-slot-delta="${level}" data-delta="1" aria-label="Spend one level ${level} slot">-</button>
-            <button type="button" class="spell-slot-btn" data-slot-delta="${level}" data-delta="-1" aria-label="Recover one level ${level} slot">+</button>
-          </div>
-        </div>
-      </div>
-    </div>
-  `;
-}
-
-function getSpellByName(state, spellName) {
-  const normalized = cleanSpellInlineTags(String(spellName ?? "").trim());
-  if (!normalized) return null;
-  const exact = state.catalogs.spells.find((spell) => spell.name === normalized);
-  if (exact) return exact;
-  const lowered = normalized.toLowerCase();
-  return state.catalogs.spells.find((spell) => String(spell?.name ?? "").trim().toLowerCase() === lowered) ?? null;
-}
-
-function getSpellLevelLabel(level) {
-  return toNumber(level, 0) === 0 ? "Cantrip" : `Level ${toNumber(level, 0)}`;
-}
-
-function cleanSpellInlineTags(value) {
-  const text = String(value ?? "");
-  return text
-    .replace(/\{@([a-zA-Z]+)\s+([^}]+)\}/g, (_, rawTag, rawPayload) => {
-      const tag = rawTag.toLowerCase();
-      const payload = String(rawPayload ?? "");
-      const [primary] = payload.split("|");
-      const main = String(primary ?? "").trim();
-      if (!main) return "";
-
-      if (tag === "dc") return `DC ${main}`;
-      if (tag === "hit") {
-        if (main.startsWith("+") || main.startsWith("-")) return `${main} to hit`;
-        return `+${main} to hit`;
-      }
-      if (tag === "dice" || tag === "damage" || tag === "d20" || tag === "scaledice") return main;
-      return main;
-    })
-    .replace(/\{@[a-zA-Z]+\}/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function collectSpellEntryLines(entry, depth = 0, options = {}) {
-  const includeTables = options?.includeTables === true;
-  if (entry == null) return [];
-  if (typeof entry === "string") {
-    const line = cleanSpellInlineTags(entry);
-    return line ? [line] : [];
-  }
-  if (Array.isArray(entry)) return entry.flatMap((it) => collectSpellEntryLines(it, depth, options));
-  if (typeof entry !== "object") return [];
-
-  const lines = [];
-  const name = typeof entry.name === "string" ? cleanSpellInlineTags(entry.name) : "";
-
-  if (Array.isArray(entry.entries)) {
-    if (name) lines.push(depth > 0 ? `- ${name}:` : `${name}:`);
-    lines.push(...entry.entries.flatMap((it) => collectSpellEntryLines(it, depth + 1, options)));
-    return lines;
-  }
-
-  if (Array.isArray(entry.items)) {
-    if (name) lines.push(depth > 0 ? `- ${name}:` : `${name}:`);
-    entry.items.forEach((item) => {
-      const itemLines = collectSpellEntryLines(item, depth + 1, options);
-      if (!itemLines.length) return;
-      const [first, ...rest] = itemLines;
-      lines.push(`- ${first}`);
-      rest.forEach((line) => lines.push(line));
-    });
-    return lines;
-  }
-
-  if (includeTables && entry.type === "table" && Array.isArray(entry.rows)) {
-    const caption = cleanSpellInlineTags(String(entry.caption ?? name ?? "")).trim();
-    if (caption) lines.push(depth > 0 ? `- ${caption}:` : `${caption}:`);
-    const labels = Array.isArray(entry.colLabels) ? entry.colLabels.map((label) => cleanSpellInlineTags(String(label ?? "")).trim()) : [];
-    if (labels.some(Boolean)) lines.push(`${labels.filter(Boolean).join(" | ")}`);
-    entry.rows.forEach((row) => {
-      const cells = Array.isArray(row) ? row : [];
-      const parts = cells
-        .map((cell) => flattenTableCellToText(cell))
-        .map((value) => String(value ?? "").trim())
-        .filter(Boolean);
-      if (!parts.length) return;
-      lines.push(`- ${parts.join(" | ")}`);
-    });
-    return lines;
-  }
-
-  if (typeof entry.entry === "string") {
-    const line = cleanSpellInlineTags(entry.entry);
-    if (!line) return lines;
-    lines.push(name ? `${name}: ${line}` : line);
-    return lines;
-  }
-
-  if (typeof entry.optionalfeature === "string") {
-    const line = cleanSpellInlineTags(entry.optionalfeature.split("|")[0]);
-    if (line) lines.push(name ? `${name}: ${line}` : line);
-    return lines;
-  }
-
-  if (typeof entry.classFeature === "string") {
-    const line = cleanSpellInlineTags(entry.classFeature.split("|")[0]);
-    if (line) lines.push(name ? `${name}: ${line}` : line);
-    return lines;
-  }
-
-  if (typeof entry.subclassFeature === "string") {
-    const line = cleanSpellInlineTags(entry.subclassFeature.split("|")[0]);
-    if (line) lines.push(name ? `${name}: ${line}` : line);
-    return lines;
-  }
-
-  if (typeof entry.spell === "string") {
-    const line = cleanSpellInlineTags(entry.spell.split("|")[0]);
-    if (line) lines.push(name ? `${name}: ${line}` : line);
-    return lines;
-  }
-
-  if (typeof entry.text === "string") {
-    const line = cleanSpellInlineTags(entry.text);
-    if (!line) return lines;
-    lines.push(name ? `${name}: ${line}` : line);
-    return lines;
-  }
-
-  return lines;
-}
-
-function getSpellDescriptionLines(spell) {
-  if (!spell || typeof spell !== "object") return [];
-  const lines = collectSpellEntryLines(spell.entries ?? [], 0, { includeTables: false });
-  const higherLevelLines = collectSpellEntryLines(spell.entriesHigherLevel ?? [], 0, { includeTables: false });
-  if (higherLevelLines.length) {
-    lines.push("At Higher Levels:");
-    lines.push(...higherLevelLines);
-  }
-  return lines.filter(Boolean);
-}
-
-function getSpellPrimaryDiceNotation(spell) {
-  const lines = getSpellDescriptionLines(spell);
-  for (const line of lines) {
-    DICE_NOTATION_REGEX.lastIndex = 0;
-    const match = DICE_NOTATION_REGEX.exec(String(line));
-    if (match?.[0]) return String(match[0]).replace(/\s+/g, "");
-  }
-  return "";
-}
 
 function getCharacterAllowedSources(character) {
-  const sourcePreset = resolveRuntimeSourcePreset(character?.sourcePreset ?? DEFAULT_SOURCE_PRESET);
-  const presetSources = runtimeSourcePresets[sourcePreset] ?? getAllowedSources(sourcePreset);
-  const customSources = Array.isArray(character?.customSources)
-    ? character.customSources.map((entry) => String(entry ?? "").trim()).filter(Boolean)
-    : [];
-  return [...new Set([...presetSources, ...customSources])];
+  return characterViewHelpers.getCharacterAllowedSources(character);
 }
 
-const partyModalCatalogCache = new Map();
-
-function getPartyModalCatalogCacheKey(character) {
-  return getCharacterAllowedSources(character)
-    .map((source) => normalizeSourceTag(source))
-    .filter(Boolean)
-    .sort()
-    .join("|");
-}
-
-async function getCachedPartyModalCatalogs(character) {
-  const allowedSources = getCharacterAllowedSources(character);
-  const cacheKey = getPartyModalCatalogCacheKey(character);
-  if (!cacheKey) return loadCatalogs(allowedSources);
-  const cached = partyModalCatalogCache.get(cacheKey);
-  if (cached) return cached;
-  const pending = loadCatalogs(allowedSources)
-    .then((catalogs) => {
-      partyModalCatalogCache.set(cacheKey, catalogs);
-      return catalogs;
-    })
-    .catch((error) => {
-      partyModalCatalogCache.delete(cacheKey);
-      throw error;
-    });
-  partyModalCatalogCache.set(cacheKey, pending);
-  return pending;
-}
-
-function getSpellSaveAbilityKeys(spell, descriptionText = "") {
-  const keys = [];
-  const addKey = (value) => {
-    const key = normalizeAbilityKey(value);
-    if (!key || keys.includes(key)) return;
-    keys.push(key);
-  };
-
-  const savingThrowList = Array.isArray(spell?.savingThrow) ? spell.savingThrow : [];
-  savingThrowList.forEach((entry) => addKey(entry));
-
-  if (!keys.length && spell?.save && typeof spell.save === "object") {
-    Object.keys(spell.save).forEach((entry) => addKey(entry));
-  }
-
-  if (!keys.length && descriptionText) {
-    const matches = [...descriptionText.matchAll(/\b(strength|dexterity|constitution|intelligence|wisdom|charisma)\s+saving\s+throw\b/gi)];
-    matches.forEach((match) => addKey(match[1]));
-  }
-
-  return keys;
-}
-
-function getSpellCombatContext(state, spell) {
-  if (!spell || typeof spell !== "object") {
-    return {
-      hasSpellAttack: false,
-      attackLabel: "Spell Attack",
-      attackBonus: null,
-      hasSave: false,
-      saveDc: null,
-      saveText: "",
-    };
-  }
-
-  const lines = getSpellDescriptionLines(spell);
-  const descriptionText = lines.join(" ").toLowerCase();
-  const hasMeleeSpellAttack = /melee spell attack/.test(descriptionText);
-  const hasRangedSpellAttack = /ranged spell attack/.test(descriptionText);
-  const hasGenericSpellAttack = /spell attack/.test(descriptionText);
-  const hasSpellAttack = hasMeleeSpellAttack || hasRangedSpellAttack || hasGenericSpellAttack;
-  const attackLabel = hasMeleeSpellAttack ? "Melee Spell Attack" : hasRangedSpellAttack ? "Ranged Spell Attack" : "Spell Attack";
-
-  const saveAbilityKeys = getSpellSaveAbilityKeys(spell, descriptionText);
-  const hasSave = saveAbilityKeys.length > 0 || /\bsaving throw\b/.test(descriptionText);
-
-  const spellcastingAbility = getClassSpellcastingAbility(state?.catalogs, state?.character);
-  const spellcastingMod = spellcastingAbility ? toNumber(state?.derived?.mods?.[spellcastingAbility], 0) : 0;
-  const proficiencyBonus = toNumber(state?.derived?.proficiencyBonus, 0);
-  const hasSpellcastingAbility = Boolean(spellcastingAbility);
-  const attackBonus = hasSpellAttack && hasSpellcastingAbility ? spellcastingMod + proficiencyBonus : null;
-  const saveDc = hasSave && hasSpellcastingAbility ? 8 + proficiencyBonus + spellcastingMod : null;
-  const saveText = saveAbilityKeys.length
-    ? `${saveAbilityKeys.map((key) => ABILITY_LABELS[key] ?? key.toUpperCase()).join("/")} save`
-    : hasSave
-      ? "save"
-      : "";
-
-  return {
-    hasSpellAttack,
-    attackLabel,
-    attackBonus,
-    hasSave,
-    saveDc,
-    saveText,
-  };
-}
-
-function renderTextWithInlineDiceButtons(text) {
-  const source = String(text ?? "");
-  DICE_NOTATION_REGEX.lastIndex = 0;
-  const matches = [...source.matchAll(DICE_NOTATION_REGEX)];
-  if (!matches.length) return esc(source);
-
-  let html = "";
-  let cursor = 0;
-  matches.forEach((match) => {
-    const notationText = String(match[0] ?? "");
-    const notation = notationText.replace(/\s+/g, "");
-    const index = toNumber(match.index, cursor);
-    html += esc(source.slice(cursor, index));
-    html += `<button type="button" class="inline-dice-btn" data-spell-roll="${esc(notation)}" title="Roll ${esc(notation)}">${esc(notationText)}</button>`;
-    cursor = index + notationText.length;
-  });
-  html += esc(source.slice(cursor));
-  return html;
-}
-
-function formatSpellTime(spell) {
-  if (!Array.isArray(spell?.time) || !spell.time.length) return "";
-  return spell.time
-    .map((entry) => {
-      const amount = entry.number == null ? "" : `${entry.number} `;
-      const unit = entry.unit ? String(entry.unit) : "";
-      const condition = entry.condition ? ` (${cleanSpellInlineTags(entry.condition)})` : "";
-      return `${amount}${unit}${condition}`.trim();
-    })
-    .filter(Boolean)
-    .join(", ");
-}
-
-function formatSpellRange(spell) {
-  const range = spell?.range;
-  if (!range || typeof range !== "object") return "";
-  if (range.type === "point") {
-    const distanceType = range.distance?.type ?? "";
-    const distanceAmount = range.distance?.amount;
-    if (!distanceType) return "Point";
-    if (distanceType === "self" || distanceType === "touch" || distanceType === "sight" || distanceType === "unlimited") {
-      return String(distanceType).replace(/^\w/, (char) => char.toUpperCase());
-    }
-    if (distanceAmount == null) return String(distanceType);
-    return `${distanceAmount} ${distanceType}`;
-  }
-  return String(range.type ?? "");
-}
-
-function formatSpellDuration(spell) {
-  if (!Array.isArray(spell?.duration) || !spell.duration.length) return "";
-  return spell.duration
-    .map((entry) => {
-      const concentration = entry.concentration ? "Concentration, " : "";
-      if (entry.type === "instant") return `${concentration}Instantaneous`;
-      if (entry.type === "permanent") return `${concentration}Permanent`;
-      if (entry.type === "special") return `${concentration}Special`;
-      if (entry.type === "timed") {
-        const amount = entry.duration?.amount;
-        const unit = entry.duration?.type;
-        if (amount != null && unit) return `${concentration}${amount} ${unit}`;
-      }
-      return concentration.trim();
-    })
-    .filter(Boolean)
-    .join(", ");
-}
-
-function formatSpellComponents(spell) {
-  const components = spell?.components;
-  if (!components || typeof components !== "object") return "";
-  const values = [];
-  if (components.v) values.push("V");
-  if (components.s) values.push("S");
-  if (components.m) {
-    if (typeof components.m === "string") values.push(`M (${cleanSpellInlineTags(components.m)})`);
-    else if (typeof components.m === "object" && typeof components.m.text === "string") {
-      values.push(`M (${cleanSpellInlineTags(components.m.text)})`);
-    } else {
-      values.push("M");
-    }
-  }
-  return values.join(", ");
-}
-
-function getClassKey(className) {
-  return String(className ?? "")
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z]/g, "");
-}
+const partyModalCatalogCacheApi = createPartyModalCatalogCache({
+  normalizeSourceTag,
+  getCharacterAllowedSources,
+  loadCatalogs,
+});
 
 function getClassSpellcastingAbility(catalogs, character) {
-  const classEntry = getClassCatalogEntry(catalogs, character?.class);
-  if (!classEntry) return null;
-  const raw = classEntry.spellcastingAbility;
-  if (typeof raw === "string") return normalizeAbilityKey(raw);
-  if (Array.isArray(raw)) {
-    for (const value of raw) {
-      const ability = normalizeAbilityKey(value);
-      if (ability) return ability;
-    }
-    return null;
-  }
-  return null;
-}
-
-function doesClassUsePreparedSpells(catalogs, character) {
-  const classEntry = getClassCatalogEntry(catalogs, character?.class);
-  return Boolean(classEntry?.preparedSpells);
-}
-
-function getPreparedSpellcastingAbility(catalogs, character) {
-  if (!doesClassUsePreparedSpells(catalogs, character)) return null;
-  return getClassSpellcastingAbility(catalogs, character);
-}
-
-function getPreparedSpellLimit(state) {
-  if (!doesClassUsePreparedSpells(state?.catalogs, state?.character)) return Infinity;
-  const ability = getPreparedSpellcastingAbility(state?.catalogs, state?.character);
-  const { primaryLevel } = getCharacterClassLevels(state?.character);
-  const abilityMod = ability ? toNumber(state?.derived?.mods?.[ability], 0) : 0;
-  return Math.max(1, primaryLevel + abilityMod);
-}
-
-function countPreparedSpells(state, playOverride = null) {
-  const play = playOverride ?? state?.character?.play ?? {};
-  const selectedSpells = Array.isArray(state?.character?.spells) ? state.character.spells : [];
-  return selectedSpells.reduce((count, spellName) => {
-    const spell = getSpellByName(state, spellName);
-    const isCantrip = toNumber(spell?.level, 0) === 0;
-    if (!isCantrip && !isSpellAlwaysPrepared(state, spellName, play) && Boolean(play.preparedSpells?.[spellName])) return count + 1;
-    return count;
-  }, 0);
-}
-
-function isSpellAlwaysPrepared(state, spellName, playOverride = null) {
-  const play = playOverride ?? state?.character?.play ?? {};
-  const key = String(spellName ?? "").trim().toLowerCase();
-  if (!key || !isRecordObject(play?.autoPreparedSpells)) return false;
-  return Boolean(play.autoPreparedSpells[key]);
-}
-
-function toTitleCase(value) {
-  return String(value ?? "")
-    .replace(/[_-]/g, " ")
-    .split(/\s+/)
-    .filter(Boolean)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
-    .join(" ");
-}
-
-function normalizeAbilityLabel(value) {
-  const key = String(value ?? "").trim().toLowerCase();
-  if (ABILITY_LABELS[key]) return ABILITY_LABELS[key];
-  return toTitleCase(key);
-}
-
-function formatClassPrimaryAbility(classEntry) {
-  const values = Array.isArray(classEntry?.primaryAbility) ? classEntry.primaryAbility : [];
-  if (!values.length) return "";
-  const labels = values
-    .map((entry) => {
-      if (!entry || typeof entry !== "object") return "";
-      const keys = Object.entries(entry)
-        .filter(([, enabled]) => enabled)
-        .map(([key]) => normalizeAbilityLabel(key));
-      return keys.join(" / ");
-    })
-    .filter(Boolean);
-  return labels.join(" or ");
-}
-
-function formatClassStartingSkills(classEntry) {
-  const skills = classEntry?.startingProficiencies?.skills;
-  if (!Array.isArray(skills) || !skills.length) return "";
-
-  const labels = skills
-    .map((entry) => {
-      const choose = entry?.choose;
-      if (choose && Array.isArray(choose.from)) {
-        const count = toNumber(choose.count, 0);
-        const fromList = choose.from.map((skill) => toTitleCase(skill)).join(", ");
-        return count > 0 ? `Choose ${count}: ${fromList}` : fromList;
-      }
-      if (typeof entry === "string") return toTitleCase(entry);
-      return "";
-    })
-    .filter(Boolean);
-
-  return labels.join("; ");
-}
-
-function formatClassRequirementSet(requirements) {
-  if (!requirements || typeof requirements !== "object") return "";
-  const pairs = Object.entries(requirements)
-    .filter(([, score]) => Number.isFinite(toNumber(score, NaN)))
-    .map(([ability, score]) => `${normalizeAbilityLabel(ability)} ${toNumber(score, 0)}`);
-  return pairs.join(" and ");
-}
-
-function formatClassMulticlassRequirements(classEntry) {
-  const requirements = classEntry?.multiclassing?.requirements;
-  if (!requirements || typeof requirements !== "object") return "";
-
-  if (Array.isArray(requirements.or) && requirements.or.length) {
-    const alternatives = requirements.or.map((set) => formatClassRequirementSet(set)).filter(Boolean);
-    if (alternatives.length) return alternatives.join(" or ");
-  }
-
-  return formatClassRequirementSet(requirements);
-}
-
-function getInventoryObjectEntries(character) {
-  const inventory = Array.isArray(character?.inventory) ? character.inventory : [];
-  return inventory.filter((entry) => entry && typeof entry === "object" && !Array.isArray(entry));
-}
-
-function normalizeItemTypeCode(value) {
-  return String(value ?? "")
-    .split("|")[0]
-    .trim()
-    .toUpperCase();
-}
-
-function normalizeWeaponProficiencyToken(value) {
-  const cleanedValue = cleanSpellInlineTags(String(value ?? ""));
-  return cleanedValue
-    .trim()
-    .toLowerCase()
-    .replace(/\./g, "")
-    .replace(/\s+/g, " ");
-}
-
-function collectWeaponProficiencyStrings(value, out = []) {
-  if (typeof value === "string") {
-    const token = normalizeWeaponProficiencyToken(value);
-    if (token) out.push(token);
-    return out;
-  }
-  if (Array.isArray(value)) {
-    value.forEach((entry) => collectWeaponProficiencyStrings(entry, out));
-    return out;
-  }
-  if (value && typeof value === "object") {
-    Object.values(value).forEach((entry) => collectWeaponProficiencyStrings(entry, out));
-  }
-  return out;
-}
-
-function getCharacterWeaponProficiencyTokens(catalogs, character) {
-  const tracks = getClassLevelTracks(character);
-  const tokens = new Set();
-  tracks.forEach((track) => {
-    const classEntry = getClassCatalogEntry(catalogs, track.className);
-    if (!classEntry) return;
-    const primaryWeapons = Array.isArray(classEntry?.startingProficiencies?.weapons) ? classEntry.startingProficiencies.weapons : [];
-    const multiclassWeapons = Array.isArray(classEntry?.multiclassing?.proficienciesGained?.weapons)
-      ? classEntry.multiclassing.proficienciesGained.weapons
-      : [];
-    const sourceEntries = track.isPrimary ? primaryWeapons : multiclassWeapons;
-    collectWeaponProficiencyStrings(sourceEntries).forEach((token) => tokens.add(token));
-  });
-  const unlockedFeatures = getUnlockedFeatures(catalogs, character);
-  unlockedFeatures.forEach((feature) => {
-    const detail = resolveFeatureEntryFromCatalogs(catalogs, feature);
-    collectWeaponProficiencyStrings(detail?.weaponProficiencies).forEach((token) => tokens.add(token));
-    collectWeaponProficiencyStrings(detail?.startingProficiencies?.weapons).forEach((token) => tokens.add(token));
-    const featureName = String(feature?.name ?? "").trim().toLowerCase();
-    const className = String(feature?.className ?? "").trim().toLowerCase();
-    if (className === "cleric" && featureName === "protector") {
-      tokens.add("martial weapons");
-      tokens.add("martial weapon");
-      tokens.add("martial");
-    }
-  });
-  return tokens;
-}
-
-function getInventoryItemName(entry) {
-  return String(entry?.name ?? "").trim();
-}
-
-function isInventoryWeapon(entry) {
-  return Boolean(entry?.weapon) || Boolean(entry?.damageDice) || Boolean(entry?.dmg1) || Boolean(entry?.weaponCategory);
-}
-
-function getInventoryWeaponCategory(entry) {
-  return String(entry?.weaponCategory ?? "").trim().toLowerCase();
-}
-
-function normalizeWeaponPropertyToken(value) {
-  const token = String(value ?? "")
-    .trim()
-    .toUpperCase()
-    .replace(/\./g, "");
-  if (!token) return "";
-  if (token === "FINESSE") return "F";
-  if (token === "LIGHT") return "L";
-  if (token === "THROWN") return "T";
-  if (token === "VERSATILE") return "V";
-  if (token === "HEAVY") return "H";
-  if (token === "RANGED") return "RANGED";
-  if (token === "TWO-HANDED" || token === "TWO HANDED") return "2H";
-  return token;
-}
-
-function collectWeaponPropertyTokens(value, out = []) {
-  if (value == null) return out;
-  if (Array.isArray(value)) {
-    value.forEach((entry) => collectWeaponPropertyTokens(entry, out));
-    return out;
-  }
-  if (typeof value === "object") {
-    Object.entries(value).forEach(([key, entryValue]) => {
-      if (entryValue === true) out.push(key);
-      else collectWeaponPropertyTokens(entryValue, out);
-    });
-    return out;
-  }
-  const raw = String(value ?? "").trim();
-  if (!raw) return out;
-  const parts = raw.split(/[,/;|]/).map((part) => part.trim()).filter(Boolean);
-  if (!parts.length) out.push(raw);
-  else out.push(...parts);
-  return out;
-}
-
-function getInventoryWeaponProperties(entry) {
-  const tokens = [
-    ...collectWeaponPropertyTokens(entry?.properties),
-    ...collectWeaponPropertyTokens(entry?.property),
-  ]
-    .map((prop) => normalizeWeaponPropertyToken(prop))
-    .filter(Boolean);
-  return [...new Set(tokens)];
-}
-
-function getInventoryWeaponFamily(entry) {
-  const category = getInventoryWeaponCategory(entry);
-  if (category.includes("simple")) return "simple";
-  if (category.includes("martial")) return "martial";
-  return "";
-}
-
-function isRangedWeaponEntry(entry) {
-  const category = getInventoryWeaponCategory(entry);
-  const typeCode = normalizeItemTypeCode(entry?.itemType ?? entry?.type);
-  const properties = getInventoryWeaponProperties(entry);
-  return category.includes("ranged") || properties.includes("R") || properties.includes("RANGED") || typeCode === "R";
-}
-
-function normalizeItemNameForProficiency(name) {
-  return String(name ?? "")
-    .toLowerCase()
-    .replace(/\+\d+/g, "")
-    .replace(/[()]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function isWeaponProficient(entry, proficiencyTokens) {
-  if (!(proficiencyTokens instanceof Set) || !proficiencyTokens.size) return false;
-  if (proficiencyTokens.has("all") || proficiencyTokens.has("all weapons")) return true;
-
-  const tokenList = [...proficiencyTokens];
-  const family = getInventoryWeaponFamily(entry);
-  const isRanged = isRangedWeaponEntry(entry);
-  const isMelee = !isRanged;
-
-  const hasSimpleWeaponProficiency = tokenList.some(
-    (token) => token === "simple" || token === "simple weapon" || token === "simple weapons"
-  );
-  const hasMartialWeaponProficiency = tokenList.some(
-    (token) => token === "martial" || token === "martial weapon" || token === "martial weapons"
-  );
-  const hasRangedWeaponProficiency = tokenList.some((token) => token === "ranged weapon" || token === "ranged weapons");
-  const hasMeleeWeaponProficiency = tokenList.some((token) => token === "melee weapon" || token === "melee weapons");
-
-  if (family === "simple" && hasSimpleWeaponProficiency) return true;
-  if (family === "martial" && hasMartialWeaponProficiency) return true;
-  if (isRanged && hasRangedWeaponProficiency) return true;
-  if (isMelee && hasMeleeWeaponProficiency) return true;
-
-  const itemName = normalizeItemNameForProficiency(getInventoryItemName(entry));
-  if (itemName && tokenList.some((token) => normalizeItemNameForProficiency(token) === itemName)) return true;
-
-  return false;
-}
-
-function getWeaponAttackAbility(entry, derived) {
-  const mods = derived?.mods ?? {};
-  const strMod = toNumber(mods.str, 0);
-  const dexMod = toNumber(mods.dex, 0);
-  const properties = getInventoryWeaponProperties(entry);
-  const isRanged = isRangedWeaponEntry(entry);
-  const hasFinesse = properties.includes("F");
-
-  if (isRanged) return { key: "dex", mod: dexMod };
-  if (hasFinesse) return dexMod >= strMod ? { key: "dex", mod: dexMod } : { key: "str", mod: strMod };
-  return { key: "str", mod: strMod };
-}
-
-function formatDamageNotation(diceNotation, modifier) {
-  const notation = String(diceNotation ?? "").trim();
-  if (!notation) return "";
-  const mod = toNumber(modifier, 0);
-  if (!mod) return notation;
-  return `${notation} ${mod > 0 ? "+" : "-"} ${Math.abs(mod)}`;
-}
-
-function parseItemWeaponBonus(value, fallback = 0) {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  const text = String(value ?? "").trim();
-  if (!text) return fallback;
-  const direct = Number(text);
-  if (Number.isFinite(direct)) return direct;
-  const match = text.match(/[+\-]?\d+/);
-  if (!match) return fallback;
-  const parsed = Number(match[0]);
-  return Number.isFinite(parsed) ? parsed : fallback;
-}
-
-function normalizeDamageTypeLabel(value) {
-  const raw = String(value ?? "").trim();
-  if (!raw) return "";
-  const code = raw.toUpperCase();
-  const DAMAGE_TYPE_BY_CODE = {
-    A: "acid",
-    B: "bludgeoning",
-    C: "cold",
-    F: "fire",
-    I: "poison",
-    L: "lightning",
-    N: "necrotic",
-    O: "force",
-    P: "piercing",
-    R: "radiant",
-    S: "slashing",
-    T: "thunder",
-    Y: "psychic",
-  };
-  if (DAMAGE_TYPE_BY_CODE[code]) return DAMAGE_TYPE_BY_CODE[code];
-  return raw.toLowerCase();
-}
-
-function getWeaponNameBonus(entry) {
-  const match = getInventoryItemName(entry).match(/(?:^|\s)\+(\d+)(?:\s|$|\))/i);
-  if (!match) return 0;
-  const parsed = Number(match[1]);
-  return Number.isFinite(parsed) ? parsed : 0;
-}
-
-function normalizeFeatureAttackToken(value) {
-  return cleanSpellInlineTags(String(value ?? ""))
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function scoreFeatureAttackNameOverlap(left, right) {
-  const a = normalizeFeatureAttackToken(left);
-  const b = normalizeFeatureAttackToken(right);
-  if (!a || !b) return 0;
-  if (a === b) return 100;
-  if (a.includes(b) || b.includes(a)) return 60;
-  const aTokens = new Set(a.split(" ").filter(Boolean));
-  const bTokens = new Set(b.split(" ").filter(Boolean));
-  let overlap = 0;
-  aTokens.forEach((token) => {
-    if (bTokens.has(token)) overlap += 1;
-  });
-  return overlap;
-}
-
-function getClassFeatureAttackBuilders() {
-  const buildUnarmedStrikeAttack = (context) => {
-    const rollNotation = extractSimpleNotation(context?.effect?.rollNotation ?? context?.effect?.value ?? "");
-    if (!rollNotation) return null;
-    const featureText = String(context?.featureText ?? "").toLowerCase();
-    const effectLabel = String(context?.effect?.label ?? "");
-    const hintsUnarmed = /unarmed strike|unarmed attacks?|unarmed/.test(featureText);
-    const hintsAttack = /\battack\b/.test(featureText);
-    const labelHints = /martial arts/i.test(effectLabel);
-    if (!(labelHints || (hintsUnarmed && hintsAttack))) return null;
-
-    const strMod = toNumber(context?.derived?.mods?.str, 0);
-    const dexMod = toNumber(context?.derived?.mods?.dex, 0);
-    const allowsDex = /dexterity (?:modifier )?instead of strength/.test(featureText) || /martial arts/i.test(effectLabel);
-    const ability = allowsDex && dexMod >= strMod ? { key: "dex", mod: dexMod } : { key: "str", mod: strMod };
-    const proficiencyBonus = toNumber(context?.derived?.proficiencyBonus, 0);
-    const damageNotation = formatDamageNotation(rollNotation, ability.mod);
-    if (!damageNotation) return null;
-    return {
-      source: "auto-feature",
-      autoSourceLabel: cleanSpellInlineTags(context?.effect?.label || context?.feature?.name || "Class Feature"),
-      name: "Unarmed Strike",
-      toHit: signed(ability.mod + proficiencyBonus),
-      damage: `${damageNotation} bludgeoning`,
-      proficient: true,
-      ability: ability.key,
-    };
-  };
-
-  return [buildUnarmedStrikeAttack];
-}
-
-function getClassFeatureAutoAttacks(state) {
-  const character = state?.character ?? {};
-  const progression = character?.progression ?? {};
-  const effects = Array.isArray(progression?.classTableEffects) ? progression.classTableEffects : [];
-  const unlocked = Array.isArray(progression?.unlockedFeatures) ? progression.unlockedFeatures : [];
-  if (!effects.length || !unlocked.length) return [];
-
-  const effectCandidates = effects.filter((effect) => extractSimpleNotation(effect?.rollNotation ?? effect?.value ?? ""));
-  if (!effectCandidates.length) return [];
-
-  const builders = getClassFeatureAttackBuilders();
-  const attacks = [];
-  const seen = new Set();
-
-  effectCandidates.forEach((effect) => {
-    const className = String(effect?.className ?? "").trim().toLowerCase();
-    if (!className) return;
-    let bestFeature = null;
-    let bestScore = 0;
-    unlocked.forEach((feature) => {
-      if (String(feature?.className ?? "").trim().toLowerCase() !== className) return;
-      const score = scoreFeatureAttackNameOverlap(effect?.label, feature?.name);
-      if (score > bestScore) {
-        bestScore = score;
-        bestFeature = feature;
-      }
-    });
-    if (!bestFeature) return;
-    const detail = resolveFeatureEntryFromCatalogs(state?.catalogs, bestFeature);
-    const featureText = getRuleDescriptionLines(detail).join(" ");
-    const context = {
-      state,
-      derived: state?.derived ?? {},
-      effect,
-      feature: bestFeature,
-      featureText,
-    };
-    builders.forEach((builder) => {
-      const attack = builder(context);
-      if (!attack) return;
-      const key = `${String(attack?.name ?? "").trim().toLowerCase()}|${String(attack?.autoSourceLabel ?? "").trim().toLowerCase()}`;
-      if (!key || seen.has(key)) return;
-      seen.add(key);
-      attacks.push(attack);
-    });
-  });
-
-  return attacks;
-}
-
-function getAutoAttacks(state) {
-  const character = state?.character ?? {};
-  const equippedWeapons = getInventoryObjectEntries(character).filter((entry) => Boolean(entry?.equipped) && isInventoryWeapon(entry));
-  const featureAttacks = getClassFeatureAutoAttacks(state);
-  if (!equippedWeapons.length) return featureAttacks;
-  const fightingStyles = getCharacterFightingStyleSet(character, state?.catalogs);
-  const hasArcheryStyle = fightingStyles.has("archery");
-  const hasDuelingStyle = fightingStyles.has("dueling");
-  const equippedWeaponCount = equippedWeapons.length;
-
-  const profTokens = getCharacterWeaponProficiencyTokens(state?.catalogs, character);
-  const weaponAttacks = equippedWeapons
-    .map((entry) => {
-      const name = getInventoryItemName(entry);
-      if (!name) return null;
-      const ability = getWeaponAttackAbility(entry, state?.derived);
-      const properties = getInventoryWeaponProperties(entry);
-      const isRanged = isRangedWeaponEntry(entry);
-      const isMelee = !isRanged;
-      const isTwoHanded = properties.includes("2H");
-      const proficient = isWeaponProficient(entry, profTokens);
-      const proficiencyBonus = proficient ? toNumber(state?.derived?.proficiencyBonus, 0) : 0;
-      const nameBonus = getWeaponNameBonus(entry);
-      const attackBonus = parseItemWeaponBonus(entry?.weaponAttackBonus, nameBonus);
-      const damageBonus = parseItemWeaponBonus(entry?.weaponDamageBonus, nameBonus);
-      const styleAttackBonus = hasArcheryStyle && isRanged ? 2 : 0;
-      const styleDamageBonus = hasDuelingStyle && isMelee && !isTwoHanded && equippedWeaponCount === 1 ? 2 : 0;
-      const toHit = signed(ability.mod + proficiencyBonus + attackBonus + styleAttackBonus);
-      const rawDamageDice = String(entry?.damageDice ?? entry?.dmg1 ?? "").trim();
-      const baseDamage = rawDamageDice ? formatDamageNotation(rawDamageDice, ability.mod + damageBonus + styleDamageBonus) : "";
-      const damageType = normalizeDamageTypeLabel(entry?.damageType ?? entry?.dmgType);
-      const damage = baseDamage && damageType ? `${baseDamage} ${damageType}` : baseDamage;
-      return {
-        source: "auto",
-        name,
-        toHit,
-        damage,
-        proficient,
-        ability: ability.key,
-      };
-    })
-    .filter(Boolean);
-  return [...featureAttacks, ...weaponAttacks];
-}
-
-function getClassFeatureRows(classEntry) {
-  const features = Array.isArray(classEntry?.classFeatures) ? classEntry.classFeatures : [];
-  return features
-    .map((feature) => {
-      const token = typeof feature === "string" ? feature : feature?.classFeature;
-      const parsed = parseClassFeatureToken(token, classEntry?.source, classEntry?.name);
-      if (!parsed) return null;
-      return { name: parsed.name, level: parsed.level };
-    })
-    .filter(Boolean);
-}
-
-function getSubclassFeatureRows(subclassEntry) {
-  const features = Array.isArray(subclassEntry?.subclassFeatures) ? subclassEntry.subclassFeatures : [];
-  return features
-    .map((feature) => {
-      const token = typeof feature === "string" ? feature : feature?.subclassFeature;
-      const parsed = parseSubclassFeatureToken(
-        token,
-        subclassEntry?.source,
-        subclassEntry?.className,
-        subclassEntry?.shortName ?? subclassEntry?.name
-      );
-      if (!parsed) return null;
-      return { name: parsed.name, level: parsed.level };
-    })
-    .filter(Boolean);
-}
-
-function renderEntryDescriptionHtml(entry, emptyMessage) {
-  const lines = getRuleDescriptionLines(entry);
-  if (!lines.length) return `<p class='muted'>${esc(emptyMessage)}</p>`;
-  const maxLines = 14;
-  const clipped = lines.slice(0, maxLines);
-  const lineHtml = clipped
-    .map((line) => `<p>${renderTextWithInlineDiceButtons(line)}</p>`)
-    .join("");
-  const overflowNote = lines.length > maxLines ? "<p class='muted'>Additional rules text omitted for brevity.</p>" : "";
-  return `${lineHtml}${overflowNote}`;
-}
-
-function renderFeatureTimelineHtml(rows, currentLevel, emptyMessage) {
-  const sortedRows = [...(Array.isArray(rows) ? rows : [])].sort((a, b) => {
-    const levelDelta = toNumber(a?.level, 999) - toNumber(b?.level, 999);
-    if (levelDelta !== 0) return levelDelta;
-    return String(a?.name ?? "").localeCompare(String(b?.name ?? ""));
-  });
-  const deduped = sortedRows.filter(
-    (row, idx, list) =>
-      list.findIndex(
-        (other) =>
-          String(other?.name ?? "").trim().toLowerCase() === String(row?.name ?? "").trim().toLowerCase()
-          && toNumber(other?.level, -1) === toNumber(row?.level, -1)
-      ) === idx
-  );
-  if (!deduped.length) return `<p class='muted'>${esc(emptyMessage)}</p>`;
-  return `
-    <ul class="class-feature-list">
-      ${deduped
-        .map((row) => {
-          const rowLevel = Math.max(0, toNumber(row?.level, 0));
-          const unlocked = rowLevel > 0 && rowLevel <= currentLevel;
-          const statusPill = unlocked ? '<span class="pill">Unlocked</span>' : '<span class="pill">Locked</span>';
-          return `<li class="feature-row"><span class="class-feature-level">Lv ${esc(rowLevel || "?")}</span><span class="feature-main"><span>${esc(
-            String(row?.name ?? "")
-          )}</span>${statusPill}</span></li>`;
-        })
-        .join("")}
-    </ul>
-  `;
-}
-
-function openClassDetailsModal(state) {
-  const className = state.character?.class;
-  if (!className) {
-    setDiceResult("Class details unavailable: no class selected.", true);
-    return;
-  }
-
-  const classEntry = getClassCatalogEntry(state.catalogs, className);
-  if (!classEntry) {
-    setDiceResult(`Class details unavailable: ${className}`, true);
-    return;
-  }
-
-  const currentLevel = Math.max(1, Math.min(20, toNumber(state.character?.level, 1)));
-  const hitDie = classEntry?.hd?.faces ? `d${classEntry.hd.faces}` : "";
-  const saveProficiencies = Array.isArray(classEntry?.proficiency)
-    ? classEntry.proficiency.map((ability) => normalizeAbilityLabel(ability)).join(", ")
-    : "";
-  const armorProficiencies = Array.isArray(classEntry?.startingProficiencies?.armor)
-    ? classEntry.startingProficiencies.armor.map((entry) => toTitleCase(entry)).join(", ")
-    : "";
-  const weaponProficiencies = Array.isArray(classEntry?.startingProficiencies?.weapons)
-    ? classEntry.startingProficiencies.weapons.map((entry) => toTitleCase(entry)).join(", ")
-    : "";
-  const skillChoices = formatClassStartingSkills(classEntry);
-  const primaryAbility = formatClassPrimaryAbility(classEntry);
-  const multiclassRequirements = formatClassMulticlassRequirements(classEntry);
-
-  const metaRows = [
-    { label: "Source", value: classEntry.sourceLabel ?? classEntry.source ?? "" },
-    { label: "Hit Die", value: hitDie },
-    { label: "Primary Ability", value: primaryAbility },
-    { label: "Saving Throws", value: saveProficiencies },
-    { label: "Armor Proficiencies", value: armorProficiencies },
-    { label: "Weapon Proficiencies", value: weaponProficiencies },
-    { label: "Skill Proficiencies", value: skillChoices },
-    { label: "Multiclass Requirement", value: multiclassRequirements },
-  ].filter((row) => row.value);
-
-  const progression = recomputeCharacterProgression(state.catalogs, state.character);
-  const unlockedRows = progression.unlockedFeatures
-    .filter((row) => row.level == null || row.level <= currentLevel)
-    .map((row) => {
-      const subtype = row.type === "subclass" ? ` (${row.subclassName || "Subclass"})` : "";
-      return `<li><span class="class-feature-level">Lv ${row.level ?? "?"}</span><span>${esc(`${row.name}${subtype}`)}</span></li>`;
-    })
-    .join("");
-  const classFeatureRows = getClassFeatureRows(classEntry);
-  const classOverviewHtml = renderEntryDescriptionHtml(classEntry, "No class description is available for this entry.");
-  const classTimelineHtml = renderFeatureTimelineHtml(
-    classFeatureRows,
-    currentLevel,
-    "No class feature progression list is available for this entry."
-  );
-  const subclassEntry = getSelectedSubclassEntry(state.catalogs, state.character);
-
-  const close = openModal({
-    title: `${classEntry.name} Details`,
-    bodyHtml: `
-      <div class="spell-meta-grid">
-        ${metaRows.map((row) => `<div><strong>${esc(row.label)}:</strong> ${esc(row.value)}</div>`).join("")}
-      </div>
-      ${
-        subclassEntry
-          ? `<p class="muted">Subclass: <strong>${esc(subclassEntry.name)}</strong> (${esc(subclassEntry.sourceLabel ?? subclassEntry.source ?? "Unknown source")})</p>`
-          : ""
-      }
-      <h4>Overview</h4>
-      <div class="spell-description">${classOverviewHtml}</div>
-      <h4>Class Feature Progression</h4>
-      ${classTimelineHtml}
-      <h4>Current Features Through Level ${currentLevel}</h4>
-      ${
-        unlockedRows
-          ? `<ul class="class-feature-list">${unlockedRows}</ul>`
-          : "<p class='muted'>No class feature list available for this entry.</p>"
-      }
-    `,
-    actions: [{ label: "Close", secondary: true, onClick: (done) => done() }],
-  });
-  document.querySelectorAll("[data-spell-roll]").forEach((button) => {
-    button.addEventListener("click", () => {
-      const notation = button.dataset.spellRoll;
-      if (!notation) return;
-      close();
-      rollVisualNotation(classEntry.name, notation);
-    });
-  });
-}
-
-async function openClassDetailsModalForCharacter(character) {
-  const candidate = character && typeof character === "object" && !Array.isArray(character) ? character : null;
-  if (!candidate) {
-    setDiceResult("Class details unavailable: character not found.", true);
-    return;
-  }
-  const catalogs = await getCachedPartyModalCatalogs(candidate);
-  openClassDetailsModal({
-    ...store.getState(),
-    catalogs,
-    character: candidate,
-  });
-}
-
-function openSubclassDetailsModal(state) {
-  const subclassEntry = getSelectedSubclassEntry(state.catalogs, state.character);
-  if (!subclassEntry) {
-    setDiceResult("Subclass details unavailable: no subclass selected.", true);
-    return;
-  }
-  const currentLevel = Math.max(1, Math.min(20, toNumber(state.character?.level, 1)));
-  const className = String(subclassEntry?.className ?? state.character?.class ?? "").trim();
-  const classSourceLabel = SOURCE_LABELS[normalizeSourceTag(subclassEntry?.classSource)] ?? subclassEntry?.classSource ?? "";
-  const metaRows = [
-    { label: "Source", value: subclassEntry.sourceLabel ?? subclassEntry.source ?? "" },
-    { label: "Class", value: className },
-    { label: "Class Source", value: classSourceLabel },
-  ].filter((row) => row.value);
-  const progression = recomputeCharacterProgression(state.catalogs, state.character);
-  const unlockedRows = progression.unlockedFeatures
-    .filter((row) => row.type === "subclass")
-    .filter((row) => String(row?.subclassName ?? "").trim().toLowerCase() === String(subclassEntry?.name ?? "").trim().toLowerCase())
-    .filter((row) => row.level == null || row.level <= currentLevel)
-    .map((row) => `<li><span class="class-feature-level">Lv ${row.level ?? "?"}</span><span>${esc(String(row?.name ?? "").trim())}</span></li>`)
-    .join("");
-  const subclassFeatureRows = getSubclassFeatureRows(subclassEntry);
-  const subclassOverviewHtml = renderEntryDescriptionHtml(subclassEntry, "No subclass description is available for this entry.");
-  const subclassTimelineHtml = renderFeatureTimelineHtml(
-    subclassFeatureRows,
-    currentLevel,
-    "No subclass feature progression list is available for this entry."
-  );
-  const close = openModal({
-    title: `${subclassEntry.name} Details`,
-    bodyHtml: `
-      <div class="spell-meta-grid">
-        ${metaRows.map((row) => `<div><strong>${esc(row.label)}:</strong> ${esc(row.value)}</div>`).join("")}
-      </div>
-      <h4>Overview</h4>
-      <div class="spell-description">${subclassOverviewHtml}</div>
-      <h4>Subclass Feature Progression</h4>
-      ${subclassTimelineHtml}
-      <h4>Current Subclass Features Through Level ${currentLevel}</h4>
-      ${
-        unlockedRows
-          ? `<ul class="class-feature-list">${unlockedRows}</ul>`
-          : "<p class='muted'>No subclass feature list available for this entry.</p>"
-      }
-    `,
-    actions: [{ label: "Close", secondary: true, onClick: (done) => done() }],
-  });
-  document.querySelectorAll("[data-spell-roll]").forEach((button) => {
-    button.addEventListener("click", () => {
-      const notation = button.dataset.spellRoll;
-      if (!notation) return;
-      close();
-      rollVisualNotation(subclassEntry.name, notation);
-    });
-  });
-}
-
-async function openSubclassDetailsModalForCharacter(character) {
-  const candidate = character && typeof character === "object" && !Array.isArray(character) ? character : null;
-  if (!candidate) {
-    setDiceResult("Subclass details unavailable: character not found.", true);
-    return;
-  }
-  const catalogs = await getCachedPartyModalCatalogs(candidate);
-  openSubclassDetailsModal({
-    ...store.getState(),
-    catalogs,
-    character: candidate,
-  });
+  return preparedSpellRules.getClassSpellcastingAbility(catalogs, character);
 }
 
 async function loadCatalogsForCharacter(character) {
-  await ensureRuntimeSourcePresets();
-  const resolvedPreset = resolveRuntimeSourcePreset(character?.sourcePreset ?? DEFAULT_SOURCE_PRESET);
+  await runtimeSourcePresetsState.ensureRuntimeSourcePresets();
+  const resolvedPreset = runtimeSourcePresetsState.resolveRuntimeSourcePreset(character?.sourcePreset ?? DEFAULT_SOURCE_PRESET);
   const nextCharacter = character && character.sourcePreset !== resolvedPreset
     ? { ...character, sourcePreset: resolvedPreset }
     : character;
@@ -6498,18 +559,18 @@ async function loadCatalogsForCharacter(character) {
   const catalogs = await loadCatalogs(getCharacterAllowedSources(nextCharacter));
   store.setCatalogs(catalogs);
   const nextState = store.getState();
-  updateCharacterWithRequiredSettings(nextState, {}, { preserveUserOverrides: true });
+  characterUpdater.updateCharacterWithRequiredSettings(nextState, {}, { preserveUserOverrides: true });
 }
 
 async function applyRemoteCharacterPayload(payload, fallbackId = null, defaultMode = "build") {
   const parsed = getCharacterFromApiPayload(payload, fallbackId);
-  updatePersistenceStatusFromPayload(payload);
+  changeLogDomain.updatePersistenceStatusFromPayload(payload);
   appState.showOnboardingHome = false;
   appState.startupErrorMessage = "";
   appState.isRemoteSaveSuppressed = true;
   try {
-    await ensureRuntimeSourcePresets();
-    const resolvedPreset = resolveRuntimeSourcePreset(parsed.character?.sourcePreset ?? DEFAULT_SOURCE_PRESET);
+    await runtimeSourcePresetsState.ensureRuntimeSourcePresets();
+    const resolvedPreset = runtimeSourcePresetsState.resolveRuntimeSourcePreset(parsed.character?.sourcePreset ?? DEFAULT_SOURCE_PRESET);
     const nextCharacter = parsed.character?.sourcePreset === resolvedPreset
       ? parsed.character
       : { ...parsed.character, sourcePreset: resolvedPreset };
@@ -6517,281 +578,38 @@ async function applyRemoteCharacterPayload(payload, fallbackId = null, defaultMo
     // Apply catalogs before hydration so derived HP uses the correct source data
     // on the first render of the loaded character.
     store.setCatalogs(catalogs);
-    seedCharacterLogState(nextCharacter);
+    changeLogDomain.seedCharacterLogState(nextCharacter);
     store.hydrate(nextCharacter);
     store.setMode(defaultMode);
     store.setStep(0);
-    updateCharacterWithRequiredSettings(store.getState(), {}, { preserveUserOverrides: true });
+    characterUpdater.updateCharacterWithRequiredSettings(store.getState(), {}, { preserveUserOverrides: true });
   } finally {
     appState.isRemoteSaveSuppressed = false;
   }
-  appState.localCharacterVersion = Math.max(appState.localCharacterVersion, getCharacterVersion(parsed.character));
+  appState.localCharacterVersion = Math.max(appState.localCharacterVersion, changeLogDomain.getCharacterVersion(parsed.character));
   appState.localCharacterUpdatedAt =
-    (typeof getSyncMeta(parsed.character).updatedAt === "string" && getSyncMeta(parsed.character).updatedAt) ||
+    (typeof changeLogDomain.getSyncMeta(parsed.character).updatedAt === "string" && changeLogDomain.getSyncMeta(parsed.character).updatedAt) ||
     appState.localCharacterUpdatedAt;
-  lastPersistedCharacterFingerprint = buildCharacterFingerprint(parsed.character);
-  rememberLastCharacterId(parsed.id);
-  upsertCharacterHistory(parsed.character, { touchAccess: true });
+  lastPersistedCharacterFingerprint = changeLogDomain.buildCharacterFingerprint(parsed.character);
+  historyApi.rememberLastCharacterId(parsed.id);
+  historyApi.upsertCharacterHistory(parsed.character, { touchAccess: true });
   currentUrlCharacterId = parsed.id;
 }
 
-function renderOnboardingHome() {
-  const lastCharacterId = getLastCharacterId();
-  const hasLastCharacter = Boolean(lastCharacterId);
-  const openLastButtonClass = hasLastCharacter ? "btn onboarding-create-btn" : "btn secondary";
-  const createButtonClass = hasLastCharacter ? "btn secondary" : "btn onboarding-create-btn";
-  const lastCharacterSummary = hasLastCharacter
-    ? formatCharacterHistoryEntrySummary(loadCharacterHistory().find((entry) => entry.id === lastCharacterId))
-    : "";
-  const lastPartyId = partyFeature.getLastPartyId();
-  const hasLastParty = Boolean(lastPartyId);
-  const lastPartySummary = partyFeature.getLastPartySummary();
-  return `
-    <main class="layout layout-onboarding">
-      <section class="card onboarding-hero-card">
-        <div class="onboarding-hero-head">
-          <div class="title-with-history">
-            <a class="app-brand-link" href="/" aria-label="Go to home">
-              <img class="app-brand-logo" src="/icons/icon.svg" alt="Action Surge logo" />
-            </a>
-            <h1 class="title">Action Surge</h1>
-          </div>
-        </div>
-        <p class="onboarding-kicker">Built for quick and simple play.</p>
-        <h2 class="onboarding-tagline">Spend less time prepping your sheet and more time playing your turn.</h2>
-        ${
-          appState.startupErrorMessage
-            ? `<p class="muted onboarding-warning">Could not load requested character. ${esc(appState.startupErrorMessage)}</p>`
-            : ""
-        }
-        ${renderPersistenceNotice()}
-      </section>
-      <section class="card onboarding-cta-card">
-        ${renderCharacterHistorySelector("home-character-history-select", null, {
-          className: "character-history-control onboarding-history-select",
-        })}
-        <div class="onboarding-actions">
-          <button class="${openLastButtonClass}" id="home-open-last" type="button" ${hasLastCharacter ? "" : "disabled"}>
-            Open Last Character
-          </button>
-          <button class="${createButtonClass}" id="home-create-character" type="button">Create Character</button>
-        </div>
-        <p class="muted onboarding-last-character">
-          ${
-            hasLastCharacter
-              ? `Last character: ${esc(lastCharacterSummary)}`
-              : "No recent character found in this browser."
-          }
-        </p>
-        <div class="onboarding-actions onboarding-party-actions">
-          <button class="btn onboarding-create-btn" id="home-open-last-party" type="button" ${hasLastParty ? "" : "disabled"}>
-            Open Last Party
-          </button>
-          <button class="btn secondary" id="home-create-party" type="button">Create Party</button>
-        </div>
-        <p class="muted onboarding-last-character">Recent party: ${esc(lastPartySummary)}</p>
-      </section>
-    </main>
-  `;
-}
-
-function bindOnboardingEvents() {
-  app.querySelector("#home-character-history-select")?.addEventListener("change", async (evt) => {
-    const selectedId = String(evt.target.value || "").trim();
-    if (!selectedId) return;
-    evt.target.disabled = true;
-    try {
-      if (selectedId === NEW_CHARACTER_OPTION_VALUE) {
-        await createAndOpenNewCharacter();
-        return;
-      }
-      if (!isUuid(selectedId)) return;
-      await switchCharacterFromHistory(selectedId);
-    } finally {
-      evt.target.disabled = false;
-    }
-  });
-
-  app.querySelector("#home-create-character")?.addEventListener("click", async () => {
-    const button = app.querySelector("#home-create-character");
-    if (button) button.disabled = true;
-    try {
-      await createAndOpenNewCharacter();
-    } catch (error) {
-      appState.startupErrorMessage = error instanceof Error ? error.message : "Failed to create character";
-      render(store.getState());
-    } finally {
-      if (button) button.disabled = false;
-    }
-  });
-
-  app.querySelector("#home-open-last")?.addEventListener("click", async () => {
-    const id = getLastCharacterId();
-    if (!id) return;
-    try {
-      setCharacterIdInUrl(id, false);
-      await loadCharacterById(id);
-      render(store.getState());
-    } catch (error) {
-      appState.startupErrorMessage = error instanceof Error ? error.message : "Failed to load last character";
-      clearLastCharacterId();
-      appState.showOnboardingHome = true;
-      render(store.getState());
-    }
-  });
-
-  app.querySelector("#home-create-party")?.addEventListener("click", async () => {
-    const button = app.querySelector("#home-create-party");
-    if (button) button.disabled = true;
-    try {
-      await partyFeature.createAndOpenNewParty();
-    } catch (error) {
-      appState.startupErrorMessage = error instanceof Error ? error.message : "Failed to create party";
-      appState.showOnboardingHome = true;
-      render(store.getState());
-    } finally {
-      if (button) button.disabled = false;
-    }
-  });
-
-  app.querySelector("#home-open-last-party")?.addEventListener("click", async () => {
-    const partyId = partyFeature.getLastPartyId();
-    if (!isUuid(partyId)) return;
-    try {
-      await partyFeature.loadPartyIntoContext(partyId, { replaceUrl: false });
-    } catch (error) {
-      appState.startupErrorMessage = error instanceof Error ? error.message : "Failed to load last party";
-      appState.showOnboardingHome = true;
-      render(store.getState());
-    }
-  });
-}
-
-function bindPartyEvents() {
-  partyFeature.bindPartyEvents();
-}
-
-const EDIT_PASSWORD_PROMPT_INPUT_ID = "build-mode-edit-password-input";
-const EDIT_PASSWORD_PROMPT_STATUS_ID = "build-mode-edit-password-status";
-
-function isInvalidEditPasswordError(error) {
-  return Number(error?.status) === 403 && String(error?.payload?.code ?? "") === "INVALID_EDIT_PASSWORD";
-}
-
-function getEditPasswordValidationErrorMessage(error) {
-  if (isInvalidEditPasswordError(error)) return "Invalid password.";
-  const status = Number(error?.status);
-  if (!Number.isFinite(status) || status <= 0) {
-    return "Could not reach the server to validate the password. Check your connection and try again.";
-  }
-  if (status >= 500) {
-    return "The server could not validate the password right now. Try again in a moment.";
-  }
-  return error instanceof Error ? error.message : "Could not validate password.";
-}
-
-function openInfoModal(title, message) {
-  openModal({
-    title,
-    bodyHtml: `<p class="subtitle">${esc(message)}</p>`,
-    actions: [{ label: "Close", secondary: true, onClick: (done) => done() }],
-  });
-}
-
-function openEditPasswordPromptModal(characterId) {
-  if (document.getElementById(EDIT_PASSWORD_PROMPT_INPUT_ID)) return;
-  let isSubmitting = false;
-  let closeModal = () => {};
-
-  const setStatusMessage = (message) => {
-    const statusEl = document.getElementById(EDIT_PASSWORD_PROMPT_STATUS_ID);
-    if (!statusEl) return;
-    statusEl.textContent = String(message ?? "");
-  };
-
-  const submitPassword = async () => {
-    if (isSubmitting) return;
-    const inputEl = document.getElementById(EDIT_PASSWORD_PROMPT_INPUT_ID);
-    if (!inputEl) return;
-    const enteredPassword = String(inputEl.value ?? "");
-    isSubmitting = true;
-    inputEl.disabled = true;
-    setStatusMessage("");
-    try {
-      await validateCharacterEditPassword(characterId, enteredPassword);
-      store.updateCharacter({ editPassword: enteredPassword });
-      closeModal();
-      store.setMode("build");
-    } catch (error) {
-      setStatusMessage(getEditPasswordValidationErrorMessage(error));
-    } finally {
-      isSubmitting = false;
-      inputEl.disabled = false;
-      inputEl.focus();
-      inputEl.select();
-    }
-  };
-
-  closeModal = openModal({
-    title: "Enter Password",
-    bodyHtml: `
-      <p class="subtitle">This character is protected. Enter the password to continue.</p>
-      <label>Password
-        <input id="${EDIT_PASSWORD_PROMPT_INPUT_ID}" type="password" autocomplete="current-password">
-      </label>
-      <p id="${EDIT_PASSWORD_PROMPT_STATUS_ID}" class="muted" aria-live="polite"></p>
-    `,
-    actions: [
-      { label: "Unlock", onClick: () => void submitPassword() },
-      { label: "Cancel", secondary: true, onClick: (done) => done() },
-    ],
-  });
-
-  const inputEl = document.getElementById(EDIT_PASSWORD_PROMPT_INPUT_ID);
-  inputEl?.focus();
-  inputEl?.addEventListener("keydown", (event) => {
-    if (event.key !== "Enter") return;
-    event.preventDefault();
-    void submitPassword();
-  });
-}
-
-function bindModeEvents() {
-
-  app.querySelectorAll("[data-mode]").forEach((button) => {
-    button.addEventListener("click", async () => {
-      const targetMode = button.dataset.mode === "play" ? "play" : "build";
-      if (targetMode !== "build") {
-        store.setMode(targetMode);
-        return;
-      }
-
-      const currentState = store.getState();
-      const characterId = String(currentState.character?.id ?? "").trim();
-      const localEditPassword = getCharacterEditPassword(currentState.character);
-      if (localEditPassword) {
-        store.setMode("build");
-        return;
-      }
-      if (!isUuid(characterId)) {
-        store.setMode("build");
-        return;
-      }
-
-      try {
-        await validateCharacterEditPassword(characterId, "");
-        store.updateCharacter({ editPassword: "" });
-        store.setMode("build");
-      } catch (error) {
-        if (isInvalidEditPasswordError(error)) {
-          openEditPasswordPromptModal(characterId);
-          return;
-        }
-        openInfoModal("Password Check Failed", getEditPasswordValidationErrorMessage(error));
-      }
-    });
-  });
-}
+const editPasswordController = createEditPasswordController({
+  openModal,
+  esc,
+  store,
+  validateCharacterEditPassword,
+  getCharacterEditPassword,
+  isUuid,
+});
+const partyCharacterDetailsModals = createPartyCharacterDetailsModals({
+  store,
+  setDiceResult: diceUi.setDiceResult,
+  getCachedPartyModalCatalogs: partyModalCatalogCacheApi.getCachedPartyModalCatalogs,
+  characterDetailsModals,
+});
 
 function bindCharacterHistoryEvents() {
   app.querySelectorAll("[data-character-history-select]").forEach((select) => {
@@ -6821,6 +639,10 @@ function withUpdatedPlay(state, updater) {
   updateCharacterWithRequiredSettings(currentState, { play: nextPlay }, { preserveUserOverrides: true });
 }
 
+function updateCharacterWithRequiredSettings(state, updates, options = {}) {
+  return characterUpdater.updateCharacterWithRequiredSettings(state, updates, options);
+}
+
 const pickers = createPickers({
   openModal,
   store,
@@ -6828,30 +650,23 @@ const pickers = createPickers({
   toNumber,
   matchesSearchQuery,
   buildEntityId,
-  doesCharacterMeetFeatPrerequisites,
-  doesCharacterMeetOptionalFeaturePrerequisites,
+  doesCharacterMeetFeatPrerequisites: progressionCore.doesCharacterMeetFeatPrerequisites,
+  doesCharacterMeetOptionalFeaturePrerequisites: progressionCore.doesCharacterMeetOptionalFeaturePrerequisites,
   updateCharacterWithRequiredSettings,
-  getSpellByName,
-  getSpellLevelLabel,
+  getSpellByName: spellTextAndContext.getSpellByName,
+  getSpellLevelLabel: spellTextAndContext.getSpellLevelLabel,
   spellSchoolLabels: SPELL_SCHOOL_LABELS,
-  formatSpellTime,
-  formatSpellRange,
-  formatSpellDuration,
-  formatSpellComponents,
-  getSpellDescriptionLines,
-  getRuleDescriptionLines,
-  renderTextWithInlineDiceButtons,
-  rollVisualNotation,
-  setDiceResult,
+  formatSpellTime: spellTextAndContext.formatSpellTime,
+  formatSpellRange: spellTextAndContext.formatSpellRange,
+  formatSpellDuration: spellTextAndContext.formatSpellDuration,
+  formatSpellComponents: spellTextAndContext.formatSpellComponents,
+  getSpellDescriptionLines: spellTextAndContext.getSpellDescriptionLines,
+  getRuleDescriptionLines: characterProgressionDomain.getRuleDescriptionLines,
+  renderTextWithInlineDiceButtons: spellTextAndContext.renderTextWithInlineDiceButtons,
+  rollVisualNotation: diceRoller.rollVisualNotation,
+  setDiceResult: diceUi.setDiceResult,
 });
 
-const {
-  openSpellDetailsModal,
-  openSpellModal,
-  openItemModal,
-  openFeatModal,
-  openOptionalFeatureModal,
-} = pickers;
 
 const persistence = createPersistence({
   store,
@@ -6862,35 +677,105 @@ const persistence = createPersistence({
   createCharacter,
   flushPendingCharacterSync,
   isUuid,
-  getCharacterVersion,
-  withSyncMeta,
+  getCharacterVersion: changeLogDomain.getCharacterVersion,
+  withSyncMeta: changeLogDomain.withSyncMeta,
   getCharacterFromApiPayload,
-  updatePersistenceStatusFromPayload,
+  updatePersistenceStatusFromPayload: changeLogDomain.updatePersistenceStatusFromPayload,
   onEditPasswordRequired: (characterId) => {
     if (store.getState().mode !== "build") return false;
-    openEditPasswordPromptModal(characterId);
+    editPasswordController.openEditPasswordPromptModal(characterId);
     return true;
   },
-  markBrowserOnlyPersistence,
+  markBrowserOnlyPersistence: changeLogDomain.markBrowserOnlyPersistence,
   applyRemoteCharacterPayload,
-  isRemoteSameOrNewer,
+  isRemoteSameOrNewer: changeLogDomain.isRemoteSameOrNewer,
   setCharacterIdInUrl,
-  getCharacterIdFromUrl,
+  getCharacterIdFromUrl: historyApi.getCharacterIdFromUrl,
   loadCatalogsForCharacter,
   render,
   persistedState,
   appState,
   defaultSourcePreset: DEFAULT_SOURCE_PRESET,
-  withCharacterChangeLog,
+  withCharacterChangeLog: changeLogDomain.withCharacterChangeLog,
 });
 
-const {
-  loadCharacterById,
-  createOrSavePermanentCharacter,
-  queueRemoteSave,
-  bootstrap: bootstrapPersistence,
-  flushPendingSaves,
-} = persistence;
+changeLogDomain.setRender(render);
+changeLogDomain.setQueueRemoteSave(persistence.queueRemoteSave);
+const partyFeature = createPartyFeature({
+  app,
+  appState,
+  store,
+  isUuid,
+  esc,
+  toNumber,
+  openModal,
+  loadCharacterHistory: historyApi.loadCharacterHistory,
+  loadCharacterById: persistence.loadCharacterById,
+  getCatalogsForCharacter: partyModalCatalogCacheApi.getCachedPartyModalCatalogs,
+  openClassDetailsModalForCharacter: partyCharacterDetailsModals.openClassDetailsModalForCharacter,
+  openSubclassDetailsModalForCharacter: partyCharacterDetailsModals.openSubclassDetailsModalForCharacter,
+  render,
+});
+const onboardingView = createOnboardingView({
+  app,
+  esc,
+  isUuid,
+  newCharacterOptionValue: NEW_CHARACTER_OPTION_VALUE,
+  historyApi,
+  partyFeature,
+  appState,
+  renderPersistenceNotice: changeLogDomain.renderPersistenceNotice,
+  createAndOpenNewCharacter,
+  switchCharacterFromHistory,
+  setCharacterIdInUrl,
+  loadCharacterById: persistence.loadCharacterById,
+  renderState: render,
+  store,
+});
+const characterUpdater = createCharacterUpdater({
+  toNumber,
+  isRecordObject: catalogLookupDomain.isRecordObject,
+  normalizeSourceTag,
+  saveAbilities: SAVE_ABILITIES,
+  skills: SKILLS,
+  skillProficiencyNone: SKILL_PROFICIENCY_NONE,
+  skillProficiencyProficient: SKILL_PROFICIENCY_PROFICIENT,
+  spellSlotLevels: SPELL_SLOT_LEVELS,
+  getPreferredSourceOrder: catalogLookupDomain.getPreferredSourceOrder,
+  findCatalogEntryByNameWithSelectedSourcePreference: catalogLookupDomain.findCatalogEntryByNameWithSelectedSourcePreference,
+  getSubraceCatalogEntries: catalogLookupDomain.getSubraceCatalogEntries,
+  resolveImportedCharacterSelections: catalogLookupDomain.resolveImportedCharacterSelections,
+  getAutomaticAbilityBonuses: proficiencyRules.getAutomaticAbilityBonuses,
+  getAutomaticSaveProficiencies: proficiencyRules.getAutomaticSaveProficiencies,
+  getAutomaticSkillProficiencyModes: proficiencyRules.getAutomaticSkillProficiencyModes,
+  mapSkillModesToProficiencyMap: proficiencyRules.mapSkillModesToProficiencyMap,
+  hasStoredProficiencyState: proficiencyRules.hasStoredProficiencyState,
+  deriveLegacyProficiencyOverrides: proficiencyRules.deriveLegacyProficiencyOverrides,
+  hasStoredSkillModeState: proficiencyRules.hasStoredSkillModeState,
+  isSkillModeProficient: proficiencyRules.isSkillModeProficient,
+  mergeSkillModesWithOverrides: proficiencyRules.mergeSkillModesWithOverrides,
+  mergeProficienciesWithOverrides: proficiencyRules.mergeProficienciesWithOverrides,
+  getCharacterSpellSlotDefaults: spellcastingRules.getCharacterSpellSlotDefaults,
+  recomputeCharacterProgression: characterProgressionDomain.recomputeCharacterProgression,
+  getAutoGrantedSpellData: autoGrantedSpellRules.getAutoGrantedSpellData,
+  getAutoClassListSpellNames: autoGrantedSpellRules.getAutoClassListSpellNames,
+  getAutoResourcesFromRules: featureResourceRules.getAutoResourcesFromRules,
+  getAutoResourcesFromClassTableEffects: featureResourceRules.getAutoResourcesFromClassTableEffects,
+  syncAutoFeatureUses: featureResourceRules.syncAutoFeatureUses,
+  getSelectedSubclassEntry: catalogLookupDomain.getSelectedSubclassEntry,
+  getClassCatalogEntry: catalogLookupDomain.getClassCatalogEntry,
+  store,
+});
+const progressionRules = createProgressionRules({
+  toNumber,
+  spellSlotLevels: SPELL_SLOT_LEVELS,
+  getCharacterClassLevels: spellcastingRules.getCharacterClassLevels,
+  getCharacterSpellSlotDefaults: spellcastingRules.getCharacterSpellSlotDefaults,
+  getAutomaticSaveProficiencies: proficiencyRules.getAutomaticSaveProficiencies,
+  recomputeCharacterProgression: characterProgressionDomain.recomputeCharacterProgression,
+  getAutoGrantedSpellData: autoGrantedSpellRules.getAutoGrantedSpellData,
+  buildLevelUpHitPointPlan: hitPointRules.buildLevelUpHitPointPlan,
+});
 
 const events = createEvents({
   app,
@@ -6898,7 +783,7 @@ const events = createEvents({
   toNumber,
   isUuid,
   SKILLS,
-  DEFAULT_SOURCE_PRESET: getRuntimeDefaultSourcePreset(),
+  DEFAULT_SOURCE_PRESET: runtimeSourcePresetsState.getRuntimeDefaultSourcePreset(),
   getAllowedSources,
   getCharacterAllowedSources,
   sourceLabels: SOURCE_LABELS,
@@ -6906,45 +791,45 @@ const events = createEvents({
   loadAvailableSources,
   loadCatalogs,
   updateCharacterWithRequiredSettings,
-  getClassCatalogEntry,
+  getClassCatalogEntry: catalogLookupDomain.getClassCatalogEntry,
   getCharacterFightingStyleSet,
   normalizeSourceTag,
   withUpdatedPlay,
   openModal,
-  openSpellModal,
-  openItemModal,
-  openFeatModal,
-  openOptionalFeatureModal,
+  openSpellModal: pickers.openSpellModal,
+  openItemModal: pickers.openItemModal,
+  openFeatModal: pickers.openFeatModal,
+  openOptionalFeatureModal: pickers.openOptionalFeatureModal,
   openMulticlassModal,
   openLevelUpModal,
-  openSpellDetailsModal,
-  getCharacterSpellSlotDefaults,
-  createOrSavePermanentCharacter,
-  importCharacterFromJsonFile,
-  exportCharacterToJsonFile,
-  openClassDetailsModal,
-  openSubclassDetailsModal,
-  openFeatureDetailsModal,
-  openFeatDetailsModal,
-  openOptionalFeatureDetailsModal,
-  openSpeciesTraitDetailsModal,
-  applyDiceStyle,
-  rerollLastRoll,
-  openCustomRollModal,
-  countPreparedSpells,
-  getPreparedSpellLimit,
-  doesClassUsePreparedSpells,
-  isSpellAlwaysPrepared,
-  getSpellByName,
-  getSpellCombatContext,
-  getFeatureActivationDescriptor,
-  setDiceResult,
-  setSpellCastStatus,
-  getSpellSlotValues,
-  rollVisualNotation,
-  getSpellPrimaryDiceNotation,
-  rollVisualD20,
-  extractSimpleNotation,
+  openSpellDetailsModal: pickers.openSpellDetailsModal,
+  getCharacterSpellSlotDefaults: spellcastingRules.getCharacterSpellSlotDefaults,
+  createOrSavePermanentCharacter: persistence.createOrSavePermanentCharacter,
+  importCharacterFromJsonFile: characterIo.importCharacterFromJsonFile,
+  exportCharacterToJsonFile: characterIo.exportCharacterToJsonFile,
+  openClassDetailsModal: characterDetailsModals.openClassDetailsModal,
+  openSubclassDetailsModal: characterDetailsModals.openSubclassDetailsModal,
+  openFeatureDetailsModal: characterDetailsModals.openFeatureDetailsModal,
+  openFeatDetailsModal: characterDetailsModals.openFeatDetailsModal,
+  openOptionalFeatureDetailsModal: characterDetailsModals.openOptionalFeatureDetailsModal,
+  openSpeciesTraitDetailsModal: characterDetailsModals.openSpeciesTraitDetailsModal,
+  applyDiceStyle: diceUi.applyDiceStyle,
+  rerollLastRoll: diceRoller.rerollLastRoll,
+  openCustomRollModal: diceRoller.openCustomRollModal,
+  countPreparedSpells: preparedSpellRules.countPreparedSpells,
+  getPreparedSpellLimit: preparedSpellRules.getPreparedSpellLimit,
+  doesClassUsePreparedSpells: preparedSpellRules.doesClassUsePreparedSpells,
+  isSpellAlwaysPrepared: preparedSpellRules.isSpellAlwaysPrepared,
+  getSpellByName: spellTextAndContext.getSpellByName,
+  getSpellCombatContext: spellTextAndContext.getSpellCombatContext,
+  getFeatureActivationDescriptor: featureResourceRules.getFeatureActivationDescriptor,
+  setDiceResult: diceUi.setDiceResult,
+  setSpellCastStatus: diceUi.setSpellCastStatus,
+  getSpellSlotValues: characterViewHelpers.getSpellSlotValues,
+  rollVisualNotation: diceRoller.rollVisualNotation,
+  getSpellPrimaryDiceNotation: spellTextAndContext.getSpellPrimaryDiceNotation,
+  rollVisualD20: diceRoller.rollVisualD20,
+  extractSimpleNotation: diceRoller.extractSimpleNotation,
   getArmorClassBreakdown,
   getHitPointBreakdown,
   autoResourceIdPrefix: AUTO_RESOURCE_ID_PREFIX,
@@ -6953,7 +838,6 @@ const events = createEvents({
   forgetActiveCharacterAndRedirectHome,
 });
 
-const { bindBuildEvents, bindPlayEvents } = events;
 
 const renderers = createRenderers({
   STEPS,
@@ -6964,678 +848,94 @@ const renderers = createRenderers({
   abilityLabels: ABILITY_LABELS,
   skills: SKILLS,
   spellSlotLevels: SPELL_SLOT_LEVELS,
-  sourcePresets: () => runtimeSourcePresets,
-  sourcePresetLabels: () => runtimeSourcePresetLabels,
+  sourcePresets: () => runtimeSourcePresetsState.getRuntimeSourcePresets(),
+  sourcePresetLabels: () => runtimeSourcePresetsState.getRuntimeSourcePresetLabels(),
   getCharacterAllowedSources,
   sourceLabels: SOURCE_LABELS,
-  optionList,
-  getSubraceCatalogEntries,
-  getEffectiveRaceEntry,
-  getSubclassSelectOptions,
-  getFeatSlotsWithSelection,
-  getOptionalFeatureSlotsWithSelection,
-  getCharacterSpellSlotDefaults,
+  optionList: characterViewHelpers.optionList,
+  getSubraceCatalogEntries: catalogLookupDomain.getSubraceCatalogEntries,
+  getEffectiveRaceEntry: catalogLookupDomain.getEffectiveRaceEntry,
+  getSubclassSelectOptions: characterViewHelpers.getSubclassSelectOptions,
+  getFeatSlotsWithSelection: characterViewHelpers.getFeatSlotsWithSelection,
+  getOptionalFeatureSlotsWithSelection: characterViewHelpers.getOptionalFeatureSlotsWithSelection,
+  getCharacterSpellSlotDefaults: spellcastingRules.getCharacterSpellSlotDefaults,
   defaultDiceResultMessage: DEFAULT_DICE_RESULT_MESSAGE,
-  renderDiceStyleOptions,
-  getSpellSlotRow,
+  renderDiceStyleOptions: diceUi.renderDiceStyleOptions,
+  getSpellSlotRow: characterViewHelpers.getSpellSlotRow,
   autoResourceIdPrefix: AUTO_RESOURCE_ID_PREFIX,
   latestSpellCastStatus: () => ({
     message: uiState.latestSpellCastStatusMessage,
     isError: uiState.latestSpellCastStatusIsError,
   }),
-  getSpellSlotValues,
-  getSpellByName,
-  getSpellCombatContext,
-  getSpellPrimaryDiceNotation,
-  getSpellLevelLabel,
+  getSpellSlotValues: characterViewHelpers.getSpellSlotValues,
+  getSpellByName: spellTextAndContext.getSpellByName,
+  getSpellCombatContext: spellTextAndContext.getSpellCombatContext,
+  getSpellPrimaryDiceNotation: spellTextAndContext.getSpellPrimaryDiceNotation,
+  getSpellLevelLabel: spellTextAndContext.getSpellLevelLabel,
   spellSchoolLabels: SPELL_SCHOOL_LABELS,
-  getRuleDescriptionLines,
-  getReferencedUnlockedFeatureIds,
-  getFeatureActivationDescriptor,
-  doesClassUsePreparedSpells,
-  getPreparedSpellLimit,
-  countPreparedSpells,
-  isSpellAlwaysPrepared,
-  getSaveProficiencyLabelMap,
-  getCharacterToolAndDefenseSummary,
-  getLevelUpPreview,
-  getClassCasterContribution,
-  renderCharacterHistorySelector,
-  renderPersistenceNotice,
-  getModeToggle,
-  getAutoAttacks,
+  getRuleDescriptionLines: characterProgressionDomain.getRuleDescriptionLines,
+  getReferencedUnlockedFeatureIds: featureResourceRules.getReferencedUnlockedFeatureIds,
+  getFeatureActivationDescriptor: featureResourceRules.getFeatureActivationDescriptor,
+  doesClassUsePreparedSpells: preparedSpellRules.doesClassUsePreparedSpells,
+  getPreparedSpellLimit: preparedSpellRules.getPreparedSpellLimit,
+  countPreparedSpells: preparedSpellRules.countPreparedSpells,
+  isSpellAlwaysPrepared: preparedSpellRules.isSpellAlwaysPrepared,
+  getSaveProficiencyLabelMap: characterViewHelpers.getSaveProficiencyLabelMap,
+  getCharacterToolAndDefenseSummary: proficiencySummaryRules.getCharacterToolAndDefenseSummary,
+  getLevelUpPreview: progressionRules.getLevelUpPreview,
+  getClassCasterContribution: spellcastingRules.getClassCasterContribution,
+  renderCharacterHistorySelector: historyApi.renderCharacterHistorySelector,
+  renderPersistenceNotice: changeLogDomain.renderPersistenceNotice,
+  getModeToggle: characterViewHelpers.getModeToggle,
+  getAutoAttacks: autoAttackRules.getAutoAttacks,
   getCharacterChangeLog: () => uiState.characterChangeLog,
-  extractSimpleNotation,
+  extractSimpleNotation: diceRoller.extractSimpleNotation,
   manualBaseUrl: MANUAL_BASE_URL,
   isUuid,
 });
 
-const {
-  renderBuildMode,
-  renderPlayMode,
-  renderSaveRows,
-  renderSkillRows,
-  renderBuildEditor,
-  renderSummary,
-  renderBuildSpellSlotRow,
-  renderBuildSpellList,
-  renderSpellGroupsByLevel,
-  renderPlayView,
-  renderLevelUpBody,
-} = renderers;
 
-function syncSpellSlotsWithDefaults(play, defaults, options = {}) {
-  const preserveUserOverrides = options.preserveUserOverrides !== false;
-  const nextSlots = { ...(play.spellSlots ?? {}) };
-  const nextMaxOverrides = { ...(play.spellSlotMaxOverrides ?? {}) };
-  const nextUserOverrides = { ...(play.spellSlotUserOverrides ?? {}) };
-  const nextAutoDefaults = { ...(play.spellSlotAutoDefaults ?? {}) };
-
-  SPELL_SLOT_LEVELS.forEach((level) => {
-    const key = String(level);
-    const defaultMax = Math.max(0, toNumber(defaults?.[key], 0));
-    const previousSlot = nextSlots[key] ?? { max: defaultMax, used: 0 };
-    const legacyOverride = nextMaxOverrides[key];
-    const hasExplicitOverride = Boolean(nextUserOverrides[key]) || (nextUserOverrides[key] == null && legacyOverride != null);
-    const shouldUseOverride = preserveUserOverrides && hasExplicitOverride;
-    const overrideMax = toNumber(legacyOverride, defaultMax);
-    const nextMax = shouldUseOverride ? Math.max(0, overrideMax) : defaultMax;
-
-    if (shouldUseOverride) {
-      nextMaxOverrides[key] = nextMax;
-      nextUserOverrides[key] = true;
-    } else {
-      delete nextMaxOverrides[key];
-      delete nextUserOverrides[key];
-    }
-
-    nextAutoDefaults[key] = defaultMax;
-    nextSlots[key] = {
-      max: nextMax,
-      used: Math.max(0, Math.min(nextMax, toNumber(previousSlot.used, 0))),
-    };
-  });
-
-  play.spellSlots = nextSlots;
-  play.spellSlotMaxOverrides = nextMaxOverrides;
-  play.spellSlotUserOverrides = nextUserOverrides;
-  play.spellSlotAutoDefaults = nextAutoDefaults;
-}
-
-function updateCharacterWithRequiredSettings(state, patch, options = {}) {
-  let nextCharacter = { ...state.character, ...patch };
-  const sourceOrder = getPreferredSourceOrder(nextCharacter);
-  const resolvedRace = findCatalogEntryByNameWithSelectedSourcePreference(
-    state.catalogs?.races,
-    nextCharacter?.race,
-    nextCharacter?.raceSource,
-    sourceOrder
-  );
-  const subraceOptions = getSubraceCatalogEntries(state.catalogs, resolvedRace?.name, resolvedRace?.source, sourceOrder);
-  const resolvedSubrace = findCatalogEntryByNameWithSelectedSourcePreference(
-    subraceOptions,
-    nextCharacter?.subrace,
-    nextCharacter?.subraceSource,
-    sourceOrder
-  );
-  const resolvedBackground = findCatalogEntryByNameWithSelectedSourcePreference(
-    state.catalogs?.backgrounds,
-    nextCharacter?.background,
-    nextCharacter?.backgroundSource,
-    sourceOrder
-  );
-  const resolvedClass = findCatalogEntryByNameWithSelectedSourcePreference(
-    state.catalogs?.classes,
-    nextCharacter?.class,
-    nextCharacter?.classSource,
-    sourceOrder
-  );
-  nextCharacter.raceSource = resolvedRace ? normalizeSourceTag(resolvedRace?.source) : "";
-  nextCharacter.subrace = resolvedSubrace ? String(resolvedSubrace?.name ?? "").trim() : "";
-  nextCharacter.subraceSource = resolvedSubrace ? normalizeSourceTag(resolvedSubrace?.source) : "";
-  nextCharacter.backgroundSource = resolvedBackground ? normalizeSourceTag(resolvedBackground?.source) : "";
-  nextCharacter.classSource = resolvedClass ? normalizeSourceTag(resolvedClass?.source) : "";
-  nextCharacter = {
-    ...nextCharacter,
-    ...resolveImportedCharacterSelections(state.catalogs, nextCharacter),
-  };
-  const nextPlaySeed = isRecordObject(patch.play) ? patch.play : state.character.play;
-  const nextPlay = structuredClone(nextPlaySeed ?? {});
-  const autoAbilityBonuses = getAutomaticAbilityBonuses(state.catalogs, nextCharacter, nextPlay);
-  const previousAutoBonuses = isRecordObject(state.character?.play?.autoAbilityBonuses) ? state.character.play.autoAbilityBonuses : {};
-  const baseAbilities = SAVE_ABILITIES.reduce((acc, ability) => {
-    const explicitBase = nextCharacter?.abilityBase?.[ability];
-    if (Number.isFinite(toNumber(explicitBase, NaN))) {
-      acc[ability] = Math.max(1, Math.min(30, toNumber(explicitBase, 10)));
-      return acc;
-    }
-    const currentFinal = toNumber(nextCharacter?.abilities?.[ability], 10);
-    const previousAuto = toNumber(previousAutoBonuses?.[ability], 0);
-    acc[ability] = Math.max(1, Math.min(30, currentFinal - previousAuto));
-    return acc;
-  }, {});
-  const nextAbilities = SAVE_ABILITIES.reduce((acc, ability) => {
-    acc[ability] = Math.max(1, Math.min(30, toNumber(baseAbilities?.[ability], 10) + toNumber(autoAbilityBonuses?.[ability], 0)));
-    return acc;
-  }, {});
-
-  const autoSaveProficiencies = getAutomaticSaveProficiencies(state.catalogs, nextCharacter);
-  const autoSkillProficiencyModes = getAutomaticSkillProficiencyModes(state.catalogs, nextCharacter, nextPlay);
-  const autoSkillProficiencies = mapSkillModesToProficiencyMap(autoSkillProficiencyModes, SKILLS.map((skill) => skill.key));
-  let saveOverrides = isRecordObject(nextPlay.saveProficiencyOverrides) ? { ...nextPlay.saveProficiencyOverrides } : {};
-  let skillOverrides = isRecordObject(nextPlay.skillProficiencyOverrides) ? { ...nextPlay.skillProficiencyOverrides } : {};
-  let skillModeOverrides = isRecordObject(nextPlay.skillProficiencyModeOverrides) ? { ...nextPlay.skillProficiencyModeOverrides } : {};
-  const hasLegacySaveSnapshot = hasStoredProficiencyState(nextPlay.saveProficiencies, SAVE_ABILITIES);
-  const hasSavedAutoSaveState = hasStoredProficiencyState(nextPlay.autoSaveProficiencies, SAVE_ABILITIES);
-  if (!Object.keys(saveOverrides).length && hasLegacySaveSnapshot && !hasSavedAutoSaveState) {
-    saveOverrides = deriveLegacyProficiencyOverrides(nextPlay.saveProficiencies, autoSaveProficiencies, SAVE_ABILITIES);
-  }
-  const skillKeys = SKILLS.map((skill) => skill.key);
-  const hasLegacySkillSnapshot = hasStoredProficiencyState(nextPlay.skillProficiencies, skillKeys);
-  const hasSavedAutoSkillState = hasStoredProficiencyState(nextPlay.autoSkillProficiencies, skillKeys);
-  const hasSavedSkillModeOverrides = hasStoredSkillModeState(nextPlay.skillProficiencyModeOverrides, skillKeys);
-  if (!hasSavedSkillModeOverrides && Object.keys(skillOverrides).length) {
-    const migrated = {};
-    Object.entries(skillOverrides).forEach(([key, value]) => {
-      if (!skillKeys.includes(key) || typeof value !== "boolean") return;
-      migrated[key] = value ? SKILL_PROFICIENCY_PROFICIENT : SKILL_PROFICIENCY_NONE;
-    });
-    skillModeOverrides = migrated;
-  }
-  if (!Object.keys(skillModeOverrides).length && hasLegacySkillSnapshot && !hasSavedAutoSkillState) {
-    const legacySkillOverrides = deriveLegacyProficiencyOverrides(nextPlay.skillProficiencies, autoSkillProficiencies, skillKeys);
-    skillModeOverrides = Object.fromEntries(
-      Object.entries(legacySkillOverrides).map(([key, value]) => [
-        key,
-        value ? SKILL_PROFICIENCY_PROFICIENT : SKILL_PROFICIENCY_NONE,
-      ])
-    );
-  }
-  const nextSkillModes = mergeSkillModesWithOverrides(autoSkillProficiencyModes, skillModeOverrides, skillKeys);
-  skillOverrides = Object.fromEntries(
-    skillKeys
-      .map((key) => {
-        const currentIsProf = isSkillModeProficient(nextSkillModes[key]);
-        const autoIsProf = isSkillModeProficient(autoSkillProficiencyModes[key]);
-        if (currentIsProf === autoIsProf) return null;
-        return [key, currentIsProf];
-      })
-      .filter(Boolean)
-  );
-  nextPlay.autoAbilityBonuses = autoAbilityBonuses;
-  nextPlay.autoSaveProficiencies = autoSaveProficiencies;
-  nextPlay.autoSkillProficiencyModes = autoSkillProficiencyModes;
-  nextPlay.autoSkillProficiencies = autoSkillProficiencies;
-  nextPlay.saveProficiencyOverrides = saveOverrides;
-  nextPlay.skillProficiencyModeOverrides = skillModeOverrides;
-  nextPlay.skillProficiencyOverrides = skillOverrides;
-  nextPlay.saveProficiencies = mergeProficienciesWithOverrides(autoSaveProficiencies, saveOverrides, SAVE_ABILITIES);
-  nextPlay.skillProficiencyModes = nextSkillModes;
-  nextPlay.skillProficiencies = mapSkillModesToProficiencyMap(nextSkillModes, skillKeys);
-  const defaultSpellSlots = getCharacterSpellSlotDefaults(state.catalogs, nextCharacter);
-  syncSpellSlotsWithDefaults(nextPlay, defaultSpellSlots, { preserveUserOverrides: options.preserveUserOverrides !== false });
-  const nextProgression = recomputeCharacterProgression(state.catalogs, nextCharacter);
-  const autoGrantedSpellData = getAutoGrantedSpellData(state.catalogs, nextCharacter);
-  const autoGrantedSpells = autoGrantedSpellData.names;
-  const autoClassListSpells = getAutoClassListSpellNames(state.catalogs, nextCharacter);
-  const previousAutoSpells = Array.isArray(nextPlay.autoGrantedSpells) ? nextPlay.autoGrantedSpells : [];
-  const previousClassListSpells = Array.isArray(nextPlay.autoClassListSpells) ? nextPlay.autoClassListSpells : [];
-  const previousAutoSet = new Set(previousAutoSpells.map((name) => String(name ?? "").trim().toLowerCase()).filter(Boolean));
-  const previousClassListSet = new Set(previousClassListSpells.map((name) => String(name ?? "").trim().toLowerCase()).filter(Boolean));
-  const manualSpells = (Array.isArray(nextCharacter.spells) ? nextCharacter.spells : []).filter(
-    (name) =>
-      !previousAutoSet.has(String(name ?? "").trim().toLowerCase())
-      && !previousClassListSet.has(String(name ?? "").trim().toLowerCase())
-  );
-  const mergedSpellMap = new Map();
-  [...manualSpells, ...autoGrantedSpells, ...autoClassListSpells].forEach((name) => {
-    const normalized = String(name ?? "").trim();
-    if (!normalized) return;
-    const key = normalized.toLowerCase();
-    if (!mergedSpellMap.has(key)) mergedSpellMap.set(key, normalized);
-  });
-  const nextSpells = [...mergedSpellMap.values()];
-  nextPlay.autoGrantedSpells = autoGrantedSpells;
-  nextPlay.autoClassListSpells = autoClassListSpells;
-  nextPlay.autoPreparedSpells = autoGrantedSpellData.autoPreparedSpells;
-  nextPlay.autoSpellGrantTypes = autoGrantedSpellData.autoSpellGrantTypes;
-  nextPlay.preparedSpells = Object.fromEntries(
-    Object.entries(nextPlay.preparedSpells ?? {}).filter(([name]) =>
-      mergedSpellMap.has(String(name ?? "").trim().toLowerCase())
-    )
-  );
-  const autoTrackers = [
-    ...getAutoResourcesFromRules(
-      state.catalogs,
-      nextCharacter,
-      nextProgression.unlockedFeatures,
-      nextCharacter.feats,
-      nextCharacter.optionalFeatures
-    ),
-    ...getAutoResourcesFromClassTableEffects(
-      state.catalogs,
-      nextCharacter,
-      nextProgression.unlockedFeatures,
-      nextProgression.classTableEffects
-    ),
-  ];
-  nextPlay.featureUses = syncAutoFeatureUses(nextPlay, autoTrackers);
-  const allowedFeatureModeIds = new Set((nextProgression.featureModes ?? []).map((mode) => mode.id));
-  const nextFeatureModes = isRecordObject(nextPlay.featureModes) ? { ...nextPlay.featureModes } : {};
-  Object.keys(nextFeatureModes).forEach((modeId) => {
-    if (!allowedFeatureModeIds.has(modeId)) delete nextFeatureModes[modeId];
-  });
-  (nextProgression.featureModes ?? []).forEach((mode) => {
-    const options = Array.isArray(mode?.optionValues) ? mode.optionValues : [];
-    if (!options.length) return;
-    const maxCount = Math.max(1, Math.min(options.length, Math.floor(toNumber(mode?.count, 1))));
-    const raw = nextFeatureModes[mode.id];
-    const currentValues = Array.isArray(raw)
-      ? raw.map((entry) => String(entry ?? "").trim())
-      : [String(raw ?? "").trim()];
-    const selected = [...new Set(currentValues.filter((value) => value && options.includes(value)))];
-    if (!selected.length) selected.push(options[0]);
-    nextFeatureModes[mode.id] = maxCount <= 1 ? selected[0] : selected.slice(0, maxCount);
-  });
-  nextPlay.featureModes = nextFeatureModes;
-  const selectedSubclass = getSelectedSubclassEntry(state.catalogs, nextCharacter);
-  const classEntry = getClassCatalogEntry(state.catalogs, nextCharacter.class, nextCharacter?.classSource, sourceOrder);
-  const classSource = normalizeSourceTag(classEntry?.source);
-  const classSelection = {
-    subclass: {
-      name: selectedSubclass?.name ?? "",
-      source: selectedSubclass?.source ?? "",
-      className: selectedSubclass?.className ?? String(nextCharacter.class ?? "").trim(),
-      classSource: selectedSubclass?.classSource ?? classSource,
-    },
-  };
-  const subclassName = classSelection.subclass.name || "";
-  store.updateCharacter({
-    ...patch,
-    raceSource: nextCharacter.raceSource,
-    backgroundSource: nextCharacter.backgroundSource,
-    classSource: nextCharacter.classSource,
-    abilities: nextAbilities,
-    abilityBase: baseAbilities,
-    subclass: subclassName,
-    classSelection,
-    progression: nextProgression,
-    feats: nextCharacter.feats,
-    optionalFeatures: nextCharacter.optionalFeatures,
-    spells: nextSpells,
-    play: nextPlay,
-  });
-}
-
-function createLevelUpDraft(character) {
-  const { totalLevel, multiclass } = getCharacterClassLevels(character);
-  return {
-    totalLevel,
-    primaryClass: String(character?.class ?? "").trim(),
-    multiclass: multiclass.map((entry) => ({ ...entry })),
-    hitPointChoices: {},
-  };
-}
-
-function sanitizeLevelUpDraft(draft) {
-  const totalLevel = Math.max(1, Math.min(20, toNumber(draft?.totalLevel, 1)));
-  const primaryClass = String(draft?.primaryClass ?? "").trim();
-  const multiclass = (Array.isArray(draft?.multiclass) ? draft.multiclass : [])
-    .map((entry) => ({
-      class: String(entry?.class ?? "").trim(),
-      level: Math.max(1, Math.min(20, toNumber(entry?.level, 1))),
-    }))
-    .filter((entry) => entry.class);
-  const hitPointChoicesRaw = draft?.hitPointChoices;
-  const hitPointChoices =
-    hitPointChoicesRaw && typeof hitPointChoicesRaw === "object" && !Array.isArray(hitPointChoicesRaw)
-      ? Object.fromEntries(
-          Object.entries(hitPointChoicesRaw).map(([key, choice]) => {
-            const normalizedKey = String(key ?? "").trim();
-            const method = choice?.method === "roll" ? "roll" : "fixed";
-            const rollValue = Math.floor(toNumber(choice?.rollValue, NaN));
-            return [
-              normalizedKey,
-              {
-                method,
-                rollValue: Number.isFinite(rollValue) && rollValue > 0 ? rollValue : null,
-              },
-            ];
-          })
-        )
-      : {};
-  return { totalLevel, primaryClass, multiclass, hitPointChoices };
-}
-
-function getSaveProficiencyLabelMap(saveProficiencies) {
-  return SAVE_ABILITIES.filter((ability) => Boolean(saveProficiencies?.[ability])).map((ability) => ABILITY_LABELS[ability]);
-}
-
-function getLevelUpPreview(state, draft) {
-  const currentCharacter = state.character;
-  const nextCharacter = {
-    ...currentCharacter,
-    class: draft.primaryClass,
-    level: draft.totalLevel,
-    multiclass: draft.multiclass,
-  };
-
-  const currentSlots = getCharacterSpellSlotDefaults(state.catalogs, currentCharacter);
-  const nextSlots = getCharacterSpellSlotDefaults(state.catalogs, nextCharacter);
-  const changedSlotLevels = SPELL_SLOT_LEVELS.filter((level) => toNumber(currentSlots[String(level)], 0) !== toNumber(nextSlots[String(level)], 0));
-  const currentSaves = getAutomaticSaveProficiencies(state.catalogs, currentCharacter);
-  const nextSaves = getAutomaticSaveProficiencies(state.catalogs, nextCharacter);
-  const currentProgression = recomputeCharacterProgression(state.catalogs, currentCharacter);
-  const nextProgression = recomputeCharacterProgression(state.catalogs, nextCharacter);
-  const currentAutoSpells = getAutoGrantedSpellData(state.catalogs, currentCharacter).names;
-  const nextAutoSpells = getAutoGrantedSpellData(state.catalogs, nextCharacter).names;
-  const currentSpellSet = new Set(currentAutoSpells.map((name) => name.toLowerCase()));
-  const nextSpellSet = new Set(nextAutoSpells.map((name) => name.toLowerCase()));
-  const addedAutoSpells = nextAutoSpells.filter((name) => !currentSpellSet.has(name.toLowerCase()));
-  const removedAutoSpells = currentAutoSpells.filter((name) => !nextSpellSet.has(name.toLowerCase()));
-  const currentFeatureIds = new Set((currentProgression.unlockedFeatures ?? []).map((feature) => feature.id));
-  const nextFeatureIds = new Set((nextProgression.unlockedFeatures ?? []).map((feature) => feature.id));
-  const addedFeatures = (nextProgression.unlockedFeatures ?? []).filter((feature) => !currentFeatureIds.has(feature.id));
-  const removedFeatures = (currentProgression.unlockedFeatures ?? []).filter((feature) => !nextFeatureIds.has(feature.id));
-  const currentEffects = new Map((currentProgression.classTableEffects ?? []).map((effect) => [effect.id, effect]));
-  const nextEffects = new Map((nextProgression.classTableEffects ?? []).map((effect) => [effect.id, effect]));
-  const changedClassTableEffects = [...nextEffects.values()].filter((effect) => {
-    const previous = currentEffects.get(effect.id);
-    if (!previous) return true;
-    return String(previous.value) !== String(effect.value);
-  });
-  const hitPointPlan = buildLevelUpHitPointPlan(state.catalogs, currentCharacter, draft);
-  return {
-    currentSlots,
-    nextSlots,
-    changedSlotLevels,
-    currentSaves,
-    nextSaves,
-    currentProgression,
-    nextProgression,
-    addedFeatures,
-    removedFeatures,
-    addedAutoSpells,
-    removedAutoSpells,
-    changedClassTableEffects,
-    classLevels: getCharacterClassLevels(nextCharacter),
-    hitPointPlan,
-  };
-}
+const levelUpModalController = createLevelUpModal({
+  openModal,
+  toNumber,
+  rollDie,
+  progressionRules,
+  renderLevelUpBody: renderers.renderLevelUpBody,
+  updateCharacterWithRequiredSettings,
+});
+const multiclassModalController = createMulticlassModal({
+  openModal,
+  esc,
+  optionList: characterViewHelpers.optionList,
+  updateCharacterWithRequiredSettings,
+});
 
 function openLevelUpModal(state) {
-  const draft = createLevelUpDraft(state.character);
-  const close = openModal({
-    title: "Level Up",
-    bodyHtml: `<div id="levelup-editor"></div>`,
-    actions: [
-      {
-        label: "Apply",
-        onClick: (done) => {
-          const sanitized = sanitizeLevelUpDraft(draft);
-          if (!sanitized.primaryClass) {
-            alert("Choose a primary class.");
-            return;
-          }
-          const multiclassTotal = sanitized.multiclass.reduce((sum, entry) => sum + entry.level, 0);
-          if (multiclassTotal >= sanitized.totalLevel) {
-            alert("Secondary class levels must be lower than total level.");
-            return;
-          }
-          updateCharacterWithRequiredSettings(
-            state,
-            {
-              class: sanitized.primaryClass,
-              level: sanitized.totalLevel,
-              multiclass: sanitized.multiclass,
-              hitPointRollOverrides: getLevelUpPreview(state, sanitized).hitPointPlan.nextRollOverrides,
-            },
-            { preserveUserOverrides: true }
-          );
-          done();
-        },
-      },
-      { label: "Cancel", secondary: true, onClick: (done) => done() },
-    ],
-  });
-
-  const root = document.getElementById("levelup-editor");
-  if (!root) return close;
-  let levelInputRenderTimer = null;
-  const clampLevelValue = (value) => Math.max(1, Math.min(20, toNumber(value, 1)));
-  const renderEditorSoon = () => {
-    if (levelInputRenderTimer != null) clearTimeout(levelInputRenderTimer);
-    levelInputRenderTimer = window.setTimeout(() => {
-      levelInputRenderTimer = null;
-      renderEditor();
-    }, 250);
-  };
-  const renderEditorNow = () => {
-    if (levelInputRenderTimer != null) {
-      clearTimeout(levelInputRenderTimer);
-      levelInputRenderTimer = null;
-    }
-    renderEditor();
-  };
-
-  const renderEditor = () => {
-    root.innerHTML = renderLevelUpBody(state, draft);
-    const primaryClassEl = document.getElementById("levelup-primary-class");
-    if (primaryClassEl) primaryClassEl.value = draft.primaryClass;
-
-    document.getElementById("levelup-total-level")?.addEventListener("input", (evt) => {
-      draft.totalLevel = clampLevelValue(evt.target.value);
-      renderEditorSoon();
-    });
-    document.getElementById("levelup-total-level")?.addEventListener("change", (evt) => {
-      draft.totalLevel = clampLevelValue(evt.target.value);
-      renderEditorNow();
-    });
-    primaryClassEl?.addEventListener("change", (evt) => {
-      draft.primaryClass = evt.target.value;
-      renderEditorNow();
-    });
-    root.querySelector("[data-levelup-add-mc]")?.addEventListener("click", () => {
-      draft.multiclass.push({ class: "", level: 1 });
-      renderEditorNow();
-    });
-    root.querySelectorAll("[data-levelup-mc-remove]").forEach((button) => {
-      button.addEventListener("click", () => {
-        const idx = toNumber(button.dataset.levelupMcRemove, -1);
-        if (idx < 0) return;
-        draft.multiclass.splice(idx, 1);
-        renderEditorNow();
-      });
-    });
-    root.querySelectorAll("[data-levelup-mc-class]").forEach((select) => {
-      select.addEventListener("change", () => {
-        const idx = toNumber(select.dataset.levelupMcClass, -1);
-        if (idx < 0 || !draft.multiclass[idx]) return;
-        draft.multiclass[idx].class = select.value;
-        renderEditorNow();
-      });
-    });
-    root.querySelectorAll("[data-levelup-mc-level]").forEach((input) => {
-      input.addEventListener("input", () => {
-        const idx = toNumber(input.dataset.levelupMcLevel, -1);
-        if (idx < 0 || !draft.multiclass[idx]) return;
-        draft.multiclass[idx].level = clampLevelValue(input.value);
-        renderEditorSoon();
-      });
-      input.addEventListener("change", () => {
-        const idx = toNumber(input.dataset.levelupMcLevel, -1);
-        if (idx < 0 || !draft.multiclass[idx]) return;
-        draft.multiclass[idx].level = clampLevelValue(input.value);
-        renderEditorNow();
-      });
-    });
-    root.querySelectorAll("[data-levelup-step-target]").forEach((button) => {
-      button.addEventListener("click", () => {
-        const target = String(button.dataset.levelupStepTarget ?? "");
-        const delta = toNumber(button.dataset.stepDelta, 0);
-        if (!delta) return;
-        if (target === "total-level") {
-          draft.totalLevel = clampLevelValue(toNumber(draft.totalLevel, 1) + delta);
-          renderEditorNow();
-          return;
-        }
-        if (target === "mc-level") {
-          const idx = toNumber(button.dataset.levelupStepIndex, -1);
-          if (idx < 0 || !draft.multiclass[idx]) return;
-          draft.multiclass[idx].level = clampLevelValue(toNumber(draft.multiclass[idx].level, 1) + delta);
-          renderEditorNow();
-        }
-      });
-    });
-    root.querySelectorAll("[data-levelup-hp-method]").forEach((input) => {
-      input.addEventListener("change", () => {
-        const key = String(input.dataset.levelupHpKey ?? "").trim();
-        if (!key) return;
-        const method = input.value === "roll" ? "roll" : "fixed";
-        const faces = Math.max(1, toNumber(input.dataset.levelupHpFaces, 8));
-        const existing = draft.hitPointChoices[key] ?? { method: "fixed", rollValue: null };
-        draft.hitPointChoices[key] = {
-          ...existing,
-          method,
-          rollValue: method === "roll" ? existing.rollValue ?? rollDie(faces) : null,
-        };
-        renderEditorNow();
-      });
-    });
-    root.querySelectorAll("[data-levelup-hp-reroll]").forEach((button) => {
-      button.addEventListener("click", () => {
-        const key = String(button.dataset.levelupHpReroll ?? "").trim();
-        if (!key) return;
-        const faces = Math.max(1, toNumber(button.dataset.levelupHpFaces, 8));
-        draft.hitPointChoices[key] = {
-          method: "roll",
-          rollValue: rollDie(faces),
-        };
-        renderEditorNow();
-      });
-    });
-  };
-
-  renderEditor();
-  return () => {
-    if (levelInputRenderTimer != null) {
-      clearTimeout(levelInputRenderTimer);
-      levelInputRenderTimer = null;
-    }
-    close();
-  };
+  return levelUpModalController.openLevelUpModal(state);
 }
 
 function openMulticlassModal(state) {
-  const existing = state.character.multiclass;
-  const close = openModal({
-    title: "Multiclass Editor",
-    bodyHtml: `
-      <p class="subtitle">Add one secondary class at a time to build your multiclass.</p>
-      <div class="row">
-        <label>Class
-          <select id="mc-class">
-            <option value="">Select class</option>
-            ${optionList(state.catalogs.classes, "")}
-          </select>
-        </label>
-        <label>Level
-          <input id="mc-level" type="number" min="1" max="20" value="1">
-        </label>
-      </div>
-      <h4>Current</h4>
-      <div>${existing.length ? existing.map((m) => `<span class="pill">${esc(m.class)} ${esc(m.level)}</span>`).join(" ") : "<span class='muted'>No secondary classes added yet.</span>"}</div>
-    `,
-    actions: [
-      {
-        label: "Save",
-        onClick: (done) => {
-          const classEl = document.getElementById("mc-class");
-          const levelEl = document.getElementById("mc-level");
-          if (!classEl.value) return;
-          const multiclass = [...existing, { class: classEl.value, level: Number(levelEl.value || 1) }];
-          updateCharacterWithRequiredSettings(state, { multiclass }, { preserveUserOverrides: true });
-          done();
-        },
-      },
-      { label: "Close", secondary: true, onClick: (done) => done() },
-    ],
-  });
-  return close;
-}
-
-function dockDiceOverlay(isPlayMode) {
-  const overlay = document.getElementById("dice-overlay");
-  if (!overlay) return;
-
-  const playSlot = app.querySelector("#play-header-dice-slot");
-  if (isPlayMode && playSlot) {
-    playSlot.appendChild(overlay);
-    overlay.classList.add("in-header");
-    return;
-  }
-
-  if (overlay.parentElement !== document.body) {
-    document.body.appendChild(overlay);
-  }
-  overlay.classList.remove("in-header");
-}
-
-function isDiceTrayEnabled(character) {
-  return character?.showDiceTray !== false;
-}
-
-function syncDiceOverlayVisibility(state) {
-  const overlay = document.getElementById("dice-overlay");
-  if (!overlay) return;
-  const isPlayMode = state?.mode === "play";
-  overlay.hidden = !isPlayMode;
-  overlay.classList.toggle("dice-tray-disabled", !isDiceTrayEnabled(state?.character));
-}
-
-let persistentBrandLogoLink = null;
-
-function ensurePersistentBrandLogoLink() {
-  if (persistentBrandLogoLink) return persistentBrandLogoLink;
-  const link = document.createElement("a");
-  link.className = "app-brand-link";
-  link.href = "/";
-  link.setAttribute("aria-label", "Go to home");
-
-  const image = document.createElement("img");
-  image.className = "app-brand-logo";
-  image.src = "/icons/icon.svg";
-  image.alt = "Action Surge logo";
-
-  link.appendChild(image);
-  persistentBrandLogoLink = link;
-  return persistentBrandLogoLink;
-}
-
-function hydratePersistentBrandLogo() {
-  const slot = app.querySelector("[data-brand-logo-slot]");
-  if (!slot) return;
-  slot.replaceWith(ensurePersistentBrandLogoLink());
+  return multiclassModalController.openMulticlassModal(state);
 }
 
 function render(state) {
   if (!appState.showOnboardingHome && partyFeature.getPartyIdFromUrl()) {
     uiState.selectedDiceStyle = DEFAULT_DICE_STYLE;
     document.body.classList.remove("play-mode");
-    applyDiceStyle();
+    diceUi.applyDiceStyle();
     syncDiceOverlayVisibility({ ...state, mode: "build" });
     app.innerHTML = partyFeature.renderPartyPage();
-    bindPartyEvents();
+    partyFeature.bindPartyEvents();
     return;
   }
 
   if (appState.showOnboardingHome) {
     uiState.selectedDiceStyle = DEFAULT_DICE_STYLE;
     document.body.classList.remove("play-mode");
-    applyDiceStyle();
+    diceUi.applyDiceStyle();
     syncDiceOverlayVisibility(state);
-    app.innerHTML = renderOnboardingHome();
-    bindOnboardingEvents();
+    app.innerHTML = onboardingView.renderOnboardingHome();
+    onboardingView.bindOnboardingEvents();
     return;
   }
 
@@ -7653,18 +953,18 @@ function render(state) {
     document.body.appendChild(overlay);
   }
 
-  app.innerHTML = state.mode === "play" ? renderPlayMode(state) : renderBuildMode(state);
-  hydratePersistentBrandLogo();
-  dockDiceOverlay(isPlayMode);
+  app.innerHTML = state.mode === "play" ? renderers.renderPlayMode(state) : renderers.renderBuildMode(state);
+  persistentBrandLogo.hydratePersistentBrandLogo();
+  dockDiceOverlay({ app, isPlayMode });
   syncDiceOverlayVisibility(state);
-  applyDiceStyle();
-  syncDiceResultElements();
-  syncSpellCastStatusElements();
-  renderRollHistory();
+  diceUi.applyDiceStyle();
+  diceUi.syncDiceResultElements();
+  diceUi.syncSpellCastStatusElements();
+  diceUi.renderRollHistory();
   bindCharacterHistoryEvents();
-  bindModeEvents();
-  if (isPlayMode) bindPlayEvents(state);
-  else bindBuildEvents(state);
+  editPasswordController.bindModeEvents(app);
+  if (isPlayMode) events.bindPlayEvents(state);
+  else events.bindBuildEvents(state);
   restoreActiveInput(activeInputSnapshot);
 
   // Keep viewport stable across state-driven re-renders.
@@ -7676,112 +976,43 @@ function render(state) {
   });
 }
 
-let serviceWorkerRefreshPending = false;
-let serviceWorkerUpdateTimer = null;
-
-async function registerServiceWorker() {
-  if (!("serviceWorker" in navigator)) return;
-  try {
-    const registration = await navigator.serviceWorker.register("/sw.js", { scope: "/" });
-    registration.update().catch(() => {});
-    if (registration.waiting) {
-      registration.waiting.postMessage({ type: "SKIP_WAITING" });
-    }
-    registration.addEventListener("updatefound", () => {
-      const installing = registration.installing;
-      if (!installing) return;
-      installing.addEventListener("statechange", () => {
-        if (installing.state === "installed" && navigator.serviceWorker.controller) {
-          installing.postMessage({ type: "SKIP_WAITING" });
-        }
-      });
-    });
-    navigator.serviceWorker.addEventListener("controllerchange", () => {
-      if (serviceWorkerRefreshPending) return;
-      serviceWorkerRefreshPending = true;
-      window.location.reload();
-    });
-    if (serviceWorkerUpdateTimer != null) {
-      clearInterval(serviceWorkerUpdateTimer);
-    }
-    // Poll for updates during active play sessions so refresh picks new deploys quickly.
-    serviceWorkerUpdateTimer = window.setInterval(() => {
-      if (document.visibilityState === "visible") {
-        registration.update().catch(() => {});
-      }
-    }, 60_000);
-  } catch (error) {
-    console.error("Service worker registration failed", error);
-  }
-}
+const bootstrapApi = createBootstrap({
+  isUuid,
+  appState,
+  render: () => render(store.getState()),
+  loadCharacterById: persistence.loadCharacterById,
+  bootstrap: persistence.bootstrap,
+  flushPendingSaves: persistence.flushPendingSaves,
+  partyFeature,
+  getCharacterIdFromUrl: historyApi.getCharacterIdFromUrl,
+});
 
 store.subscribe((state) => {
-  captureCharacterLogChanges(state.character);
+  changeLogDomain.captureCharacterLogChanges(state.character);
   render(state);
-  const nextFingerprint = buildCharacterFingerprint(state.character);
+  const nextFingerprint = changeLogDomain.buildCharacterFingerprint(state.character);
   if (nextFingerprint && nextFingerprint !== lastPersistedCharacterFingerprint) {
     appState.localCharacterVersion += 1;
     lastPersistedCharacterFingerprint = nextFingerprint;
     appState.localCharacterUpdatedAt = new Date().toISOString();
   }
-  const persistedCharacter = withSyncMeta(
-    withCharacterChangeLog(state.character),
+  const persistedCharacter = changeLogDomain.withSyncMeta(
+    changeLogDomain.withCharacterChangeLog(state.character),
     Math.max(1, appState.localCharacterVersion),
     appState.localCharacterUpdatedAt
   );
   saveAppState({ ...state, character: persistedCharacter });
-  queueRemoteSave(state);
+  persistence.queueRemoteSave(state);
   if (isUuid(state.character?.id)) {
-    rememberLastCharacterId(state.character.id);
-    upsertCharacterHistory(state.character, { touchAccess: false });
+    historyApi.rememberLastCharacterId(state.character.id);
+    historyApi.upsertCharacterHistory(state.character, { touchAccess: false });
   }
 });
 
-registerServiceWorker();
-window.addEventListener("online", () => {
-  flushPendingSaves().catch((error) => {
-    console.error("Pending sync flush failed", error);
-  });
-});
+bootstrapApi.registerServiceWorker();
+bootstrapApi.bindGlobalEvents();
 
-async function syncAppRouteFromUrl() {
-  const requestedCharacterId = getCharacterIdFromUrl();
-  if (requestedCharacterId) {
-    try {
-      await loadCharacterById(requestedCharacterId);
-      appState.showOnboardingHome = false;
-      appState.startupErrorMessage = "";
-      render(store.getState());
-      return;
-    } catch (error) {
-      appState.startupErrorMessage = error instanceof Error ? error.message : "Failed to load character";
-      appState.showOnboardingHome = true;
-      render(store.getState());
-      return;
-    }
-  }
-
-  const requestedPartyId = partyFeature.getPartyIdFromUrl();
-  if (requestedPartyId) {
-    await partyFeature.loadPartyIntoContext(requestedPartyId, { replaceUrl: true });
-    return;
-  }
-
-  partyFeature.clearActiveParty();
-  await bootstrapPersistence();
-}
-
-window.addEventListener("popstate", () => {
-  syncAppRouteFromUrl().catch((error) => {
-    console.error("Navigation sync failed", error);
-  });
-});
-
-async function bootstrap() {
-  await syncAppRouteFromUrl();
-}
-
-bootstrap().catch((error) => {
+bootstrapApi.bootstrap().catch((error) => {
   console.error("Bootstrap failed", error);
   appState.startupErrorMessage = "Startup failed. Reload the page to try again.";
   appState.showOnboardingHome = true;

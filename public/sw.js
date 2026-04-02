@@ -60,6 +60,7 @@ function isCacheableAppRequest(url) {
     url.pathname === "/" ||
     url.pathname === "/index.html" ||
     url.pathname.startsWith("/src/") ||
+    url.pathname.startsWith("/dist/") ||
     url.pathname.startsWith("/data/") ||
     url.pathname === "/manifest.webmanifest" ||
     url.pathname.startsWith("/icons/") ||
@@ -74,6 +75,7 @@ function isFastUpdateRequest(url, request) {
     url.pathname === "/" ||
     url.pathname === "/index.html" ||
     url.pathname.startsWith("/src/") ||
+    url.pathname.startsWith("/dist/") ||
     url.pathname === "/manifest.webmanifest" ||
     url.pathname.startsWith("/icons/") ||
     url.pathname === "/JSON_FORMAT_REFERENCE" ||

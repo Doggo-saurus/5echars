@@ -1,5 +1,5 @@
 import express from "express";
-import { readdir } from "node:fs/promises";
+import { access, readdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { v4 as uuidv4 } from "uuid";
@@ -236,6 +236,16 @@ async function listRelativeFiles(rootDir, subDir, includeFile) {
   return results;
 }
 
+async function listRelativeFilesIfExists(rootDir, subDir, includeFile) {
+  const startDir = path.join(rootDir, subDir);
+  try {
+    await access(startDir);
+  } catch {
+    return [];
+  }
+  return listRelativeFiles(rootDir, subDir, includeFile);
+}
+
 function keepPublicOfflineAsset(relativePath) {
   const normalized = String(relativePath ?? "");
   if (!normalized.startsWith("public/")) return false;
@@ -248,6 +258,10 @@ function keepPublicOfflineAsset(relativePath) {
 
 function keepSrcOfflineAsset(relativePath) {
   return /\.(?:js|css)$/i.test(String(relativePath ?? ""));
+}
+
+function keepDistOfflineAsset(relativePath) {
+  return /\.js$/i.test(String(relativePath ?? ""));
 }
 
 function keepCatalogDataAsset(relativePath) {
@@ -550,6 +564,11 @@ publicAssets.forEach((assetPath) => {
 const srcAssets = await listRelativeFiles(repoRoot, "src", keepSrcOfflineAsset);
 srcAssets.forEach((assetPath) => {
   offlineAssetSet.add(assetPath);
+});
+
+const distAssets = await listRelativeFilesIfExists(repoRoot, "public/dist", keepDistOfflineAsset);
+distAssets.forEach((assetPath) => {
+  offlineAssetSet.add(assetPath.replace(/^\/public/, ""));
 });
 
 const dataAssets = await listRelativeFiles(repoRoot, "data/catalog-src/data", keepCatalogDataAsset);
