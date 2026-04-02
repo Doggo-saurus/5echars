@@ -94,32 +94,58 @@ export function createProficiencyRules({
   }
 
   function applyAbilityChoiceBonuses(choice, bonuses, context) {
-    if (!isRecordObject(choice)) return;
-    saveAbilities.forEach((ability) => {
-      const bonus = toNumber(choice?.[ability], 0);
-      if (!Number.isFinite(bonus) || bonus <= 0) return;
-      bonuses[ability] = Math.max(0, toNumber(bonuses[ability], 0) + bonus);
-    });
-    if (!isRecordObject(choice.choose)) return;
-    const from = (Array.isArray(choice.choose.from) ? choice.choose.from : [])
+    if (!choice) return;
+    const weighted = isRecordObject(choice.weighted) ? choice.weighted : null;
+    const fromRaw = Array.isArray(weighted?.from) ? weighted.from : Array.isArray(choice.from) ? choice.from : [];
+    const from = fromRaw
       .map((entry) => normalizeAbilityKey(entry))
       .filter(Boolean)
       .filter((ability, index, list) => list.indexOf(ability) === index);
     if (!from.length) return;
-    const amount = Math.max(1, toNumber(choice.choose.amount, 1));
-    const count = Math.max(1, Math.min(from.length, toNumber(choice.choose.count, 1)));
-    const selected = getStoredAutoChoiceSelectedValues(context.play, context.sourceKey, context.choiceId, from, count);
-    selected.forEach((ability) => {
+    const weightValues = Array.isArray(weighted?.weights)
+      ? weighted.weights.map((entry) => Math.max(0, toNumber(entry, 0))).filter((entry) => entry > 0)
+      : [];
+    const fallbackAmount = Math.max(1, toNumber(choice.amount ?? weighted?.amount, 1));
+    const countFromWeights = weightValues.length;
+    const countFromChoice = Math.max(0, toNumber(choice.count ?? weighted?.count, 0));
+    const count = Math.max(1, Math.min(from.length, countFromChoice || countFromWeights || 1));
+    const choiceId = `a:${context.optionIndex}:choose:${context.choiceIndex}`;
+    const selected = getStoredAutoChoiceSelectedValues(context.play, context.sourceKey, choiceId, from, count, {
+      allowDuplicates: false,
+      preserveStoredOrder: weightValues.length > 1,
+    });
+    selected.forEach((ability, index) => {
+      const amount = Math.max(1, toNumber(weightValues[index], fallbackAmount));
       bonuses[ability] = Math.max(0, toNumber(bonuses[ability], 0) + amount);
     });
   }
 
   function getAbilityBonusesFromEntity(entry, sourceKey, play) {
     const bonuses = getEmptyAbilityMap();
-    const abilityOptions = Array.isArray(entry?.ability) ? entry.ability : [];
-    const choice = abilityOptions.find((item) => isRecordObject(item)) ?? null;
-    if (!choice) return bonuses;
-    applyAbilityChoiceBonuses(choice, bonuses, { play, sourceKey, choiceId: "a:0:choose:0" });
+    const options = Array.isArray(entry?.ability) ? entry.ability : [];
+    const optionIndex = options.findIndex((option) => isRecordObject(option));
+    const selected = optionIndex >= 0 ? options[optionIndex] : null;
+    if (!selected) return bonuses;
+    let abilityChoiceIndex = 0;
+    Object.entries(selected).forEach(([key, value]) => {
+      const ability = normalizeAbilityKey(key);
+      if (ability) {
+        const amount = Math.max(0, toNumber(value, 0));
+        bonuses[ability] = Math.max(0, toNumber(bonuses[ability], 0) + amount);
+        return;
+      }
+      if (key === "choose") {
+        if (Array.isArray(value)) {
+          value.forEach((choice) => {
+            applyAbilityChoiceBonuses(choice, bonuses, { play, sourceKey, optionIndex, choiceIndex: abilityChoiceIndex });
+            abilityChoiceIndex += 1;
+          });
+        } else if (isRecordObject(value)) {
+          applyAbilityChoiceBonuses(value, bonuses, { play, sourceKey, optionIndex, choiceIndex: abilityChoiceIndex });
+          abilityChoiceIndex += 1;
+        }
+      }
+    });
     return bonuses;
   }
 

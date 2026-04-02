@@ -2412,18 +2412,6 @@ export function createRenderers(deps) {
         }
 
         <article class="card">
-          <h3 class="title">Features</h3>
-          <h4>Class/Subclass Features</h4>
-          ${
-            classAndTableFeatureListHtml
-              ? `<ul class="class-feature-list">${classAndTableFeatureListHtml}</ul>`
-              : "<p class='muted'>No unlocked class features.</p>"
-          }
-          <h4>Species Traits</h4>
-          ${speciesTraitListHtml ? `<ul class="class-feature-list">${speciesTraitListHtml}</ul>` : "<p class='muted'>No species traits found.</p>"}
-        </article>
-
-        <article class="card">
           <h3 class="title">Feats</h3>
           <h4>Feats</h4>
           <div>${featListHtml}</div>
@@ -2440,6 +2428,18 @@ export function createRenderers(deps) {
           `
               : ""
           }
+        </article>
+
+        <article class="card">
+          <h3 class="title">Features</h3>
+          <h4>Class/Subclass Features</h4>
+          ${
+            classAndTableFeatureListHtml
+              ? `<ul class="class-feature-list">${classAndTableFeatureListHtml}</ul>`
+              : "<p class='muted'>No unlocked class features.</p>"
+          }
+          <h4>Species Traits</h4>
+          ${speciesTraitListHtml ? `<ul class="class-feature-list">${speciesTraitListHtml}</ul>` : "<p class='muted'>No species traits found.</p>"}
         </article>
 
         <article class="card">
