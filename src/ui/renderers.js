@@ -417,7 +417,8 @@ export function createRenderers(deps) {
         const isProf = skillMode === "proficient" || skillMode === "expertise";
         const isAutoProf = autoSkillMode === "proficient" || autoSkillMode === "expertise";
         const isOverLimit = Boolean(skillEditState?.invalidByKey?.[skill.key]);
-        const total = derived.mods[skill.ability] + getSkillProficiencyBonus(derived.proficiencyBonus, skillMode);
+        const skillCheckBonus = Math.max(0, toNumber(play?.autoSkillCheckBonuses?.[skill.key], 0));
+        const total = derived.mods[skill.ability] + getSkillProficiencyBonus(derived.proficiencyBonus, skillMode) + skillCheckBonus;
         const profControl = canToggle
           ? `
             <button
@@ -1215,6 +1216,92 @@ export function createRenderers(deps) {
             selected,
             (skillKey) => skills.find((skill) => skill.key === skillKey)?.label ?? skillKey,
             { metaByOption: autoSourceMap, disabledValues: blocked }
+          )}
+        </div>
+      `);
+    });
+    return blocks.join("");
+  }
+
+  function getSelectedFeatureModeOptionChoiceEntries(character, catalogs) {
+    const modes = Array.isArray(character?.progression?.featureModes) ? character.progression.featureModes : [];
+    const modeSelections = character?.play?.featureModes && typeof character.play.featureModes === "object" && !Array.isArray(character.play.featureModes)
+      ? character.play.featureModes
+      : {};
+    if (!modes.length) return [];
+    const classFeatures = Array.isArray(catalogs?.classFeatures) ? catalogs.classFeatures : [];
+    const className = String(character?.class ?? "").trim().toLowerCase();
+    const sourceOrder = getPreferredSourceOrder(character).map((value) => normalizeSourceTag(value));
+    const sourceRank = new Map(sourceOrder.map((value, index) => [value, index]));
+    const unknownRank = sourceRank.size + 1000;
+    const classLevel = Math.max(1, toNumber(character?.level, 1));
+    const seen = new Set();
+    const selectedEntries = [];
+    modes.forEach((mode) => {
+      const modeId = String(mode?.id ?? "").trim();
+      if (!modeId) return;
+      const raw = modeSelections[modeId];
+      const selectedValues = Array.isArray(raw) ? raw : [raw];
+      selectedValues
+        .map((value) => String(value ?? "").trim())
+        .filter(Boolean)
+        .forEach((label) => {
+          const normalizedLabel = label.toLowerCase();
+          const matches = classFeatures
+            .filter((entry) => String(entry?.name ?? "").trim().toLowerCase() === normalizedLabel)
+            .filter((entry) => {
+              if (!className) return true;
+              return String(entry?.className ?? "").trim().toLowerCase() === className;
+            })
+            .filter((entry) => Math.max(0, toNumber(entry?.level, 0)) <= classLevel)
+            .sort((a, b) => {
+              const aRank = sourceRank.get(normalizeSourceTag(a?.source)) ?? unknownRank;
+              const bRank = sourceRank.get(normalizeSourceTag(b?.source)) ?? unknownRank;
+              if (aRank !== bRank) return aRank - bRank;
+              return toNumber(a?.level, 0) - toNumber(b?.level, 0);
+            });
+          const entry = matches[0] ?? null;
+          if (!entry) return;
+          const sourceKey = `feature-mode:${modeId}:${normalizeChoiceToken(label)}`;
+          const key = `${sourceKey}:${normalizeChoiceToken(entry?.name)}:${normalizeSourceTag(entry?.source)}`;
+          if (seen.has(key)) return;
+          seen.add(key);
+          selectedEntries.push({ sourceKey, entry });
+        });
+    });
+    return selectedEntries;
+  }
+
+  function renderFeatureModeSkillBonusChoiceEditors(character, catalogs) {
+    const selectedEntries = getSelectedFeatureModeOptionChoiceEntries(character, catalogs);
+    const blocks = [];
+    selectedEntries.forEach(({ sourceKey, entry }) => {
+      const text = getRuleDescriptionLines(entry).join(" ");
+      const abilityMatch = text.match(
+        /\bbonus equals your\s+(strength|dexterity|constitution|intelligence|wisdom|charisma)\s+modifier(?:\s*\(minimum of \+?\d+\))?/i
+      );
+      if (!abilityMatch?.[1]) return;
+      const clauseMatch = text.match(/\bbonus to your\s+([^.]*?)checks?/i) ?? text.match(/\bbonus to\s+([^.]*?)checks?/i);
+      const clause = String(clauseMatch?.[1] ?? "");
+      if (!clause) return;
+      const skillOptions = skills
+        .filter((skill) => new RegExp(`\\b${String(skill.label ?? "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(clause))
+        .map((skill) => skill.key)
+        .filter(Boolean);
+      const uniqueOptions = [...new Set(skillOptions)];
+      if (uniqueOptions.length < 2) return;
+      const choiceId = "skill-bonus:0";
+      const selected = getSelectedChoiceValues(character, sourceKey, choiceId, uniqueOptions, 1);
+      blocks.push(`
+        <div class="auto-choice-card">
+          <p class="muted"><strong>${esc(entry?.name ?? "Feature")} skill bonus</strong></p>
+          ${renderChoiceCheckboxes(
+            sourceKey,
+            choiceId,
+            1,
+            uniqueOptions,
+            selected,
+            (skillKey) => skills.find((skill) => skill.key === skillKey)?.label ?? skillKey
           )}
         </div>
       `);
@@ -2699,6 +2786,7 @@ export function createRenderers(deps) {
         sourceOrder
       );
       const classSkillChoiceEditors = renderClassSkillChoiceEditors(classEntry, character, catalogs);
+      const featureModeSkillChoiceEditors = renderFeatureModeSkillBonusChoiceEditors(character, catalogs);
       const classChoiceSourceKey = `class:${String(classEntry?.name ?? character?.class ?? "").trim().toLowerCase() || "primary"}`;
       const classToolChoiceEditors = renderAutoChoiceEditorsForEntity(
         { toolProficiencies: classEntry?.startingProficiencies?.toolProficiencies },
@@ -2734,6 +2822,7 @@ export function createRenderers(deps) {
         <button class="btn secondary" type="button" data-open-levelup>Level Up</button>
       </div>
       ${classSkillChoiceEditors ? `<div class="auto-choice-shell">${classSkillChoiceEditors}</div>` : ""}
+      ${featureModeSkillChoiceEditors ? `<div class="auto-choice-shell">${featureModeSkillChoiceEditors}</div>` : ""}
       ${classToolChoiceEditors ? `<div class="auto-choice-shell">${classToolChoiceEditors}</div>` : ""}
       <h3 class="title">Feat Slots</h3>
       <p class="subtitle">Feat slots come from your class levels. Pick a feat for each slot.</p>
@@ -3377,7 +3466,8 @@ export function createRenderers(deps) {
         play.skillProficiencyModes?.[skillKey] ?? (play.skillProficiencies?.[skillKey] ? "proficient" : "none")
       );
       const skillBonus = getSkillProficiencyBonus(proficiencyBonus, mode);
-      return 10 + toNumber(derived?.mods?.[abilityKey], 0) + skillBonus;
+      const checkBonus = Math.max(0, toNumber(play?.autoSkillCheckBonuses?.[skillKey], 0));
+      return 10 + toNumber(derived?.mods?.[abilityKey], 0) + skillBonus + checkBonus;
     };
     const passivePerception = Number.isFinite(toNumber(derived?.passivePerception, Number.NaN))
       ? toNumber(derived?.passivePerception, 10)

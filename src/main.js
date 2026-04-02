@@ -4392,6 +4392,202 @@ function getSelectedFeatAndOptionalFeatureEntries(catalogs, character, sourceOrd
   return { featEntries, optionalFeatureEntries };
 }
 
+const SMALL_NUMBER_WORDS = {
+  one: 1,
+  two: 2,
+  three: 3,
+  four: 4,
+  five: 5,
+};
+
+function parseSmallCount(value, fallback = 1) {
+  const token = String(value ?? "").trim().toLowerCase();
+  if (!token) return fallback;
+  const parsed = Math.floor(toNumber(token, Number.NaN));
+  if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  return SMALL_NUMBER_WORDS[token] ?? fallback;
+}
+
+function getEntryTextForCantripBonus(entry) {
+  return getRuleDescriptionLinesForParsing(entry)
+    .map((line) => String(line ?? "").trim())
+    .filter(Boolean)
+    .join(" ");
+}
+
+function getEntryCantripSelectionBonus(entry) {
+  if (!isRecordObject(entry)) return 0;
+  let total = 0;
+  const structuredCandidates = [
+    entry?.cantripKnownBonus,
+    entry?.additionalCantripKnown,
+    entry?.additionalCantripsKnown,
+    entry?.cantripLimitBonus,
+  ];
+  structuredCandidates.forEach((value) => {
+    const parsed = Math.floor(toNumber(value, Number.NaN));
+    if (Number.isFinite(parsed) && parsed > 0) total += parsed;
+  });
+  const text = getEntryTextForCantripBonus(entry).toLowerCase();
+  if (!text) return total;
+  const matches = [
+    ...text.matchAll(/\b(?:learn|know|gain)\b[^.]{0,140}?\b(?:(one|two|three|four|five|\d+)\s+)?extra\s+cantrips?\b/gi),
+    ...text.matchAll(
+      /\b(?:learn|know|gain)\b[^.]{0,140}?\b(?:(one|two|three|four|five|\d+)\s+)?additional\s+cantrips?\b/gi
+    ),
+  ];
+  matches.forEach((match) => {
+    const phrase = String(match?.[0] ?? "").toLowerCase();
+    if (phrase.includes("higher level") || phrase.includes("as shown")) return;
+    total += parseSmallCount(match?.[1], 1);
+  });
+  return Math.max(0, total);
+}
+
+function getSelectedFeatureModeOptionEntries(catalogs, character) {
+  const modes = Array.isArray(character?.progression?.featureModes) ? character.progression.featureModes : [];
+  const modeSelections = isRecordObject(character?.play?.featureModes) ? character.play.featureModes : {};
+  if (!modes.length) return [];
+  const classFeatures = Array.isArray(catalogs?.classFeatures) ? catalogs.classFeatures : [];
+  const className = String(character?.class ?? "").trim().toLowerCase();
+  const classLevel = getClassLevelByName(character, character?.class);
+  const sourceOrder = getPreferredSourceOrder(character).map((value) => normalizeSourceTag(value));
+  const sourceRank = new Map(sourceOrder.map((value, index) => [value, index]));
+  const unknownRank = sourceRank.size + 1000;
+  const seen = new Set();
+  const selectedEntries = [];
+  modes.forEach((mode) => {
+    const modeId = String(mode?.id ?? "").trim();
+    if (!modeId) return;
+    const raw = modeSelections[modeId];
+    const selectedValues = Array.isArray(raw) ? raw : [raw];
+    selectedValues
+      .map((value) => String(value ?? "").trim())
+      .filter(Boolean)
+      .forEach((label) => {
+        const normalizedLabel = label.toLowerCase();
+        const matches = classFeatures
+          .filter((entry) => String(entry?.name ?? "").trim().toLowerCase() === normalizedLabel)
+          .filter((entry) => {
+            if (!className) return true;
+            return String(entry?.className ?? "").trim().toLowerCase() === className;
+          })
+          .filter((entry) => {
+            const level = Math.max(0, toNumber(entry?.level, 0));
+            return !classLevel || level <= classLevel;
+          })
+          .sort((a, b) => {
+            const aRank = sourceRank.get(normalizeSourceTag(a?.source)) ?? unknownRank;
+            const bRank = sourceRank.get(normalizeSourceTag(b?.source)) ?? unknownRank;
+            if (aRank !== bRank) return aRank - bRank;
+            return toNumber(a?.level, 0) - toNumber(b?.level, 0);
+          });
+        const entry = matches[0] ?? null;
+        if (!entry) return;
+        const sourceKey = `feature-mode:${modeId}:${normalizeChoiceToken(label)}`;
+        const entryKey = `${sourceKey}:${buildEntityId(["mode-option", entry?.name, entry?.source, entry?.className, entry?.level])}`;
+        if (seen.has(entryKey)) return;
+        seen.add(entryKey);
+        selectedEntries.push({ sourceKey, entry });
+      });
+  });
+  return selectedEntries;
+}
+
+function getAutomaticCantripLimitBonus(catalogs, character) {
+  const sourceOrder = getPreferredSourceOrder(character);
+  const { featEntries, optionalFeatureEntries } = getSelectedFeatAndOptionalFeatureEntries(catalogs, character, sourceOrder);
+  let total = 0;
+  const seen = new Set();
+  const addEntryBonus = (entry) => {
+    if (!isRecordObject(entry)) return;
+    const key = buildEntityId([
+      "cantrip-bonus",
+      entry?.name,
+      entry?.source,
+      entry?.className,
+      entry?.subclassShortName,
+      entry?.level,
+    ]);
+    if (key && seen.has(key)) return;
+    if (key) seen.add(key);
+    total += getEntryCantripSelectionBonus(entry);
+  };
+  featEntries.forEach(({ entry }) => {
+    addEntryBonus(entry);
+  });
+  optionalFeatureEntries.forEach(({ entry }) => {
+    addEntryBonus(entry);
+  });
+  getUnlockedFeatures(catalogs, character).forEach((feature) => {
+    const detail = resolveFeatureEntryFromCatalogs(catalogs, feature);
+    addEntryBonus(detail);
+  });
+  getSelectedFeatureModeOptionEntries(catalogs, character).forEach(({ entry }) => {
+    addEntryBonus(entry);
+  });
+  return Math.max(0, total);
+}
+
+function extractSkillCheckBonusSpecsFromEntry(entry) {
+  const text = getEntryTextForCantripBonus(entry);
+  if (!text) return [];
+  const abilityMatch = text.match(
+    /\bbonus equals your\s+(strength|dexterity|constitution|intelligence|wisdom|charisma)\s+modifier(?:\s*\(minimum of \+?(\d+)\))?/i
+  );
+  if (!abilityMatch?.[1]) return [];
+  const abilityName = String(abilityMatch[1]).trim().toLowerCase();
+  const abilityKeyByName = {
+    strength: "str",
+    dexterity: "dex",
+    constitution: "con",
+    intelligence: "int",
+    wisdom: "wis",
+    charisma: "cha",
+  };
+  const abilityKey = abilityKeyByName[abilityName] ?? "";
+  if (!abilityKey) return [];
+  const minimum = Math.max(0, toNumber(abilityMatch?.[2], 0));
+  const checkClauseMatch = text.match(/\bbonus to your\s+([^.]*?)checks?/i) ?? text.match(/\bbonus to\s+([^.]*?)checks?/i);
+  const clause = String(checkClauseMatch?.[1] ?? "");
+  if (!clause) return [];
+  const skillKeys = SKILLS
+    .filter((skill) => new RegExp(`\\b${String(skill.label ?? "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(clause))
+    .map((skill) => skill.key)
+    .filter(Boolean);
+  const unique = [...new Set(skillKeys)];
+  if (!unique.length) return [];
+  return [{ skillKeys: unique, abilityKey, minimum }];
+}
+
+function getAutomaticSkillCheckBonuses(catalogs, character) {
+  const base = SKILLS.reduce((acc, skill) => {
+    acc[skill.key] = 0;
+    return acc;
+  }, {});
+  const play = isRecordObject(character?.play) ? character.play : {};
+  getSelectedFeatureModeOptionEntries(catalogs, character).forEach(({ sourceKey, entry }) => {
+    const specs = extractSkillCheckBonusSpecsFromEntry(entry);
+    specs.forEach((spec, specIndex) => {
+      const abilityMod = Math.floor((toNumber(character?.abilities?.[spec.abilityKey], 10) - 10) / 2);
+      const amount = Math.max(Math.max(0, toNumber(spec.minimum, 0)), abilityMod);
+      if (amount <= 0) return;
+      const options = Array.isArray(spec.skillKeys) ? spec.skillKeys.filter(Boolean) : [];
+      if (!options.length) return;
+      const selected = options.length > 1
+        ? getStoredAutoChoiceSelectedValues(play, sourceKey, `skill-bonus:${specIndex}`, options, 1, {
+            allowDuplicates: false,
+            preserveStoredOrder: true,
+          })
+        : options;
+      selected.forEach((skillKey) => {
+        base[skillKey] = Math.max(0, toNumber(base?.[skillKey], 0) + amount);
+      });
+    });
+  });
+  return base;
+}
+
 function getAutomaticAbilityBonuses(catalogs, character, play) {
   const sourceOrder = getPreferredSourceOrder(character);
   const raceEntry = getEffectiveRaceEntry(catalogs, character, sourceOrder);
@@ -7122,6 +7318,8 @@ function updateCharacterWithRequiredSettings(state, patch, options = {}) {
   const autoSaveProficiencies = getAutomaticSaveProficiencies(state.catalogs, nextCharacter);
   const autoSkillProficiencyModes = getAutomaticSkillProficiencyModes(state.catalogs, nextCharacter, nextPlay);
   const autoSkillProficiencies = mapSkillModesToProficiencyMap(autoSkillProficiencyModes, SKILLS.map((skill) => skill.key));
+  const autoCantripLimitBonus = getAutomaticCantripLimitBonus(state.catalogs, nextCharacter);
+  const autoSkillCheckBonuses = getAutomaticSkillCheckBonuses(state.catalogs, nextCharacter);
   let saveOverrides = isRecordObject(nextPlay.saveProficiencyOverrides) ? { ...nextPlay.saveProficiencyOverrides } : {};
   let skillOverrides = isRecordObject(nextPlay.skillProficiencyOverrides) ? { ...nextPlay.skillProficiencyOverrides } : {};
   let skillModeOverrides = isRecordObject(nextPlay.skillProficiencyModeOverrides) ? { ...nextPlay.skillProficiencyModeOverrides } : {};
@@ -7166,6 +7364,8 @@ function updateCharacterWithRequiredSettings(state, patch, options = {}) {
   nextPlay.autoSaveProficiencies = autoSaveProficiencies;
   nextPlay.autoSkillProficiencyModes = autoSkillProficiencyModes;
   nextPlay.autoSkillProficiencies = autoSkillProficiencies;
+  nextPlay.autoCantripLimitBonus = autoCantripLimitBonus;
+  nextPlay.autoSkillCheckBonuses = autoSkillCheckBonuses;
   nextPlay.saveProficiencyOverrides = saveOverrides;
   nextPlay.skillProficiencyModeOverrides = skillModeOverrides;
   nextPlay.skillProficiencyOverrides = skillOverrides;

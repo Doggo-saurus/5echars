@@ -173,13 +173,15 @@ export function createPickers(deps) {
         return classEntries.find((entry) => String(entry?.name ?? "").trim().toLowerCase() === key) ?? null;
       };
 
-      return tracks.reduce((sum, track) => {
+      const classCantripLimit = tracks.reduce((sum, track) => {
         const classEntry = findClassEntry(track.className);
         const progression = Array.isArray(classEntry?.cantripProgression) ? classEntry.cantripProgression : [];
         if (!progression.length) return sum;
         const index = Math.max(0, Math.min(progression.length - 1, Math.floor(track.level) - 1));
         return sum + Math.max(0, toNumber(progression[index], 0));
       }, 0);
+      const computedBonus = Math.max(0, toNumber(character?.play?.autoCantripLimitBonus, 0));
+      return classCantripLimit + computedBonus;
     };
     const sourceOptions = [...new Set(allSpells.map((it) => it.source).filter(Boolean))].sort();
     openModal({
@@ -221,10 +223,20 @@ export function createPickers(deps) {
       const sourceValue = sourceEl.value;
       const currentCharacter = store.getState().character;
       const cantripLimit = resolveClassCantripLimit(currentCharacter);
-      const selectedCantripCount = (Array.isArray(currentCharacter?.spells) ? currentCharacter.spells : []).reduce(
-        (count, spellName) => count + (toNumber(spellLevelByName.get(String(spellName ?? "").trim()), 0) === 0 ? 1 : 0),
-        0
+      const autoCantripSet = new Set(
+        [
+          ...(Array.isArray(currentCharacter?.play?.autoGrantedSpells) ? currentCharacter.play.autoGrantedSpells : []),
+          ...(Array.isArray(currentCharacter?.play?.autoClassListSpells) ? currentCharacter.play.autoClassListSpells : []),
+        ]
+          .map((name) => String(name ?? "").trim().toLowerCase())
+          .filter(Boolean)
       );
+      const selectedCantripCount = (Array.isArray(currentCharacter?.spells) ? currentCharacter.spells : []).reduce((count, spellName) => {
+        const normalizedName = String(spellName ?? "").trim();
+        if (!normalizedName) return count;
+        if (autoCantripSet.has(normalizedName.toLowerCase())) return count;
+        return count + (toNumber(spellLevelByName.get(normalizedName), 0) === 0 ? 1 : 0);
+      }, 0);
       const autoClassListSet = new Set(
         (Array.isArray(currentCharacter?.play?.autoClassListSpells) ? currentCharacter.play.autoClassListSpells : [])
           .map((name) => String(name ?? "").trim().toLowerCase())
@@ -301,10 +313,24 @@ export function createPickers(deps) {
           const isCantrip = toNumber(spellLevelByName.get(String(spellName ?? "").trim()), 0) === 0;
           if (!selectedSpells.includes(spellName) && isCantrip) {
             const cantripLimit = resolveClassCantripLimit(store.getState().character);
-            const selectedCantripCount = selectedSpells.reduce(
-              (count, name) => count + (toNumber(spellLevelByName.get(String(name ?? "").trim()), 0) === 0 ? 1 : 0),
-              0
+            const autoCantripSet = new Set(
+              [
+                ...(Array.isArray(store.getState().character?.play?.autoGrantedSpells)
+                  ? store.getState().character.play.autoGrantedSpells
+                  : []),
+                ...(Array.isArray(store.getState().character?.play?.autoClassListSpells)
+                  ? store.getState().character.play.autoClassListSpells
+                  : []),
+              ]
+                .map((name) => String(name ?? "").trim().toLowerCase())
+                .filter(Boolean)
             );
+            const selectedCantripCount = selectedSpells.reduce((count, name) => {
+              const normalizedName = String(name ?? "").trim();
+              if (!normalizedName) return count;
+              if (autoCantripSet.has(normalizedName.toLowerCase())) return count;
+              return count + (toNumber(spellLevelByName.get(normalizedName), 0) === 0 ? 1 : 0);
+            }, 0);
             if (selectedCantripCount >= cantripLimit) return;
           }
           if (selectedSpells.includes(spellName)) store.removeSpell(spellName);

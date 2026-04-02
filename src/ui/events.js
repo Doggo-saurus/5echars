@@ -1939,7 +1939,8 @@ export function createEvents(deps) {
           const skillMode = normalizeSkillProficiencyMode(
             state.character.play?.skillProficiencyModes?.[key] ?? (state.character.play?.skillProficiencies?.[key] ? "proficient" : "none")
           );
-          const bonus = mod + getSkillProficiencyBonus(state.derived.proficiencyBonus, skillMode);
+          const checkBonus = Math.max(0, toNumber(state.character.play?.autoSkillCheckBonuses?.[key], 0));
+          const bonus = mod + getSkillProficiencyBonus(state.derived.proficiencyBonus, skillMode) + checkBonus;
           rollVisualD20(skill.label, bonus);
         },
         (rollMode) => {
@@ -1950,7 +1951,8 @@ export function createEvents(deps) {
           const skillMode = normalizeSkillProficiencyMode(
             state.character.play?.skillProficiencyModes?.[key] ?? (state.character.play?.skillProficiencies?.[key] ? "proficient" : "none")
           );
-          const bonus = mod + getSkillProficiencyBonus(state.derived.proficiencyBonus, skillMode);
+          const checkBonus = Math.max(0, toNumber(state.character.play?.autoSkillCheckBonuses?.[key], 0));
+          const bonus = mod + getSkillProficiencyBonus(state.derived.proficiencyBonus, skillMode) + checkBonus;
           rollVisualD20(skill.label, bonus, rollMode);
         }
       );
