@@ -57,6 +57,8 @@ function getDefaultPlayState() {
     autoSkillProficiencyModes: {},
     skillProficiencyModeOverrides: {},
     autoAbilityBonuses: {},
+    autoCantripLimitBonus: 0,
+    autoSkillCheckBonuses: {},
     autoChoiceSelections: {},
     featureModes: {},
     autoGrantedSpells: [],
@@ -281,6 +283,11 @@ function normalizeCharacter(character) {
     autoAbilityBonuses:
       character.play?.autoAbilityBonuses && typeof character.play.autoAbilityBonuses === "object"
         ? { ...character.play.autoAbilityBonuses }
+        : {},
+    autoCantripLimitBonus: Math.max(0, Math.floor(toNumber(character.play?.autoCantripLimitBonus, 0))),
+    autoSkillCheckBonuses:
+      character.play?.autoSkillCheckBonuses && typeof character.play.autoSkillCheckBonuses === "object"
+        ? { ...character.play.autoSkillCheckBonuses }
         : {},
     inspiration: Boolean(character.play?.inspiration),
     autoChoiceSelections:
