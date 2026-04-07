@@ -14,6 +14,7 @@ export function createCharacterUpdater({
   getAutomaticAbilityBonuses,
   getAutomaticSaveProficiencies,
   getAutomaticSkillProficiencyModes,
+  getAutomaticFeatureModeBonuses,
   mapSkillModesToProficiencyMap,
   hasStoredProficiencyState,
   deriveLegacyProficiencyOverrides,
@@ -130,6 +131,31 @@ export function createCharacterUpdater({
     const autoSaveProficiencies = getAutomaticSaveProficiencies(state.catalogs, nextCharacter);
     const autoSkillProficiencyModes = getAutomaticSkillProficiencyModes(state.catalogs, nextCharacter, nextPlay);
     const autoSkillProficiencies = mapSkillModesToProficiencyMap(autoSkillProficiencyModes, skills.map((skill) => skill.key));
+    const nextProgression = recomputeCharacterProgression(state.catalogs, nextCharacter);
+    const nextFeatSlotIds = new Set(
+      (Array.isArray(nextProgression?.featSlots) ? nextProgression.featSlots : [])
+        .map((slot) => String(slot?.id ?? "").trim())
+        .filter(Boolean)
+    );
+    const nextOptionalFeatureSlotIds = new Set(
+      (Array.isArray(nextProgression?.optionalFeatureSlots) ? nextProgression.optionalFeatureSlots : [])
+        .map((slot) => String(slot?.id ?? "").trim())
+        .filter(Boolean)
+    );
+    const nextFeats = (Array.isArray(nextCharacter?.feats) ? nextCharacter.feats : []).filter((feat) => {
+      if (!feat || typeof feat !== "object") return false;
+      if (!String(feat?.name ?? "").trim()) return false;
+      const slotId = String(feat?.slotId ?? "").trim();
+      if (!slotId) return true;
+      return nextFeatSlotIds.has(slotId);
+    });
+    const nextOptionalFeatures = (Array.isArray(nextCharacter?.optionalFeatures) ? nextCharacter.optionalFeatures : []).filter((feature) => {
+      if (!feature || typeof feature !== "object") return false;
+      if (!String(feature?.name ?? "").trim()) return false;
+      const slotId = String(feature?.slotId ?? "").trim();
+      if (!slotId) return false;
+      return nextOptionalFeatureSlotIds.has(slotId);
+    });
     let saveOverrides = isRecordObject(nextPlay.saveProficiencyOverrides) ? { ...nextPlay.saveProficiencyOverrides } : {};
     let skillOverrides = isRecordObject(nextPlay.skillProficiencyOverrides) ? { ...nextPlay.skillProficiencyOverrides } : {};
     let skillModeOverrides = isRecordObject(nextPlay.skillProficiencyModeOverrides) ? { ...nextPlay.skillProficiencyModeOverrides } : {};
@@ -170,10 +196,39 @@ export function createCharacterUpdater({
         })
         .filter(Boolean)
     );
+    const featureModes = Array.isArray(nextProgression.featureModes) ? nextProgression.featureModes : [];
+    const nextFeatureModes = isRecordObject(nextPlay.featureModes) ? { ...nextPlay.featureModes } : {};
+    const allowedFeatureModeIds = new Set(featureModes.map((mode) => mode.id));
+    Object.keys(nextFeatureModes).forEach((modeId) => {
+      if (!allowedFeatureModeIds.has(modeId)) delete nextFeatureModes[modeId];
+    });
+    featureModes.forEach((mode) => {
+      const optionsList = Array.isArray(mode?.optionValues) ? mode.optionValues : [];
+      if (!optionsList.length) return;
+      const maxCount = Math.max(1, Math.min(optionsList.length, Math.floor(toNumber(mode?.count, 1))));
+      const raw = nextFeatureModes[mode.id];
+      const currentValues = Array.isArray(raw)
+        ? raw.map((entry) => String(entry ?? "").trim())
+        : [String(raw ?? "").trim()];
+      const selected = [...new Set(currentValues.filter((value) => value && optionsList.includes(value)))];
+      if (!selected.length) selected.push(optionsList[0]);
+      nextFeatureModes[mode.id] = maxCount <= 1 ? selected[0] : selected.slice(0, maxCount);
+    });
+    nextPlay.featureModes = nextFeatureModes;
+    const featureModeBonuses = getAutomaticFeatureModeBonuses(state.catalogs, nextCharacter, nextPlay, featureModes);
+    const autoCantripLimitBonus = Math.max(0, toNumber(featureModeBonuses?.cantripLimitBonus, 0));
+    const autoSkillCheckBonuses = isRecordObject(featureModeBonuses?.skillCheckBonuses)
+      ? featureModeBonuses.skillCheckBonuses
+      : skills.reduce((acc, skill) => {
+          acc[skill.key] = 0;
+          return acc;
+        }, {});
     nextPlay.autoAbilityBonuses = autoAbilityBonuses;
     nextPlay.autoSaveProficiencies = autoSaveProficiencies;
     nextPlay.autoSkillProficiencyModes = autoSkillProficiencyModes;
     nextPlay.autoSkillProficiencies = autoSkillProficiencies;
+    nextPlay.autoCantripLimitBonus = autoCantripLimitBonus;
+    nextPlay.autoSkillCheckBonuses = autoSkillCheckBonuses;
     nextPlay.saveProficiencyOverrides = saveOverrides;
     nextPlay.skillProficiencyModeOverrides = skillModeOverrides;
     nextPlay.skillProficiencyOverrides = skillOverrides;
@@ -182,7 +237,6 @@ export function createCharacterUpdater({
     nextPlay.skillProficiencies = mapSkillModesToProficiencyMap(nextSkillModes, skillKeys);
     const defaultSpellSlots = getCharacterSpellSlotDefaults(state.catalogs, nextCharacter);
     syncSpellSlotsWithDefaults(nextPlay, defaultSpellSlots, { preserveUserOverrides: options.preserveUserOverrides !== false });
-    const nextProgression = recomputeCharacterProgression(state.catalogs, nextCharacter);
     const autoGrantedSpellData = getAutoGrantedSpellData(state.catalogs, nextCharacter);
     const autoGrantedSpells = autoGrantedSpellData.names;
     const autoClassListSpells = getAutoClassListSpellNames(state.catalogs, nextCharacter);
@@ -228,24 +282,6 @@ export function createCharacterUpdater({
       ),
     ];
     nextPlay.featureUses = syncAutoFeatureUses(nextPlay, autoTrackers);
-    const allowedFeatureModeIds = new Set((nextProgression.featureModes ?? []).map((mode) => mode.id));
-    const nextFeatureModes = isRecordObject(nextPlay.featureModes) ? { ...nextPlay.featureModes } : {};
-    Object.keys(nextFeatureModes).forEach((modeId) => {
-      if (!allowedFeatureModeIds.has(modeId)) delete nextFeatureModes[modeId];
-    });
-    (nextProgression.featureModes ?? []).forEach((mode) => {
-      const optionsList = Array.isArray(mode?.optionValues) ? mode.optionValues : [];
-      if (!optionsList.length) return;
-      const maxCount = Math.max(1, Math.min(optionsList.length, Math.floor(toNumber(mode?.count, 1))));
-      const raw = nextFeatureModes[mode.id];
-      const currentValues = Array.isArray(raw)
-        ? raw.map((entry) => String(entry ?? "").trim())
-        : [String(raw ?? "").trim()];
-      const selected = [...new Set(currentValues.filter((value) => value && optionsList.includes(value)))];
-      if (!selected.length) selected.push(optionsList[0]);
-      nextFeatureModes[mode.id] = maxCount <= 1 ? selected[0] : selected.slice(0, maxCount);
-    });
-    nextPlay.featureModes = nextFeatureModes;
     const selectedSubclass = getSelectedSubclassEntry(state.catalogs, nextCharacter);
     const classEntry = getClassCatalogEntry(state.catalogs, nextCharacter.class, nextCharacter?.classSource, sourceOrder);
     const classSource = normalizeSourceTag(classEntry?.source);
@@ -268,8 +304,8 @@ export function createCharacterUpdater({
       subclass: subclassName,
       classSelection,
       progression: nextProgression,
-      feats: nextCharacter.feats,
-      optionalFeatures: nextCharacter.optionalFeatures,
+      feats: nextFeats,
+      optionalFeatures: nextOptionalFeatures,
       spells: nextSpells,
       play: nextPlay,
     });

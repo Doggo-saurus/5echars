@@ -1953,6 +1953,30 @@ body.play-mode #dice-overlay {
 .inventory-row-actions {
   display: inline-flex;
   gap: 0.35rem;
+  align-items: center;
+  flex-wrap: nowrap;
+  justify-content: flex-end;
+  margin-left: auto;
+}
+
+.inventory-item-counter {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.18rem;
+}
+
+.inventory-item-counter-value {
+  min-width: 1.6rem;
+  text-align: center;
+  font-size: 0.85rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  color: var(--text);
+}
+
+.inventory-item-counter .btn {
+  min-width: 1.7rem;
+  padding: 0.18rem 0.35rem;
 }
 
 .condition-panel {
@@ -2161,6 +2185,10 @@ body.play-mode #dice-overlay {
   margin: 0.35rem 0 0;
 }
 
+.feature-row-feat .feature-main {
+  display: block;
+}
+
 .feature-main {
   display: flex;
   align-items: center;
@@ -2230,24 +2258,52 @@ body.play-mode #dice-overlay {
   outline-offset: 2px;
 }
 
+.feat-tile-static {
+  cursor: default;
+}
+
+.feat-tile-static:hover {
+  border-color: rgba(255, 255, 255, 0.18);
+  background: linear-gradient(135deg, rgba(15, 23, 42, 0.92), rgba(30, 41, 59, 0.72));
+}
+
+.feat-tile-static .feature-use-controls {
+  justify-self: end;
+}
+
+.feat-tile-actions-nowrap {
+  flex-wrap: nowrap;
+}
+
+.feat-tile-actions-nowrap .feature-use-controls {
+  flex-wrap: nowrap;
+}
+
+.feat-tile-actions-nowrap .class-table-effect-roll-btn {
+  width: auto;
+}
+
 .feat-tile-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
   gap: 0.5rem;
+  min-width: 0;
 }
 
 .feat-tile-actions {
-  margin-left: auto;
   display: inline-flex;
   align-items: center;
+  flex-wrap: wrap;
   justify-content: flex-end;
   gap: 0.35rem;
+  min-width: 0;
 }
 
 .feat-tile-title {
   font-size: 0.98rem;
   line-height: 1.3;
+  min-width: 0;
 }
 
 .feat-tile-meta {
@@ -3063,6 +3119,12 @@ body.play-mode #dice-overlay {
   gap: 0.65rem;
 }
 
+@media (min-width: 961px) {
+  .spell-level-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 .spell-level-group {
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 10px;
@@ -3110,13 +3172,14 @@ body.play-mode #dice-overlay {
 .spell-row {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
-  grid-template-rows: auto auto;
+  grid-template-rows: auto auto auto;
   align-items: center;
-  gap: 0.45rem 0.6rem;
+  row-gap: 0.22rem;
+  column-gap: 0.56rem;
   border: 1px solid rgba(255, 255, 255, 0.14);
   border-radius: 10px;
   background: rgba(255, 255, 255, 0.03);
-  padding: 0.35rem 0.5rem;
+  padding: 0.28rem 0.44rem;
 }
 
 .spell-row.is-prepared {
@@ -3213,22 +3276,30 @@ body.play-mode #dice-overlay {
   text-align: right;
   grid-column: 3;
   grid-row: 1;
+  white-space: nowrap;
 }
 
 .spell-meta {
-  grid-column: 2;
+  grid-column: 2 / 4;
   grid-row: 2;
   font-size: 0.77rem;
+  margin-top: -0.08rem;
+  line-height: 1.2;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .spell-action-group {
-  grid-column: 3;
-  grid-row: 2;
+  grid-column: 2 / 4;
+  grid-row: 3;
   justify-self: end;
   align-self: end;
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
+  flex-wrap: wrap;
 }
 
 .spell-ritual-pill {
@@ -3493,6 +3564,11 @@ body.play-mode .ability-save-grid .save-prof-btn {
   text-align: right;
 }
 
+.skill-roll-btn-inline {
+  margin-left: 0.35rem;
+  pointer-events: none;
+}
+
 .skill-btn {
   width: 100%;
   display: flex;
@@ -3506,6 +3582,74 @@ body.play-mode .ability-save-grid .save-prof-btn {
   padding: 0.45rem 0.6rem;
   cursor: default;
   text-align: left;
+  box-shadow: none;
+}
+
+.skill-btn-clickable-roll {
+  cursor: pointer;
+  -webkit-touch-callout: none;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: manipulation;
+}
+
+button.skill-btn-clickable-roll[data-skill-roll-row] {
+  border-color: rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.04);
+  box-shadow: none;
+}
+
+button.skill-btn-clickable-roll[data-skill-roll-row]:hover {
+  border-color: rgba(255, 255, 255, 0.3);
+  background: rgba(255, 255, 255, 0.07);
+  box-shadow: none;
+}
+
+button.skill-btn-clickable-roll[data-skill-roll-row].is-active {
+  border-color: var(--accent);
+  background: rgba(245, 158, 11, 0.12);
+  box-shadow: none;
+}
+
+button.skill-btn-clickable-roll[data-skill-roll-row].is-active:hover {
+  border-color: var(--accent);
+  background: rgba(245, 158, 11, 0.18);
+  box-shadow: none;
+}
+
+button.skill-btn-clickable-roll[data-skill-roll-row].is-auto {
+  border-color: rgba(56, 189, 248, 0.45);
+  background: rgba(56, 189, 248, 0.08);
+  box-shadow: none;
+}
+
+button.skill-btn-clickable-roll[data-skill-roll-row].is-auto:hover {
+  border-color: rgba(56, 189, 248, 0.6);
+  background: rgba(56, 189, 248, 0.14);
+  box-shadow: none;
+}
+
+button.skill-btn-clickable-roll[data-skill-roll-row].is-over-limit {
+  border-color: rgba(248, 113, 113, 0.5);
+  background: rgba(248, 113, 113, 0.1);
+  box-shadow: none;
+}
+
+button.skill-btn-clickable-roll[data-skill-roll-row].is-over-limit:hover {
+  border-color: rgba(248, 113, 113, 0.62);
+  background: rgba(248, 113, 113, 0.16);
+  box-shadow: none;
+}
+
+button.skill-btn-clickable-roll[data-skill-roll-row]:not(.is-active):not(.is-auto):not(.is-over-limit):hover {
+  border-color: rgba(255, 255, 255, 0.3);
+  background: rgba(255, 255, 255, 0.07);
+  box-shadow: none;
+}
+
+button.skill-btn-clickable-roll[data-skill-roll-row]:focus-visible {
+  outline: 2px solid rgba(103, 232, 249, 0.46);
+  outline-offset: 1px;
 }
 
 .skill-btn.is-active {
@@ -4398,26 +4542,8 @@ body.play-mode .ability-save-grid .save-prof-btn {
     grid-template-columns: 1fr;
   }
 
-  .feature-row-feat .feature-main {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: start;
-    min-width: 0;
-  }
-
-  .feature-row-feat .feat-tile-btn {
-    min-width: 0;
-  }
-
-  .feature-row-feat .feature-use-controls {
-    justify-self: end;
-    flex-wrap: wrap;
-    min-width: 0;
-  }
-
   .feat-tile-head {
     min-width: 0;
-    flex-wrap: wrap;
   }
 
   .feat-tile-title,
@@ -4535,10 +4661,6 @@ body.play-mode .ability-save-grid .save-prof-btn {
 
   .play-title-with-actions .play-character-log-menu {
     grid-column: 4 / 5;
-  }
-
-  .feature-row-feat .feature-main {
-    grid-template-columns: 1fr;
   }
 
   .feature-row-feat .feature-use-controls {

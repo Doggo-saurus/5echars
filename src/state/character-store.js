@@ -103,11 +103,18 @@ function normalizeInventoryEntry(entry) {
   if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
   const name = String(entry.name ?? "").trim();
   if (!name) return null;
+  const counterKindRaw = String(entry.counterKind ?? "").trim().toLowerCase();
+  const counterKind = counterKindRaw === "charges" || counterKindRaw === "quantity" ? counterKindRaw : "";
+  const counter = Math.max(0, Math.floor(toNumber(entry.counter, 0)));
+  const counterMax = Math.max(0, Math.floor(toNumber(entry.counterMax, 0)));
   return {
     ...entry,
     id: String(entry.id ?? "").trim() || createInventoryEntryId(),
     name,
     equipped: Boolean(entry.equipped),
+    counterKind,
+    counter,
+    counterMax,
   };
 }
 

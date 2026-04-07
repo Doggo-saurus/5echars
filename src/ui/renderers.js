@@ -436,7 +436,8 @@ export function createRenderers(deps) {
               ${getSkillModeLabel(skillMode)}
             </span>
           `;
-        const rollControl = includeRollButtons
+        const inlineRollInPill = includeRollButtons && !canToggle;
+        const rollControl = includeRollButtons && !inlineRollInPill
           ? `
         <button
           type="button"
@@ -447,16 +448,31 @@ export function createRenderers(deps) {
           ${signed(total)}
         </button>
       `
-          : `<span class="save-mod-btn skill-roll-btn">${signed(total)}</span>`;
+          : includeRollButtons
+            ? ""
+            : `<span class="save-mod-btn skill-roll-btn">${signed(total)}</span>`;
+        const inlineRollControl = inlineRollInPill
+          ? `<span class="save-mod-btn skill-roll-btn skill-roll-btn-inline" aria-hidden="true">${signed(total)}</span>`
+          : "";
 
         return `
       <div class="skill-row">
-        <div class="skill-btn ${isProf ? "is-active" : ""} ${isAutoProf ? "is-auto" : ""} ${isOverLimit ? "is-over-limit" : ""}">
+        ${
+          inlineRollInPill
+            ? `<button type="button" class="skill-btn skill-btn-clickable-roll ${isProf ? "is-active" : ""} ${isAutoProf ? "is-auto" : ""} ${isOverLimit ? "is-over-limit" : ""}" data-skill-roll-row="${skill.key}" title="Roll ${esc(skill.label)} check">
           <span class="skill-left">
             ${profControl}
             <span class="skill-name">${esc(skill.label)} <span class="muted">(${skill.ability.toUpperCase()})</span></span>
           </span>
-        </div>
+          ${inlineRollControl}
+        </button>`
+            : `<div class="skill-btn ${isProf ? "is-active" : ""} ${isAutoProf ? "is-auto" : ""} ${isOverLimit ? "is-over-limit" : ""}">
+          <span class="skill-left">
+            ${profControl}
+            <span class="skill-name">${esc(skill.label)} <span class="muted">(${skill.ability.toUpperCase()})</span></span>
+          </span>
+        </div>`
+        }
         ${rollControl}
       </div>
     `;
@@ -543,12 +559,15 @@ export function createRenderers(deps) {
         const source = normalizeSourceTag(raceEntry?.source);
         const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-");
         const id = `species:${source}:${slug}`;
+        const lines = getRuleDescriptionLines(entry);
+        const rollNotation = extractSimpleNotation(lines.join(" "));
         return {
           id,
           sortOrder: index,
           name,
           saveAdvantageTags: extractSaveAdvantageTags(entry),
           resourceKey: `${autoResourceIdPrefix}${id}`,
+          rollNotation,
         };
       })
       .filter(Boolean);
@@ -574,8 +593,14 @@ export function createRenderers(deps) {
     return /ability score improvement/i.test(String(slot?.slotType ?? ""));
   }
 
-  function getAsiChoiceSourceKey(slotId) {
-    return `asi:${String(slotId ?? "").trim()}`;
+  function getAsiChoiceSourceKey(slot, slotIndex = 0) {
+    const slotId = String(slot?.id ?? "").trim();
+    if (slotId) return `asi:${slotId}`;
+    const className = String(slot?.className ?? "").trim().toLowerCase();
+    const classSource = String(slot?.classSource ?? "").trim().toLowerCase();
+    const slotType = String(slot?.slotType ?? "").trim().toLowerCase();
+    const level = toNumber(slot?.level, 0);
+    return `asi:fallback:${className}|${classSource}|${slotType}|${level}|${Math.max(0, toNumber(slotIndex, 0))}`;
   }
 
   function getAutoChoiceSelectionMap(character, sourceKey) {
@@ -662,7 +687,7 @@ export function createRenderers(deps) {
     const count = Math.max(1, Math.min(from.length, toNumber(choice.count ?? weighted?.count, weightValues.length || 1)));
     const choiceId = `a:${context.optionIndex ?? 0}:choose:${context.choiceIndex ?? 0}`;
     const selected = getStoredChoiceValuesOnly(context.character, context.sourceKey, choiceId, from, count, {
-      allowDuplicates: false,
+      allowDuplicates: weightValues.length > 1,
       preserveStoredOrder: weightValues.length > 1,
     });
     for (let idx = 0; idx < selected.length; idx += 1) {
@@ -971,7 +996,7 @@ export function createRenderers(deps) {
         const weightedPointLabels = weightValues.length > 1 ? weightValues.map((amount, index) => `Bonus ${signed(amount)} (${index + 1})`) : [];
         if (weightedPointLabels.length) {
           const selected = getStoredChoiceValuesOnly(character, sourceKey, choiceId, from, count, {
-            allowDuplicates: false,
+            allowDuplicates: true,
             preserveStoredOrder: true,
           });
           blocks.push(`
@@ -984,7 +1009,7 @@ export function createRenderers(deps) {
                 from,
                 selected,
                 (ability) => abilityLabels[ability] ?? ability.toUpperCase(),
-                { pointLabels: weightedPointLabels, allowDuplicates: false }
+                { pointLabels: weightedPointLabels, allowDuplicates: true }
               )}
             </div>
           `);
@@ -1316,34 +1341,62 @@ export function createRenderers(deps) {
         index,
         name: entry,
         equipped: false,
+        counterKind: "",
+        counter: 0,
+        counterMax: 0,
         isLegacy: true,
       };
     }
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
     const name = String(entry.name ?? "").trim();
     if (!name) return null;
+    const counterKindRaw = String(entry.counterKind ?? "").trim().toLowerCase();
+    const counterKind = counterKindRaw === "charges" || counterKindRaw === "quantity" ? counterKindRaw : "";
+    const counter = Math.max(0, Math.floor(toNumber(entry.counter, 0)));
+    const counterMax = Math.max(0, Math.floor(toNumber(entry.counterMax, 0)));
     return {
       id: String(entry.id ?? "").trim(),
       index,
       name,
       equipped: Boolean(entry.equipped),
+      counterKind,
+      counter,
+      counterMax,
       isLegacy: false,
     };
   }
 
-  function renderInventoryRowsImpl(character) {
+  function renderInventoryRowsImpl(character, options = {}) {
+    const showCounters = Boolean(options?.showCounters);
     const entries = (Array.isArray(character?.inventory) ? character.inventory : [])
       .map((entry, index) => normalizeInventoryEntry(entry, index))
       .filter(Boolean);
     if (!entries.length) return "<span class='muted'>No items selected.</span>";
     return entries
       .map((entry) => {
+        const hasCounter = showCounters && !entry.isLegacy && Boolean(entry.counterKind) && entry.id;
+        const displayName = hasCounter
+          ? String(entry.name ?? "").replace(/\s*\(\d+\)\s*$/, "").trim() || entry.name
+          : entry.name;
+        const counterValueLabel = entry.counterKind === "charges" && entry.counterMax > 0
+          ? `${entry.counter}/${entry.counterMax}`
+          : `${entry.counter}`;
+        const counterTitle = entry.counterKind === "charges" ? "Track remaining charges" : "Track item quantity";
         return `
         <div class="inventory-row">
           <div class="inventory-row-main">
-            <span class="inventory-item-name">${esc(entry.name)}</span>
+            <span class="inventory-item-name">${esc(displayName)}</span>
           </div>
           <div class="inventory-row-actions">
+            ${
+              hasCounter
+                ? `<div class="inventory-item-counter" title="${esc(counterTitle)}">
+                  <button type="button" class="btn secondary" data-item-counter-adjust-id="${esc(entry.id)}" data-item-counter-delta="-1" aria-label="Decrease ${esc(entry.name)} ${esc(entry.counterKind)}">-</button>
+                  <span class="inventory-item-counter-value">${esc(counterValueLabel)}</span>
+                  <button type="button" class="btn secondary" data-item-counter-adjust-id="${esc(entry.id)}" data-item-counter-delta="1" aria-label="Increase ${esc(entry.name)} ${esc(entry.counterKind)}">+</button>
+                </div>`
+                : ""
+            }
             ${
               entry.isLegacy
                 ? `<button type="button" class="btn secondary" disabled title="Legacy entries do not support equip state">Legacy</button>`
@@ -1571,9 +1624,9 @@ export function createRenderers(deps) {
                 : isPrepared
                   ? "Prepared"
                   : "Unprepared"
-              : "Known";
+              : "";
             const slotTag = toNumber(spell?.level, 0) > 0 && isPrepared ? (hasSlotsAvailable ? "Slots Available" : "No Slots Left") : "";
-            const knownAndSlotTag = slotTag ? `${knownTag} · ${slotTag}` : knownTag;
+            const knownAndSlotTag = [knownTag, slotTag].filter(Boolean).join(" · ");
             const prepButtonTitle = isCantrip
               ? "Cantrips are always prepared"
               : alwaysPrepared
@@ -1586,7 +1639,7 @@ export function createRenderers(deps) {
             const hasAttackDamageSplit = spellCombat.hasSpellAttack && Boolean(spellDamageNotation);
             const spellAttackButtonHtml =
               spellCombat.hasSpellAttack && spellCombat.attackBonus != null
-                ? `<button type="button" class="btn secondary spell-cast-btn" data-spell-attack-roll="${esc(name)}" ${castDisabled ? "disabled" : ""}>To Hit ${esc(
+                ? `<button type="button" class="btn secondary spell-cast-btn" data-spell-attack-roll="${esc(name)}" ${castDisabled ? "disabled" : ""}>Hit ${esc(
                     signed(spellCombat.attackBonus)
                   )}</button>`
                 : "";
@@ -1675,27 +1728,42 @@ export function createRenderers(deps) {
       return single ? [single] : [];
     };
     const modeName = normalize(mode?.featureName);
+    const modeClassName = normalize(mode?.className);
     if (!modeName) return false;
     const optionValues = Array.isArray(mode?.optionValues) ? mode.optionValues.map((value) => normalize(value)).filter(Boolean) : [];
     if (!optionValues.length) return false;
-    const slots = (Array.isArray(optionalFeatureSlots) ? optionalFeatureSlots : []).filter(
-      (slot) => normalize(slot?.slotType) === modeName
-    );
+    const slots = (Array.isArray(optionalFeatureSlots) ? optionalFeatureSlots : []).filter((slot) => {
+      const slotClassName = normalize(slot?.className);
+      if (modeClassName && slotClassName && slotClassName !== modeClassName) return false;
+      return true;
+    });
     if (!slots.length) return false;
     const optionalFeatureCatalog = Array.isArray(catalogs?.optionalFeatures) ? catalogs.optionalFeatures : [];
-    const availableNames = new Set();
+    const availableNamesByFeatureType = new Map();
+    const getNameSetForFeatureType = (featureType) => {
+      if (!availableNamesByFeatureType.has(featureType)) {
+        availableNamesByFeatureType.set(featureType, new Set());
+      }
+      return availableNamesByFeatureType.get(featureType);
+    };
+    const allAvailableNames = new Set();
     slots.forEach((slot) => {
       const slotFeatureType = normalize(slot?.featureType);
       if (!slotFeatureType) return;
+      const nameSet = getNameSetForFeatureType(slotFeatureType);
       optionalFeatureCatalog.forEach((entry) => {
         const featureTypes = normalizeFeatureTypeList(entry?.featureType);
         if (!featureTypes.includes(slotFeatureType)) return;
         const name = normalize(entry?.name);
-        if (name) availableNames.add(name);
+        if (!name) return;
+        nameSet.add(name);
+        allAvailableNames.add(name);
       });
     });
-    if (!availableNames.size) return false;
-    return optionValues.every((value) => availableNames.has(value));
+    if (!allAvailableNames.size) return false;
+    const modeMatchesSlotType = slots.some((slot) => normalize(slot?.slotType) === modeName);
+    if (modeMatchesSlotType && optionValues.every((value) => allAvailableNames.has(value))) return true;
+    return [...availableNamesByFeatureType.values()].some((nameSet) => optionValues.every((value) => nameSet.has(value)));
   }
 
   function renderPlayViewImpl(state) {
@@ -1994,6 +2062,17 @@ export function createRenderers(deps) {
       if (key === "day") return "Day";
       return "";
     };
+    const isDirectlyUsableFeature = (feature) => {
+      if (!feature || typeof feature !== "object") return false;
+      const featureId = String(feature?.id ?? "").trim();
+      if (!featureId) return false;
+      const useKey = `${autoResourceIdPrefix}${featureId}`;
+      const tracker = featureUses[useKey];
+      if (tracker && typeof tracker === "object") return true;
+      const activation = getFeatureActivationDescriptor(state.catalogs, character, feature, featureUses);
+      if (activation?.trackerKey) return true;
+      return Boolean(extractSimpleNotation(activation?.rollNotation ?? ""));
+    };
     const featureListHtml = unlockedFeatures.length
       ? unlockedFeatures
           .filter((feature) => !movedReferencedFeatureIds.has(String(feature?.id ?? "")))
@@ -2128,13 +2207,20 @@ export function createRenderers(deps) {
               </span>
             `
               : "";
+            const actionControlsHtml = `<span class="feat-tile-actions"><span class="pill">${esc(sourceLabel)}</span>${trackerHtml}</span>`;
             return `
             <div class="feature-row feature-row-feat">
               <div class="feature-main">
-                <button type="button" class="feat-tile-btn" data-open-feat="${esc(feat.id)}" aria-label="Open ${esc(featName)} details">
+                <div
+                  class="feat-tile-btn"
+                  role="button"
+                  tabindex="0"
+                  data-open-feat="${esc(feat.id)}"
+                  aria-label="Open ${esc(featName)} details"
+                >
                   <span class="feat-tile-head">
                     <strong class="feat-tile-title">${esc(featName)}</strong>
-                    <span class="pill">${esc(sourceLabel)}</span>
+                    ${actionControlsHtml}
                   </span>
                   <span class="feat-tile-meta">
                     ${feat.levelGranted ? `Lv ${esc(feat.levelGranted)}` : "Level ?"} - ${esc(feat.via || "feat slot")}${
@@ -2142,8 +2228,7 @@ export function createRenderers(deps) {
                     }
                   </span>
                   <span class="feat-tile-summary">${esc(summaryText)}</span>
-                </button>
-                ${trackerHtml}
+                </div>
               </div>
             </div>
           `;
@@ -2153,6 +2238,7 @@ export function createRenderers(deps) {
     const referencedFeatureListHtml = unlockedFeatures.length
       ? unlockedFeatures
           .filter((feature) => movedReferencedFeatureIds.has(String(feature?.id ?? "")))
+          .filter((feature) => isDirectlyUsableFeature(feature))
           .map((feature) => {
             const featureName = String(feature?.name ?? "").trim();
             const subtitle = feature.type === "subclass" && feature.subclassName ? ` (${feature.subclassName})` : "";
@@ -2179,9 +2265,73 @@ export function createRenderers(deps) {
               >Use</span>
             `
                 : "";
+            const trackerHtml = tracker
+              ? `
+              <span class="feature-use-controls">
+                <span class="pill">${esc(tracker.current)}/${esc(tracker.max)}${formatRecharge(tracker.recharge) ? ` ${esc(formatRecharge(tracker.recharge))}` : ""}</span>
+                <button type="button" class="save-mod-btn" data-feature-use-delta="${esc(useKey)}|inc:-1" ${tracker.current <= 0 ? "disabled" : ""}>Use</button>
+                <button type="button" class="save-mod-btn" data-feature-use-delta="${esc(useKey)}|inc:1" ${tracker.current >= tracker.max ? "disabled" : ""}>+</button>
+              </span>
+            `
+              : "";
             const actionControlsHtml =
-              firstUseFreePillHtml || activationButtonHtml
-                ? `<span class="feat-tile-actions">${firstUseFreePillHtml}${activationButtonHtml}</span>`
+              firstUseFreePillHtml || activationButtonHtml || trackerHtml
+                ? `<span class="feat-tile-actions">${firstUseFreePillHtml}${activationButtonHtml}${trackerHtml}</span>`
+                : "";
+            return `
+            <div class="feature-row feature-row-feat">
+              <div class="feature-main">
+                <div
+                  class="feat-tile-btn"
+                  role="button"
+                  tabindex="0"
+                  data-open-feature="${esc(feature.id)}"
+                  aria-label="Open ${esc(featureName)} details"
+                >
+                  <span class="feat-tile-head">
+                    <strong class="feat-tile-title">${esc(`${featureName}${subtitle}`)}</strong>
+                    ${actionControlsHtml}
+                  </span>
+                  <span class="feat-tile-meta">${esc(metaLabel)} - ${esc(feature.className || "class feature")}</span>
+                </div>
+              </div>
+            </div>
+          `;
+          })
+          .join("")
+      : "";
+    const rollableClassFeatureListHtml = unlockedFeatures.length
+      ? unlockedFeatures
+          .filter((feature) => {
+            if (!feature) return false;
+            if (movedReferencedFeatureIds.has(String(feature?.id ?? ""))) return false;
+            return isDirectlyUsableFeature(feature);
+          })
+          .map((feature) => {
+            const featureName = String(feature?.name ?? "").trim();
+            const subtitle = feature.type === "subclass" && feature.subclassName ? ` (${feature.subclassName})` : "";
+            const metaLabel = feature.level ? `Lv ${feature.level}` : "Level ?";
+            const useKey = `${autoResourceIdPrefix}${feature.id}`;
+            const tracker = featureUses[useKey];
+            const activation = getFeatureActivationDescriptor(state.catalogs, character, feature, featureUses);
+            const hasUsedFreeActivation = Boolean(featureUseMeta?.[feature.id]?.usedSinceLongRest);
+            const canUseFreeActivation = Boolean(activation?.firstUseFreeAfterLongRest) && !hasUsedFreeActivation;
+            const hasActivationPower = Boolean(activation) && toNumber(activation.current, 0) >= Math.max(1, toNumber(activation.amount, 1));
+            const canActivate = canUseFreeActivation || hasActivationPower;
+            const firstUseFreePillHtml =
+              activation && activation.firstUseFreeAfterLongRest
+                ? `<span class="pill" title="Resets on long rest">${hasUsedFreeActivation ? "0/1 Free" : "1/1 Free"}</span>`
+                : "";
+            const activationButtonHtml =
+              activation && activation.trackerKey && !tracker
+                ? `
+              <span
+                class="pill pill-btn"
+                data-feature-activate="${canActivate ? esc(feature.id) : ""}"
+                title="${esc(`Spend ${activation.amount} ${activation.resourceLabel}`)}"
+                ${canActivate ? "role=\"button\" tabindex=\"0\"" : "aria-disabled=\"true\""}
+              >Use</span>
+            `
                 : "";
             const trackerHtml = tracker
               ? `
@@ -2192,12 +2342,17 @@ export function createRenderers(deps) {
               </span>
             `
               : "";
+            const actionControlsHtml =
+              firstUseFreePillHtml || activationButtonHtml || trackerHtml
+                ? `<span class="feat-tile-actions">${firstUseFreePillHtml}${activationButtonHtml}${trackerHtml}</span>`
+                : "";
             return `
             <div class="feature-row feature-row-feat">
               <div class="feature-main">
-                <button
-                  type="button"
+                <div
                   class="feat-tile-btn"
+                  role="button"
+                  tabindex="0"
                   data-open-feature="${esc(feature.id)}"
                   aria-label="Open ${esc(featureName)} details"
                 >
@@ -2206,8 +2361,61 @@ export function createRenderers(deps) {
                     ${actionControlsHtml}
                   </span>
                   <span class="feat-tile-meta">${esc(metaLabel)} - ${esc(feature.className || "class feature")}</span>
-                </button>
-                ${trackerHtml}
+                </div>
+              </div>
+            </div>
+          `;
+          })
+          .join("")
+      : "";
+    const rollableClassTableEffectListHtml = classTableEffects.length
+      ? classTableEffects
+          .filter((effect) => {
+            if (!effect) return false;
+            const tableResourceKey = `${autoResourceIdPrefix}${effect.id}`;
+            const tracker = featureUses[tableResourceKey];
+            const rollNotation = extractSimpleNotation(effect?.rollNotation ?? effect?.value ?? "");
+            const canRoll = effect?.kind === "dice" && Boolean(rollNotation);
+            return Boolean(tracker) || canRoll;
+          })
+          .map((effect) => {
+            const effectLabel = `${String(effect?.className ?? "").trim()} - ${String(effect?.label ?? "").trim()}`.trim();
+            const tableResourceKey = `${autoResourceIdPrefix}${effect.id}`;
+            const tracker = featureUses[tableResourceKey];
+            const rollNotation = extractSimpleNotation(effect?.rollNotation ?? effect?.value ?? "");
+            const trackerHtml = tracker
+              ? `
+              <span class="feature-use-controls">
+                <span class="pill">${esc(tracker.current)}/${esc(tracker.max)}${formatRecharge(tracker.recharge) ? ` ${esc(formatRecharge(tracker.recharge))}` : ""}</span>
+                <button type="button" class="save-mod-btn" data-feature-use-delta="${esc(tableResourceKey)}|inc:-1" ${tracker.current <= 0 ? "disabled" : ""}>Use</button>
+                <button type="button" class="save-mod-btn" data-feature-use-delta="${esc(tableResourceKey)}|inc:1" ${tracker.current >= tracker.max ? "disabled" : ""}>+</button>
+              </span>
+            `
+              : "";
+            const rollControlHtml = effect?.kind === "dice" && rollNotation
+              ? `
+              <button
+                type="button"
+                class="pill pill-btn class-table-effect-roll-btn"
+                data-class-table-roll="${esc(rollNotation)}"
+                data-class-table-roll-label="${esc(effectLabel)}"
+              >${esc(effect.value ?? rollNotation)}</button>
+            `
+              : "";
+            const actionControlsHtml =
+              rollControlHtml || trackerHtml
+                ? `<span class="feat-tile-actions feat-tile-actions-nowrap">${rollControlHtml}${trackerHtml}</span>`
+                : "";
+            return `
+            <div class="feature-row feature-row-feat">
+              <div class="feature-main">
+                <div class="feat-tile-btn feat-tile-static" role="group" aria-label="${esc(effectLabel)}">
+                  <span class="feat-tile-head">
+                    <strong class="feat-tile-title">${esc(String(effect?.label ?? "Class feature"))}</strong>
+                    ${actionControlsHtml}
+                  </span>
+                  <span class="feat-tile-meta">${esc(effect?.className || "class feature")} - Class table effect</span>
+                </div>
               </div>
             </div>
           `;
@@ -2216,6 +2424,7 @@ export function createRenderers(deps) {
       : "";
     const optionalFeatureListHtml = selectedOptionalFeatures.length
       ? selectedOptionalFeatures
+          .filter((feature) => isDirectlyUsableFeature(feature))
           .map((feature) => {
             const featureName = String(feature?.name ?? "").trim();
             const featureSource = String(feature?.source ?? "").trim();
@@ -2261,10 +2470,6 @@ export function createRenderers(deps) {
               >Use</span>
             `
                 : "";
-            const actionControlsHtml =
-              firstUseFreePillHtml || activationButtonHtml
-                ? `<span class="feat-tile-actions">${firstUseFreePillHtml}${activationButtonHtml}</span>`
-                : "";
             const trackerHtml = tracker
               ? `
               <span class="feature-use-controls">
@@ -2274,12 +2479,17 @@ export function createRenderers(deps) {
               </span>
             `
               : "";
+            const actionControlsHtml =
+              firstUseFreePillHtml || activationButtonHtml || trackerHtml
+                ? `<span class="feat-tile-actions">${firstUseFreePillHtml}${activationButtonHtml}${trackerHtml}</span>`
+                : "";
             return `
             <div class="feature-row feature-row-feat">
               <div class="feature-main">
-                <button
-                  type="button"
+                <div
                   class="feat-tile-btn"
+                  role="button"
+                  tabindex="0"
                   data-open-optional-feature="${esc(feature.id)}"
                   aria-label="Open ${esc(featureName)} details"
                 >
@@ -2293,8 +2503,7 @@ export function createRenderers(deps) {
                     }
                   </span>
                   <span class="feat-tile-summary">${esc(summaryText)}</span>
-                </button>
-                ${trackerHtml}
+                </div>
               </div>
             </div>
           `;
@@ -2347,6 +2556,48 @@ export function createRenderers(deps) {
           `;
             }
           )
+          .join("")
+      : "";
+    const rollableSpeciesTraitListHtml = speciesTraits.length
+      ? speciesTraits
+          .filter((trait) => {
+            if (!trait) return false;
+            const tracker = featureUses[trait.resourceKey];
+            return Boolean(tracker) || Boolean(trait.rollNotation);
+          })
+          .map((trait) => {
+            const tracker = featureUses[trait.resourceKey];
+            const trackerHtml = tracker
+              ? `
+              <span class="feature-use-controls">
+                <span class="pill">${esc(tracker.current)}/${esc(tracker.max)}${formatRecharge(tracker.recharge) ? ` ${esc(formatRecharge(tracker.recharge))}` : ""}</span>
+                <button type="button" class="save-mod-btn" data-feature-use-delta="${esc(trait.resourceKey)}|inc:-1" ${tracker.current <= 0 ? "disabled" : ""}>Use</button>
+                <button type="button" class="save-mod-btn" data-feature-use-delta="${esc(trait.resourceKey)}|inc:1" ${tracker.current >= tracker.max ? "disabled" : ""}>+</button>
+              </span>
+            `
+              : "";
+            const actionControlsHtml = trackerHtml ? `<span class="feat-tile-actions">${trackerHtml}</span>` : "";
+            const traitMeta = trait.rollNotation ? "Species trait - rollable" : "Species trait";
+            return `
+            <div class="feature-row feature-row-feat">
+              <div class="feature-main">
+                <div
+                  class="feat-tile-btn"
+                  role="button"
+                  tabindex="0"
+                  data-open-species-trait="${esc(trait.name)}"
+                  aria-label="Open ${esc(trait.name)} details"
+                >
+                  <span class="feat-tile-head">
+                    <strong class="feat-tile-title">${esc(trait.name)}</strong>
+                    ${actionControlsHtml}
+                  </span>
+                  <span class="feat-tile-meta">${esc(traitMeta)}</span>
+                </div>
+              </div>
+            </div>
+          `;
+          })
           .join("")
       : "";
 
@@ -2499,26 +2750,23 @@ export function createRenderers(deps) {
         }
 
         <article class="card">
-          <h3 class="title">Feats</h3>
+          <h3 class="title">Abilities</h3>
           <h4>Feats</h4>
           <div>${featListHtml}</div>
           ${
-            optionalFeatureListHtml
+            rollableClassTableEffectListHtml || referencedFeatureListHtml || rollableClassFeatureListHtml || optionalFeatureListHtml
               ? `
           <h4>Class Features</h4>
-          <div>${referencedFeatureListHtml || ""}${optionalFeatureListHtml}</div>
-          `
-              : referencedFeatureListHtml
-                ? `
-          <h4>Class Features</h4>
-          <div>${referencedFeatureListHtml}</div>
+          <div>${rollableClassTableEffectListHtml || ""}${referencedFeatureListHtml || ""}${rollableClassFeatureListHtml || ""}${optionalFeatureListHtml}</div>
           `
               : ""
           }
+          <h4>Species Traits</h4>
+          <div>${rollableSpeciesTraitListHtml || "<span class='muted'>No rollable species traits found.</span>"}</div>
         </article>
 
         <article class="card">
-          <h3 class="title">Features</h3>
+          <h3 class="title">Class and Species Details</h3>
           <h4>Class/Subclass Features</h4>
           ${
             classAndTableFeatureListHtml
@@ -2534,7 +2782,7 @@ export function createRenderers(deps) {
             <h3 class="title">Inventory</h3>
             <button class="btn secondary" id="play-open-items">Add Item</button>
           </div>
-          <div class="inventory-list">${renderInventoryRowsImpl(character)}</div>
+          <div class="inventory-list">${renderInventoryRowsImpl(character, { showCounters: true })}</div>
         </article>
 
         <article class="card">
@@ -3053,13 +3301,13 @@ export function createRenderers(deps) {
     const slots = getFeatSlotsWithSelection(character);
     if (!slots.length) return "<p class='muted'>No feat slots available from current progression.</p>";
     return slots
-      .map((slot) => {
+      .map((slot, slotIndex) => {
         const isAsiSlot = isAbilityScoreImprovementSlot(slot);
         const hasSelectedFeat = Boolean(slot.feat);
         const slotTypeLabel = isAsiSlot && hasSelectedFeat ? "Feat" : (slot.slotType || "Feat");
         const slotLabel = `${slot.className} Lv ${slot.level} - ${slotTypeLabel}`;
         const asiChoiceId = "a:0:choose:0";
-        const asiSourceKey = getAsiChoiceSourceKey(slot.id);
+        const asiSourceKey = getAsiChoiceSourceKey(slot, slotIndex);
         const asiSelected = !hasSelectedFeat && isAsiSlot
           ? getStoredChoiceValuesOnly(character, asiSourceKey, asiChoiceId, saveAbilities, 2, { allowDuplicates: true })
           : [];

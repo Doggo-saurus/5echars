@@ -50,6 +50,16 @@ export function createProficiencyRules({
       .replace(/[^a-z0-9]/g, "");
   }
 
+  function getAsiChoiceSourceKey(slot, slotIndex = 0) {
+    const slotId = String(slot?.id ?? "").trim();
+    if (slotId) return `asi:${slotId}`;
+    const className = String(slot?.className ?? "").trim().toLowerCase();
+    const classSource = String(slot?.classSource ?? "").trim().toLowerCase();
+    const slotType = String(slot?.slotType ?? "").trim().toLowerCase();
+    const level = toNumber(slot?.level, 0);
+    return `asi:fallback:${className}|${classSource}|${slotType}|${level}|${Math.max(0, toNumber(slotIndex, 0))}`;
+  }
+
   function getAutoChoiceSelectedValues(play, sourceKey, choiceId, from, count) {
     const selectionMap = getAutoChoiceSelectionMap(play, sourceKey);
     const storedRaw = selectionMap[choiceId];
@@ -93,6 +103,149 @@ export function createProficiencyRules({
     return filled.slice(0, normalizedCount).map((token) => fromByToken.get(token));
   }
 
+  function collectEntryTextLines(entry, out = []) {
+    if (entry == null) return out;
+    if (typeof entry === "string") {
+      const line = String(entry).trim();
+      if (line) out.push(line);
+      return out;
+    }
+    if (Array.isArray(entry)) {
+      entry.forEach((value) => collectEntryTextLines(value, out));
+      return out;
+    }
+    if (!isRecordObject(entry)) return out;
+    if (typeof entry.name === "string" && entry.name.trim()) out.push(entry.name.trim());
+    collectEntryTextLines(entry.entry, out);
+    collectEntryTextLines(entry.text, out);
+    collectEntryTextLines(entry.entries, out);
+    collectEntryTextLines(entry.items, out);
+    return out;
+  }
+
+  function parseCountToken(value) {
+    const token = String(value ?? "").trim().toLowerCase();
+    if (!token) return 1;
+    if (token === "a" || token === "an" || token === "one") return 1;
+    if (token === "two") return 2;
+    if (token === "three") return 3;
+    if (token === "four") return 4;
+    if (token === "five") return 5;
+    return Math.max(0, Math.floor(toNumber(token, 0)));
+  }
+
+  function getFeatureModeSelectedEntryDescriptors(catalogs, character, play, featureModes) {
+    const classFeatures = Array.isArray(catalogs?.classFeatures) ? catalogs.classFeatures : [];
+    const className = String(character?.class ?? "").trim().toLowerCase();
+    if (!className || !classFeatures.length) return [];
+    const sourceOrder = getPreferredSourceOrder(character).map((source) => String(source ?? "").trim().toLowerCase());
+    const sourceRank = new Map(sourceOrder.map((source, index) => [source, index]));
+    const unknownRank = sourceRank.size + 1000;
+    const seen = new Set();
+    const descriptors = [];
+    (Array.isArray(featureModes) ? featureModes : []).forEach((mode) => {
+      const modeId = String(mode?.id ?? "").trim();
+      if (!modeId) return;
+      const raw = play?.featureModes?.[modeId];
+      const selectedValues = Array.isArray(raw) ? raw : [raw];
+      selectedValues
+        .map((value) => String(value ?? "").trim())
+        .filter(Boolean)
+        .forEach((label) => {
+          const normalizedLabel = label.toLowerCase();
+          const candidates = classFeatures
+            .filter((entry) => String(entry?.name ?? "").trim().toLowerCase() === normalizedLabel)
+            .filter((entry) => String(entry?.className ?? "").trim().toLowerCase() === className)
+            .sort((a, b) => {
+              const aRank = sourceRank.get(String(a?.source ?? "").trim().toLowerCase()) ?? unknownRank;
+              const bRank = sourceRank.get(String(b?.source ?? "").trim().toLowerCase()) ?? unknownRank;
+              if (aRank !== bRank) return aRank - bRank;
+              return toNumber(a?.level, 0) - toNumber(b?.level, 0);
+            });
+          const entry = candidates[0] ?? null;
+          if (!entry) return;
+          const sourceKey = `feature-mode:${modeId}:${normalizeChoiceToken(label)}`;
+          const key = `${sourceKey}:${normalizeChoiceToken(entry?.name)}:${String(entry?.source ?? "").trim().toLowerCase()}`;
+          if (seen.has(key)) return;
+          seen.add(key);
+          descriptors.push({ sourceKey, entry });
+        });
+    });
+    return descriptors;
+  }
+
+  function getCantripLimitBonusFromFeatureModeEntries(descriptors) {
+    let total = 0;
+    descriptors.forEach(({ entry }) => {
+      const text = collectEntryTextLines(entry?.entries ?? []).join(" ").toLowerCase();
+      if (!text) return;
+      const matches = text.matchAll(
+        /\b(?:learn|know|gain)\b[^.]{0,140}?\b(?:(a|an|one|two|three|four|five|\d+)\s+)?(?:extra|additional)\s+cantrips?\b/gi
+      );
+      for (const match of matches) {
+        total += parseCountToken(match?.[1]);
+      }
+    });
+    return Math.max(0, total);
+  }
+
+  function getEmptySkillCheckBonusMap() {
+    return skills.reduce((acc, skill) => {
+      acc[skill.key] = 0;
+      return acc;
+    }, {});
+  }
+
+  function getSkillCheckBonusesFromFeatureModeEntries(character, play, descriptors) {
+    const bonuses = getEmptySkillCheckBonusMap();
+    const abilityKeyByName = {
+      strength: "str",
+      dexterity: "dex",
+      constitution: "con",
+      intelligence: "int",
+      wisdom: "wis",
+      charisma: "cha",
+    };
+    descriptors.forEach(({ sourceKey, entry }) => {
+      const text = collectEntryTextLines(entry?.entries ?? []).join(" ");
+      const abilityMatch = text.match(
+        /\bbonus equals your\s+(strength|dexterity|constitution|intelligence|wisdom|charisma)\s+modifier(?:\s*\(minimum of \+?(\d+)\))?/i
+      );
+      if (!abilityMatch?.[1]) return;
+      const abilityKey = abilityKeyByName[String(abilityMatch[1]).trim().toLowerCase()] ?? "";
+      if (!abilityKey) return;
+      const minimum = Math.max(0, toNumber(abilityMatch?.[2], 0));
+      const score = toNumber(character?.abilities?.[abilityKey], 10);
+      const modifier = Math.floor((score - 10) / 2);
+      const amount = Math.max(1, minimum, modifier);
+      if (amount <= 0) return;
+      const checkClauseMatch = text.match(/\bbonus to your\s+([^.]*?)checks?/i) ?? text.match(/\bbonus to\s+([^.]*?)checks?/i);
+      const clause = String(checkClauseMatch?.[1] ?? "");
+      if (!clause) return;
+      const options = skills
+        .filter((skill) => new RegExp(`\\b${String(skill.label ?? "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(clause))
+        .map((skill) => skill.key)
+        .filter(Boolean);
+      const uniqueOptions = [...new Set(options)];
+      if (!uniqueOptions.length) return;
+      const selected = uniqueOptions.length > 1
+        ? getStoredAutoChoiceSelectedValues(play, sourceKey, "skill-bonus:0", uniqueOptions, 1)
+        : uniqueOptions;
+      selected.forEach((skillKey) => {
+        bonuses[skillKey] = Math.max(0, toNumber(bonuses?.[skillKey], 0) + amount);
+      });
+    });
+    return bonuses;
+  }
+
+  function getAutomaticFeatureModeBonuses(catalogs, character, play, featureModes) {
+    const descriptors = getFeatureModeSelectedEntryDescriptors(catalogs, character, play, featureModes);
+    return {
+      cantripLimitBonus: getCantripLimitBonusFromFeatureModeEntries(descriptors),
+      skillCheckBonuses: getSkillCheckBonusesFromFeatureModeEntries(character, play, descriptors),
+    };
+  }
+
   function applyAbilityChoiceBonuses(choice, bonuses, context) {
     if (!choice) return;
     const weighted = isRecordObject(choice.weighted) ? choice.weighted : null;
@@ -111,7 +264,7 @@ export function createProficiencyRules({
     const count = Math.max(1, Math.min(from.length, countFromChoice || countFromWeights || 1));
     const choiceId = `a:${context.optionIndex}:choose:${context.choiceIndex}`;
     const selected = getStoredAutoChoiceSelectedValues(context.play, context.sourceKey, choiceId, from, count, {
-      allowDuplicates: false,
+      allowDuplicates: weightValues.length > 1,
       preserveStoredOrder: weightValues.length > 1,
     });
     selected.forEach((ability, index) => {
@@ -205,10 +358,14 @@ export function createProficiencyRules({
     featSlots
       .filter((slot) => asiFeatureNameRegex.test(String(slot?.slotType ?? "")))
       .filter((slot) => !selectedFeatSlotIds.has(String(slot?.id ?? "").trim()))
-      .forEach((slot) => {
-        const sourceKey = `asi:${String(slot?.id ?? "").trim()}`;
+      .forEach((slot, slotIndex) => {
+        const sourceKey = getAsiChoiceSourceKey(slot, slotIndex);
         if (!sourceKey) return;
-        const selectedAbilities = getStoredAutoChoiceSelectedValues(play, sourceKey, "a:0:choose:0", saveAbilities, 2);
+        const selectedAbilities = getStoredAutoChoiceSelectedValues(play, sourceKey, "a:0:choose:0", saveAbilities, 2, {
+          allowDuplicates: true,
+          preserveStoredOrder: true,
+          allowFallback: false,
+        });
         selectedAbilities.forEach((ability) => {
           asiBonuses[ability] = Math.max(0, toNumber(asiBonuses[ability], 0) + 1);
         });
@@ -458,5 +615,6 @@ export function createProficiencyRules({
     getAutomaticSaveProficiencies,
     getAutomaticSkillProficiencies,
     getAutomaticSkillProficiencyModes,
+    getAutomaticFeatureModeBonuses,
   };
 }

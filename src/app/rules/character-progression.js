@@ -383,21 +383,57 @@ export function createCharacterProgressionDomain({
     return single ? [single] : [];
   }
 
-  function getProgressionCountAtLevel(progression, classLevel) {
+  function getProgressionUnlockLevels(progression, classLevel) {
+    const maxLevel = Math.max(0, Math.floor(toNumber(classLevel, 0)));
+    if (maxLevel <= 0) return [];
+    const unlockLevels = [];
+    const getProgressionMode = (values) => {
+      // Support both progression styles:
+      // - cumulative total known at each level
+      // - incremental gains granted at each level
+      // If values drop after rising, treat them as incremental gains.
+      for (let index = 1; index < values.length; index += 1) {
+        if (values[index] < values[index - 1]) return "incremental";
+      }
+      return "cumulative";
+    };
     if (Array.isArray(progression)) {
-      const idx = Math.max(0, Math.min(progression.length - 1, classLevel - 1));
-      return Math.max(0, toNumber(progression[idx], 0));
+      const limit = Math.min(maxLevel, progression.length);
+      const values = Array.from({ length: limit }, (_, index) => Math.max(0, toNumber(progression[index], 0)));
+      const mode = getProgressionMode(values);
+      let runningTotal = 0;
+      for (let level = 1; level <= limit; level += 1) {
+        const rawAtLevel = values[level - 1];
+        const totalAtLevel = mode === "incremental" ? runningTotal + rawAtLevel : rawAtLevel;
+        const gained = mode === "incremental" ? rawAtLevel : Math.max(0, totalAtLevel - runningTotal);
+        for (let slotIndex = 0; slotIndex < gained; slotIndex += 1) {
+          unlockLevels.push(level);
+        }
+        runningTotal = Math.max(runningTotal, totalAtLevel);
+      }
+      return unlockLevels;
     }
     if (isRecordObject(progression)) {
-      let count = 0;
-      Object.entries(progression).forEach(([levelRaw, countRaw]) => {
-        const level = toNumber(levelRaw, NaN);
-        if (!Number.isFinite(level) || level > classLevel) return;
-        count = Math.max(count, Math.max(0, toNumber(countRaw, 0)));
+      const checkpoints = Object.entries(progression)
+        .map(([levelRaw, countRaw]) => ({
+          level: Math.max(0, Math.floor(toNumber(levelRaw, 0))),
+          count: Math.max(0, toNumber(countRaw, 0)),
+        }))
+        .filter((entry) => entry.level > 0 && entry.level <= maxLevel)
+        .sort((a, b) => a.level - b.level);
+      const mode = getProgressionMode(checkpoints.map((entry) => entry.count));
+      let runningTotal = 0;
+      checkpoints.forEach((checkpoint) => {
+        const totalAtLevel = mode === "incremental" ? runningTotal + checkpoint.count : Math.max(runningTotal, checkpoint.count);
+        const gained = mode === "incremental" ? checkpoint.count : Math.max(0, totalAtLevel - runningTotal);
+        for (let slotIndex = 0; slotIndex < gained; slotIndex += 1) {
+          unlockLevels.push(checkpoint.level);
+        }
+        runningTotal = totalAtLevel;
       });
-      return count;
+      return unlockLevels;
     }
-    return 0;
+    return [];
   }
 
   function getOptionalFeatureSlotsForClass(classEntry, classLevel) {
@@ -405,23 +441,23 @@ export function createCharacterProgressionDomain({
     const slots = [];
     const groups = Array.isArray(classEntry?.optionalfeatureProgression) ? classEntry.optionalfeatureProgression : [];
     groups.forEach((group, groupIndex) => {
-      const count = getProgressionCountAtLevel(group?.progression, classLevel);
-      if (count <= 0) return;
+      const unlockLevels = getProgressionUnlockLevels(group?.progression, classLevel);
+      if (!unlockLevels.length) return;
       const featureTypes = normalizeOptionalFeatureTypeList(group?.featureType);
       const featureType = featureTypes[0] || "";
       const slotType = cleanSpellInlineTags(group?.name || "Optional Feature");
-      for (let idx = 0; idx < count; idx += 1) {
-        const id = buildEntityId(["optional-slot", classEntry.name, classEntry.source, slotType, featureType, classLevel, groupIndex, idx]);
+      unlockLevels.forEach((unlockLevel, idx) => {
+        const id = buildEntityId(["optional-slot", classEntry.name, classEntry.source, slotType, featureType, unlockLevel, groupIndex, idx]);
         slots.push({
           id,
           className: classEntry.name,
           classSource: normalizeSourceTag(classEntry.source),
-          level: classLevel,
+          level: unlockLevel,
           count: 1,
           slotType,
           featureType,
         });
-      }
+      });
     });
     return slots;
   }
@@ -431,12 +467,12 @@ export function createCharacterProgressionDomain({
     const slots = [];
     const groups = Array.isArray(subclassEntry?.optionalfeatureProgression) ? subclassEntry.optionalfeatureProgression : [];
     groups.forEach((group, groupIndex) => {
-      const count = getProgressionCountAtLevel(group?.progression, classLevel);
-      if (count <= 0) return;
+      const unlockLevels = getProgressionUnlockLevels(group?.progression, classLevel);
+      if (!unlockLevels.length) return;
       const featureTypes = normalizeOptionalFeatureTypeList(group?.featureType);
       const featureType = featureTypes[0] || "";
       const slotType = cleanSpellInlineTags(group?.name || "Optional Feature");
-      for (let idx = 0; idx < count; idx += 1) {
+      unlockLevels.forEach((unlockLevel, idx) => {
         const id = buildEntityId([
           "optional-slot",
           "subclass",
@@ -446,7 +482,7 @@ export function createCharacterProgressionDomain({
           subclassEntry.source,
           slotType,
           featureType,
-          classLevel,
+          unlockLevel,
           groupIndex,
           idx,
         ]);
@@ -455,12 +491,12 @@ export function createCharacterProgressionDomain({
           className: String(subclassEntry?.className ?? "").trim(),
           classSource: normalizeSourceTag(subclassEntry?.classSource),
           subclassName: String(subclassEntry?.name ?? "").trim(),
-          level: classLevel,
+          level: unlockLevel,
           count: 1,
           slotType,
           featureType,
         });
-      }
+      });
     });
     return slots;
   }
@@ -622,9 +658,39 @@ export function createCharacterProgressionDomain({
     const existingOptionalFeatures = Array.isArray(character?.optionalFeatures) ? character.optionalFeatures : [];
     const slotIds = new Set(featSlots.map((slot) => slot.id));
     const optionalSlotIds = new Set(optionalFeatureSlots.map((slot) => slot.id));
+    const optionalSlotById = new Map(optionalFeatureSlots.map((slot) => [String(slot?.id ?? ""), slot]));
     const nextFeats = existingFeats.filter((feat) => feat && feat.name && (!feat.slotId || slotIds.has(feat.slotId)));
+    const normalizeFeatureType = (value) =>
+      String(value ?? "")
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, " ");
+    const optionalFeatureCatalog = Array.isArray(catalogs?.optionalFeatures) ? catalogs.optionalFeatures : [];
+    const doesOptionalFeatureMatchSlot = (feature) => {
+      const slotId = String(feature?.slotId ?? "").trim();
+      if (!slotId) return true;
+      const slot = optionalSlotById.get(slotId);
+      if (!slot) return false;
+      const slotType = normalizeFeatureType(slot?.featureType);
+      if (!slotType) return true;
+      const normalizedName = String(feature?.name ?? "").trim().toLowerCase();
+      if (!normalizedName) return false;
+      const normalizedSource = normalizeSourceTag(feature?.source);
+      const entry = optionalFeatureCatalog.find((candidate) => {
+        if (String(candidate?.name ?? "").trim().toLowerCase() !== normalizedName) return false;
+        if (normalizedSource && normalizeSourceTag(candidate?.source) !== normalizedSource) return false;
+        return true;
+      });
+      if (!entry) return false;
+      const entryTypes = normalizeOptionalFeatureTypeList(entry?.featureType).map((value) => normalizeFeatureType(value));
+      if (!entryTypes.length) return true;
+      return entryTypes.includes(slotType);
+    };
     const nextOptionalFeatures = existingOptionalFeatures.filter(
-      (feature) => feature && feature.name && (!feature.slotId || optionalSlotIds.has(feature.slotId))
+      (feature) => feature
+        && feature.name
+        && (!feature.slotId || optionalSlotIds.has(feature.slotId))
+        && doesOptionalFeatureMatchSlot(feature)
     );
     const selectedFeatIds = nextFeats.map((feat) => feat.id).filter(Boolean);
     const selectedOptionalFeatureIds = nextOptionalFeatures.map((feature) => feature.id).filter(Boolean);
@@ -727,7 +793,6 @@ export function createCharacterProgressionDomain({
     getFeatSlotsForSubclass,
     getFeatSlots,
     normalizeOptionalFeatureTypeList,
-    getProgressionCountAtLevel,
     getOptionalFeatureSlotsForClass,
     getOptionalFeatureSlotsForSubclass,
     getOptionalFeatureSlots,

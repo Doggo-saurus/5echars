@@ -132,7 +132,8 @@ export function createInventoryWeapons({
     const category = getInventoryWeaponCategory(entry);
     const typeCode = normalizeItemTypeCode(entry?.itemType ?? entry?.type);
     const properties = getInventoryWeaponProperties(entry);
-    return category.includes("ranged") || properties.includes("R") || properties.includes("RANGED") || typeCode === "R";
+    // "R" is commonly "reach" in weapon property shorthands, not ranged.
+    return category.includes("ranged") || properties.includes("RANGED") || typeCode === "R";
   }
 
   function normalizeItemNameForProficiency(name) {

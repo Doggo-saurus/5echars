@@ -413,6 +413,49 @@ export function createPickers(deps) {
       return [...new Set(sets.flatMap((set) => (Array.isArray(set) ? set : [])).map((prop) => String(prop ?? "").trim()).filter(Boolean))];
     }
 
+    function parseCounterQuantity(value) {
+      const parsed = Math.floor(toNumber(value, Number.NaN));
+      return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+    }
+
+    function inferInventoryCounter({ item, variantItem, inherits, typeCode, name }) {
+      const charges = parseCounterQuantity(firstNonEmpty(variantItem?.charges, inherits?.charges, item?.charges));
+      if (charges > 0) {
+        return {
+          counterKind: "charges",
+          counter: charges,
+          counterMax: charges,
+        };
+      }
+
+      const packContents = Array.isArray(variantItem?.packContents)
+        ? variantItem.packContents
+        : Array.isArray(inherits?.packContents)
+          ? inherits.packContents
+          : Array.isArray(item?.packContents)
+            ? item.packContents
+            : [];
+      const packQuantity = packContents.length === 1 ? parseCounterQuantity(packContents[0]?.quantity) : 0;
+      const isAmmunitionLike = typeCode === "A"
+        || Boolean(firstNonEmpty(variantItem?.arrow, inherits?.arrow, item?.arrow))
+        || Boolean(firstNonEmpty(variantItem?.bolt, inherits?.bolt, item?.bolt))
+        || Boolean(firstNonEmpty(variantItem?.needleBlowgun, inherits?.needleBlowgun, item?.needleBlowgun))
+        || /\b(arrows?|bolts?|needles?|bullets?)\b/i.test(String(name ?? ""));
+      if (packQuantity > 0 && isAmmunitionLike) {
+        return {
+          counterKind: "quantity",
+          counter: packQuantity,
+          counterMax: 0,
+        };
+      }
+
+      return {
+        counterKind: "",
+        counter: 0,
+        counterMax: 0,
+      };
+    }
+
     function buildInventoryEntry(item, nameOverride = "", options = {}) {
       const variantItem = options.variantItem ?? null;
       const inherits = variantItem?.inherits && typeof variantItem.inherits === "object" ? variantItem.inherits : {};
@@ -443,6 +486,7 @@ export function createPickers(deps) {
         Boolean(inherits?.armor) ||
         Boolean(item?.armor) ||
         ["LA", "MA", "HA", "S"].includes(typeCode);
+      const counterInfo = inferInventoryCounter({ item, variantItem, inherits, typeCode, name });
       return {
         id: buildEntityId(["inv", name, source, Date.now(), Math.random()]),
         itemId: buildEntityId(["item", variantItem?.name || item?.name, source]),
@@ -459,6 +503,9 @@ export function createPickers(deps) {
         armor: armorFlag,
         weaponAttackBonus: attackBonus,
         weaponDamageBonus: damageBonus,
+        counterKind: counterInfo.counterKind,
+        counter: counterInfo.counter,
+        counterMax: counterInfo.counterMax,
         equipped: false,
       };
     }

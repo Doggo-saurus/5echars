@@ -748,6 +748,7 @@ const characterUpdater = createCharacterUpdater({
   getAutomaticAbilityBonuses: proficiencyRules.getAutomaticAbilityBonuses,
   getAutomaticSaveProficiencies: proficiencyRules.getAutomaticSaveProficiencies,
   getAutomaticSkillProficiencyModes: proficiencyRules.getAutomaticSkillProficiencyModes,
+  getAutomaticFeatureModeBonuses: proficiencyRules.getAutomaticFeatureModeBonuses,
   mapSkillModesToProficiencyMap: proficiencyRules.mapSkillModesToProficiencyMap,
   hasStoredProficiencyState: proficiencyRules.hasStoredProficiencyState,
   deriveLegacyProficiencyOverrides: proficiencyRules.deriveLegacyProficiencyOverrides,

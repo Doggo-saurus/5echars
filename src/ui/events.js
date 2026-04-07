@@ -475,6 +475,29 @@ export function createEvents(deps) {
     store.updateCharacter({ inventory: nextInventory });
   }
 
+  function adjustInventoryItemCounter(itemId, deltaRaw) {
+    const id = String(itemId ?? "").trim();
+    if (!id) return;
+    const delta = Math.floor(toNumber(deltaRaw, 0));
+    if (!delta) return;
+    const currentState = store.getState();
+    const currentInventory = Array.isArray(currentState.character?.inventory) ? currentState.character.inventory : [];
+    const nextInventory = currentInventory.map((entry) => {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) return entry;
+      if (String(entry.id ?? "").trim() !== id) return entry;
+      const kindRaw = String(entry.counterKind ?? "").trim().toLowerCase();
+      const kind = kindRaw === "charges" || kindRaw === "quantity" ? kindRaw : "";
+      if (!kind) return entry;
+      const currentValue = Math.max(0, Math.floor(toNumber(entry.counter, 0)));
+      const maxValue = Math.max(0, Math.floor(toNumber(entry.counterMax, 0)));
+      let nextValue = Math.max(0, currentValue + delta);
+      if (kind === "charges" && maxValue > 0) nextValue = Math.min(maxValue, nextValue);
+      if (nextValue === currentValue) return entry;
+      return { ...entry, counter: nextValue };
+    });
+    store.updateCharacter({ inventory: nextInventory });
+  }
+
   function bindBuildEvents(state) {
     clearPlayManualMenuOutsideClickHandler();
     bindCoreStatBreakdownButtons();
@@ -842,7 +865,9 @@ export function createEvents(deps) {
           selections[sourceKey] && typeof selections[sourceKey] === "object" && !Array.isArray(selections[sourceKey])
             ? { ...selections[sourceKey] }
             : {};
-        let nextValues = Array.from(app.querySelectorAll("[data-asi-choice-select]"))
+        const localSelectGroup = input.closest(".auto-choice-selects, .asi-inline-row");
+        const selectScope = localSelectGroup ?? app;
+        let nextValues = Array.from(selectScope.querySelectorAll("[data-asi-choice-select]"))
           .filter((selectEl) => {
             const selectSource = String(selectEl.dataset.autoChoiceSource ?? "").trim();
             const selectChoiceId = String(selectEl.dataset.autoChoiceId ?? "").trim();
@@ -968,6 +993,11 @@ export function createEvents(deps) {
     app.querySelectorAll("[data-remove-item-index]").forEach((button) => {
       button.addEventListener("click", () => {
         removeInventoryItemByIndex(button.dataset.removeItemIndex);
+      });
+    });
+    app.querySelectorAll("[data-item-counter-adjust-id]").forEach((button) => {
+      button.addEventListener("click", () => {
+        adjustInventoryItemCounter(button.dataset.itemCounterAdjustId, button.dataset.itemCounterDelta);
       });
     });
     app.querySelectorAll("[data-open-feat-picker]").forEach((button) => {
@@ -1323,6 +1353,7 @@ export function createEvents(deps) {
       const critLabel = typeof options.critLabel === "string" && options.critLabel.trim()
         ? options.critLabel.trim()
         : "Crit";
+      const hasLongPressOptions = Boolean(advantageLongPressHandler || disadvantageLongPressHandler || onCrit);
       let chooserTimer = null;
       let pressPointerId = null;
       let isPressing = false;
@@ -1351,9 +1382,16 @@ export function createEvents(deps) {
         }
       };
 
+      if (hasLongPressOptions) {
+        element.addEventListener("contextmenu", (event) => {
+          event.preventDefault();
+        });
+      }
+
       element.addEventListener("pointerdown", (event) => {
-        if (!advantageLongPressHandler && !disadvantageLongPressHandler && !onCrit) return;
+        if (!hasLongPressOptions) return;
         if (event.button !== 0) return;
+        if (event.pointerType && event.pointerType !== "mouse") event.preventDefault();
         isPressing = true;
         longPressTriggered = false;
         pressPointerId = event.pointerId;
@@ -1613,33 +1651,34 @@ export function createEvents(deps) {
         });
       }
     }
-    app.querySelectorAll("[data-open-feature]").forEach((button) => {
-      button.addEventListener("click", () => {
-        const featureId = button.dataset.openFeature;
-        if (!featureId) return;
-        openFeatureDetailsModal(state, featureId);
+    const wireOpenDetailControl = (selector, getId, openHandler) => {
+      app.querySelectorAll(selector).forEach((control) => {
+        control.addEventListener("click", () => {
+          const id = getId(control);
+          if (!id) return;
+          openHandler(id);
+        });
+        if (control instanceof HTMLButtonElement) return;
+        control.addEventListener("keydown", (event) => {
+          if (event.key !== "Enter" && event.key !== " ") return;
+          event.preventDefault();
+          const id = getId(control);
+          if (!id) return;
+          openHandler(id);
+        });
       });
+    };
+    wireOpenDetailControl("[data-open-feature]", (control) => control.dataset.openFeature, (featureId) => {
+      openFeatureDetailsModal(state, featureId);
     });
-    app.querySelectorAll("[data-open-feat]").forEach((button) => {
-      button.addEventListener("click", () => {
-        const featId = button.dataset.openFeat;
-        if (!featId) return;
-        openFeatDetailsModal(state, featId);
-      });
+    wireOpenDetailControl("[data-open-feat]", (control) => control.dataset.openFeat, (featId) => {
+      openFeatDetailsModal(state, featId);
     });
-    app.querySelectorAll("[data-open-optional-feature]").forEach((button) => {
-      button.addEventListener("click", () => {
-        const featureId = button.dataset.openOptionalFeature;
-        if (!featureId) return;
-        openOptionalFeatureDetailsModal(state, featureId);
-      });
+    wireOpenDetailControl("[data-open-optional-feature]", (control) => control.dataset.openOptionalFeature, (featureId) => {
+      openOptionalFeatureDetailsModal(state, featureId);
     });
-    app.querySelectorAll("[data-open-species-trait]").forEach((button) => {
-      button.addEventListener("click", () => {
-        const traitName = button.dataset.openSpeciesTrait;
-        if (!traitName) return;
-        openSpeciesTraitDetailsModal(state, traitName);
-      });
+    wireOpenDetailControl("[data-open-species-trait]", (control) => control.dataset.openSpeciesTrait, (traitName) => {
+      openSpeciesTraitDetailsModal(state, traitName);
     });
     const getFeatureUseMetaMap = (playState) =>
       playState.featureUseMeta && typeof playState.featureUseMeta === "object" && !Array.isArray(playState.featureUseMeta)
@@ -1736,7 +1775,8 @@ export function createEvents(deps) {
       });
     });
     app.querySelectorAll("[data-feature-use-delta]").forEach((button) => {
-      button.addEventListener("click", () => {
+      button.addEventListener("click", (event) => {
+        event.stopPropagation();
         const raw = String(button.dataset.featureUseDelta ?? "");
         const marker = "|inc:";
         const markerIndex = raw.lastIndexOf(marker);
@@ -1928,32 +1968,41 @@ export function createEvents(deps) {
       );
     });
 
+    const rollSkillCheck = (key, rollMode = "normal") => {
+      const skill = SKILLS.find((entry) => entry.key === key);
+      if (!skill) return;
+      const mod = toNumber(state.derived.mods?.[skill.ability], 0);
+      const skillMode = normalizeSkillProficiencyMode(
+        state.character.play?.skillProficiencyModes?.[key] ?? (state.character.play?.skillProficiencies?.[key] ? "proficient" : "none")
+      );
+      const checkBonus = Math.max(0, toNumber(state.character.play?.autoSkillCheckBonuses?.[key], 0));
+      const bonus = mod + getSkillProficiencyBonus(state.derived.proficiencyBonus, skillMode) + checkBonus;
+      rollVisualD20(skill.label, bonus, rollMode);
+    };
+
     app.querySelectorAll("[data-skill-roll-btn]").forEach((button) => {
       bindClickAndLongPress(
         button,
         () => {
           const key = button.dataset.skillRollBtn;
-          const skill = SKILLS.find((entry) => entry.key === key);
-          if (!skill) return;
-          const mod = toNumber(state.derived.mods?.[skill.ability], 0);
-          const skillMode = normalizeSkillProficiencyMode(
-            state.character.play?.skillProficiencyModes?.[key] ?? (state.character.play?.skillProficiencies?.[key] ? "proficient" : "none")
-          );
-          const checkBonus = Math.max(0, toNumber(state.character.play?.autoSkillCheckBonuses?.[key], 0));
-          const bonus = mod + getSkillProficiencyBonus(state.derived.proficiencyBonus, skillMode) + checkBonus;
-          rollVisualD20(skill.label, bonus);
+          rollSkillCheck(key, "normal");
         },
         (rollMode) => {
           const key = button.dataset.skillRollBtn;
-          const skill = SKILLS.find((entry) => entry.key === key);
-          if (!skill) return;
-          const mod = toNumber(state.derived.mods?.[skill.ability], 0);
-          const skillMode = normalizeSkillProficiencyMode(
-            state.character.play?.skillProficiencyModes?.[key] ?? (state.character.play?.skillProficiencies?.[key] ? "proficient" : "none")
-          );
-          const checkBonus = Math.max(0, toNumber(state.character.play?.autoSkillCheckBonuses?.[key], 0));
-          const bonus = mod + getSkillProficiencyBonus(state.derived.proficiencyBonus, skillMode) + checkBonus;
-          rollVisualD20(skill.label, bonus, rollMode);
+          rollSkillCheck(key, rollMode);
+        }
+      );
+    });
+    app.querySelectorAll("[data-skill-roll-row]").forEach((button) => {
+      bindClickAndLongPress(
+        button,
+        () => {
+          const key = button.dataset.skillRollRow;
+          rollSkillCheck(key, "normal");
+        },
+        (rollMode) => {
+          const key = button.dataset.skillRollRow;
+          rollSkillCheck(key, rollMode);
         }
       );
     });
@@ -2416,6 +2465,11 @@ export function createEvents(deps) {
     app.querySelectorAll("[data-remove-item-index]").forEach((button) => {
       button.addEventListener("click", () => {
         removeInventoryItemByIndex(button.dataset.removeItemIndex);
+      });
+    });
+    app.querySelectorAll("[data-item-counter-adjust-id]").forEach((button) => {
+      button.addEventListener("click", () => {
+        adjustInventoryItemCounter(button.dataset.itemCounterAdjustId, button.dataset.itemCounterDelta);
       });
     });
 
