@@ -169,7 +169,7 @@ export function createPartyFeature(deps) {
         upsertPartyHistory(appState.activeParty, { touchAccess: false });
         render(store.getState());
       }
-      void hydratePartyMemberSnapshots(nextActiveParty, { forceRefresh: true });
+      void hydratePartyMemberSnapshots(nextActiveParty, { forceRefresh: didPartyChange });
     } catch (error) {
       if (options.suppressErrors === true) return;
       throw error;
@@ -363,11 +363,23 @@ export function createPartyFeature(deps) {
         const cached = memberDerivedCache.get(parsedId);
         if (cached && typeof cached === "object" && !Array.isArray(cached)) return cached;
       }
-      try {
-        return computeDerivedStats(snapshot, store.getState()?.catalogs ?? null);
-      } catch {
-        return null;
-      }
+      const baked = snapshot?.partySnapshot;
+      if (!baked || typeof baked !== "object" || Array.isArray(baked)) return null;
+      return {
+        ac: readFiniteNumber(baked?.ac),
+        hp: readFiniteNumber(baked?.hp),
+        proficiencyBonus: readFiniteNumber(baked?.proficiencyBonus),
+        mods: {
+          dex: readFiniteNumber(baked?.dexMod),
+          wis: readFiniteNumber(baked?.wisMod),
+          int: readFiniteNumber(baked?.intMod),
+        },
+        passivePerception: readFiniteNumber(baked?.passivePerception),
+        passiveInsight: readFiniteNumber(baked?.passiveInsight),
+        passiveInvestigation: readFiniteNumber(baked?.passiveInvestigation),
+        initiative: readFiniteNumber(baked?.initiative),
+        speed: readFiniteNumber(baked?.speed),
+      };
     };
     const buildClassSummary = (snapshot, history) => {
       const level = Math.max(1, Math.min(20, toNumber(snapshot?.level ?? history?.level, 1)));
@@ -436,8 +448,8 @@ export function createPartyFeature(deps) {
     };
     const getArmorClassSummary = (snapshot, derived) =>
       getMetricValue(snapshot, derived?.ac, snapshot?.play?.armorClass, snapshot?.armorClass, snapshot?.ac);
-    const getSpeedSummary = (snapshot) =>
-      getMetricValue(snapshot, snapshot?.play?.speed, snapshot?.speed, (value) => {
+    const getSpeedSummary = (snapshot, derived) =>
+      getMetricValue(snapshot, derived?.speed, snapshot?.play?.speed, snapshot?.speed, (value) => {
         const walkFromSelf = readFiniteNumber(value?.walk);
         if (walkFromSelf !== null) return walkFromSelf;
         const walkFromNested = readFiniteNumber(value?.speed?.walk);
@@ -451,7 +463,10 @@ export function createPartyFeature(deps) {
         const total = dexMod + bonus;
         return total >= 0 ? `+${total}` : String(total);
       }
-      const direct = readFiniteNumber(snapshot?.initiative) ?? readFiniteNumber(snapshot?.play?.initiative);
+      const direct =
+        readFiniteNumber(derived?.initiative)
+        ?? readFiniteNumber(snapshot?.initiative)
+        ?? readFiniteNumber(snapshot?.play?.initiative);
       if (direct !== null) return direct >= 0 ? `+${direct}` : String(direct);
       return "Unknown";
     };
@@ -503,7 +518,7 @@ export function createPartyFeature(deps) {
         const derived = getMemberDerived(snapshot, characterId);
         const hpSummary = getHpSummary(snapshot, derived);
         const acSummary = getArmorClassSummary(snapshot, derived);
-        const speedSummary = getSpeedSummary(snapshot);
+        const speedSummary = getSpeedSummary(snapshot, derived);
         const initiativeSummary = getInitiativeSummary(snapshot, derived);
         const passiveSkills = getPassiveSkills(snapshot, derived);
         return `

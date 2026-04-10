@@ -40,7 +40,7 @@ export function createOnboardingView({
           <h2 class="onboarding-tagline">Spend less time prepping your sheet and more time playing your turn.</h2>
           ${
             appState.startupErrorMessage
-              ? `<p class="muted onboarding-warning">Could not load requested character. ${esc(appState.startupErrorMessage)}</p>`
+              ? `<p class="muted onboarding-warning">${esc(appState.startupErrorMessage)}</p>`
               : ""
           }
           ${renderPersistenceNotice()}

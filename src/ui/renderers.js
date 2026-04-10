@@ -26,6 +26,7 @@ export function createRenderers(deps) {
     getSpellLevelLabel,
     spellSchoolLabels,
     getRuleDescriptionLines,
+    resolveFeatureEntryFromCatalogs,
     getReferencedUnlockedFeatureIds,
     getFeatureActivationDescriptor,
     doesClassUsePreparedSpells,
@@ -133,6 +134,28 @@ export function createRenderers(deps) {
     const normalized = normalizeSourceTag(source);
     if (!normalized) return "Reference";
     return sourceLabels?.[normalized] ?? normalized;
+  }
+
+  function formatCatalogEntrySourceLabel(entry) {
+    const normalized = normalizeSourceTag(entry?.source);
+    return String(entry?.sourceLabel ?? sourceLabels?.[normalized] ?? normalized ?? "").trim();
+  }
+
+  function renderBuildPickerField({ title, triggerLabel, triggerAttr, selectedEntry = null, disabled = false }) {
+    const selectedName = String(selectedEntry?.name ?? "").trim();
+    const hasSelection = Boolean(selectedName);
+    const effectiveTriggerLabel = hasSelection ? selectedName : triggerLabel;
+    return `
+      <article class="build-picker-card">
+        <p class="muted build-picker-label">${esc(title)}</p>
+        <button
+          type="button"
+          class="btn secondary build-picker-trigger"
+          ${triggerAttr}
+          ${disabled ? "disabled" : ""}
+        >${esc(effectiveTriggerLabel)}</button>
+      </article>
+    `;
   }
 
   function buildClassesManualUrl(classEntry, subclassEntry = null) {
@@ -774,37 +797,50 @@ export function createRenderers(deps) {
       .join(", ");
   }
 
+  function renderAutoChoiceCardHeading(titleText, count) {
+    return `
+      <p class="muted auto-choice-card-heading">
+        <strong>${esc(titleText)}</strong>
+        <span class="auto-choice-card-count">Pick ${esc(count)}</span>
+      </p>
+    `;
+  }
+
   function renderChoiceCheckboxes(sourceKey, choiceId, count, options, selectedValues, labelFn, config = {}) {
     const metaByOption = config?.metaByOption && typeof config.metaByOption === "object" ? config.metaByOption : {};
     const disabledValues = config?.disabledValues instanceof Set ? config.disabledValues : new Set();
+    const checkedDisabledValues = config?.checkedDisabledValues instanceof Set ? config.checkedDisabledValues : new Set();
     const selectedTokens = new Set((Array.isArray(selectedValues) ? selectedValues : []).map((entry) => normalizeChoiceToken(entry)).filter(Boolean));
     return `
       <div class="auto-choice-group">
-        <p class="muted auto-choice-label">Pick ${count}</p>
-        <div class="auto-choice-options">
+        <div class="auto-choice-options auto-choice-options-cards">
           ${options
             .map((optionValue) => {
               const option = String(optionValue ?? "").trim();
               if (!option) return "";
-              const checked = selectedTokens.has(normalizeChoiceToken(option));
+              const checked = selectedTokens.has(normalizeChoiceToken(option)) || checkedDisabledValues.has(option);
               const optionMeta = Array.isArray(metaByOption?.[option]) ? metaByOption[option].filter(Boolean) : [];
               const isDisabled = disabledValues.has(option);
               const metaHtml = optionMeta.length
                 ? `<span class="auto-choice-option-meta">${optionMeta.map((label) => `<span class="auto-choice-badge">${esc(label)}</span>`).join("")}</span>`
                 : "";
               return `
-                <label class="auto-choice-option ${isDisabled ? "is-disabled" : ""}">
-                  <input
-                    type="checkbox"
-                    data-auto-choice-input="1"
-                    data-auto-choice-source="${esc(sourceKey)}"
-                    data-auto-choice-id="${esc(choiceId)}"
-                    data-auto-choice-value="${esc(option)}"
-                    data-auto-choice-max="${esc(count)}"
-                    ${checked ? "checked" : ""}
-                    ${isDisabled ? "disabled" : ""}
-                  >
-                  <span class="auto-choice-option-label">${esc(labelFn(option))}</span>
+                <label class="auto-choice-option-card ${checked ? "is-checked" : ""} ${isDisabled ? "is-disabled" : ""}">
+                  <span class="auto-choice-option-main">
+                    <input
+                      type="checkbox"
+                      class="auto-choice-option-input"
+                      data-auto-choice-input="1"
+                      data-auto-choice-source="${esc(sourceKey)}"
+                      data-auto-choice-id="${esc(choiceId)}"
+                      data-auto-choice-value="${esc(option)}"
+                      data-auto-choice-max="${esc(count)}"
+                      ${checked ? "checked" : ""}
+                      ${isDisabled ? "disabled" : ""}
+                    >
+                    <span class="auto-choice-option-check" aria-hidden="true"></span>
+                    <span class="auto-choice-option-label">${esc(labelFn(option))}</span>
+                  </span>
                   ${metaHtml}
                 </label>
               `;
@@ -849,6 +885,38 @@ export function createRenderers(deps) {
             `;
           }).join("")}
         </div>
+      </div>
+    `;
+  }
+
+  function renderAsiStyleAbilityChoiceRow(sourceKey, choiceId, count, options, selectedValues, labelFn) {
+    return `
+      <div class="asi-inline-row">
+        ${Array.from({ length: count }, (_, index) => {
+          const selected = String(selectedValues[index] ?? "").trim();
+          const selectedToken = normalizeChoiceToken(selected);
+          return `
+            <select
+              class="asi-inline-select"
+              data-asi-choice-select="1"
+              data-auto-choice-source="${esc(sourceKey)}"
+              data-auto-choice-id="${esc(choiceId)}"
+              data-auto-choice-max="${esc(count)}"
+              data-auto-choice-allow-duplicates="false"
+              aria-label="Ability choice ${index + 1}"
+            >
+              <option value="">-</option>
+              ${options
+                .map((optionValue) => {
+                  const option = String(optionValue ?? "").trim();
+                  if (!option) return "";
+                  const isSelected = normalizeChoiceToken(option) === selectedToken;
+                  return `<option value="${esc(option)}" ${isSelected ? "selected" : ""}>${esc(labelFn(option))}</option>`;
+                })
+                .join("")}
+            </select>
+          `;
+        }).join("")}
       </div>
     `;
   }
@@ -958,6 +1026,8 @@ export function createRenderers(deps) {
     if (normalized === "background") return "Background";
     if (normalized.startsWith("class:")) return "Class";
     if (normalized.startsWith("multiclass:")) return "Multiclass";
+    if (normalized.startsWith("feat:")) return "Feat";
+    if (normalized.startsWith("optionalfeature:")) return "Optional feature";
     return "Source";
   }
 
@@ -971,7 +1041,7 @@ export function createRenderers(deps) {
       .join(" ");
   }
 
-  function renderAutoChoiceEditorsForEntity(entry, sourceKey, character, catalogs) {
+  function renderAutoChoiceEditorsForEntity(entry, sourceKey, character, catalogs, options = {}) {
     const blocks = [];
     const sourceLabel = getAutoChoiceSourceLabel(sourceKey);
     const abilityOptions = Array.isArray(entry?.ability) ? entry.ability : [];
@@ -1014,11 +1084,44 @@ export function createRenderers(deps) {
             </div>
           `);
         } else {
-          const selected = getSelectedChoiceValues(character, sourceKey, choiceId, from, count);
+          const selected = getStoredChoiceValuesOnly(character, sourceKey, choiceId, from, count, { preserveStoredOrder: true });
+          const isFeatSource = String(sourceKey ?? "").trim().toLowerCase().startsWith("feat:");
+          const inlineFeatStyle = isFeatSource && options?.featInlineStyle === true;
+          if (inlineFeatStyle) {
+            blocks.push(
+              renderAsiStyleAbilityChoiceRow(
+                sourceKey,
+                choiceId,
+                count,
+                from,
+                selected,
+                (ability) => `+1 ${abilityLabels[ability] ?? ability.toUpperCase()}`
+              )
+            );
+            return;
+          }
           blocks.push(`
             <div class="auto-choice-card">
-              <p class="muted"><strong>${esc(sourceLabel)} ability choice</strong></p>
-              ${renderChoiceCheckboxes(sourceKey, choiceId, count, from, selected, (ability) => abilityLabels[ability] ?? ability.toUpperCase())}
+              ${renderAutoChoiceCardHeading(`${sourceLabel} ability choice`, count)}
+              ${
+                isFeatSource
+                  ? renderAsiStyleAbilityChoiceRow(
+                      sourceKey,
+                      choiceId,
+                      count,
+                      from,
+                      selected,
+                      (ability) => `+1 ${abilityLabels[ability] ?? ability.toUpperCase()}`
+                    )
+                  : renderChoiceCheckboxes(
+                      sourceKey,
+                      choiceId,
+                      count,
+                      from,
+                      selected,
+                      (ability) => abilityLabels[ability] ?? ability.toUpperCase()
+                    )
+              }
             </div>
           `);
         }
@@ -1028,6 +1131,13 @@ export function createRenderers(deps) {
     const skillOptions = Array.isArray(entry?.skillProficiencies) ? entry.skillProficiencies : [];
     const skillOptionIndex = skillOptions.findIndex((option) => option && typeof option === "object");
     const skillOption = skillOptionIndex >= 0 ? skillOptions[skillOptionIndex] : null;
+    const skillMetaByOption = options?.skillMetaByOption && typeof options.skillMetaByOption === "object" ? options.skillMetaByOption : {};
+    const blockedSkillValues = new Set(
+      Object.entries(skillMetaByOption)
+        .filter(([, labels]) => Array.isArray(labels) && labels.length)
+        .map(([skillKey]) => normalizeSkillKey(skillKey))
+        .filter(Boolean)
+    );
     if (skillOption && typeof skillOption === "object") {
       const choose = skillOption.choose && typeof skillOption.choose === "object" ? skillOption.choose : null;
       const anyCount = Math.max(0, toNumber(skillOption.any, 0));
@@ -1039,12 +1149,22 @@ export function createRenderers(deps) {
       if (anyCount > 0) {
         const pool = skills.map((skill) => skill.key).filter((skillKey) => !taken.has(skillKey));
         const choiceId = `s:${skillOptionIndex}:any`;
-        const selected = getSelectedChoiceValues(character, sourceKey, choiceId, pool, anyCount);
+        const selectablePool = pool.filter((skillKey) => !blockedSkillValues.has(skillKey));
+        const count = Math.max(0, Math.min(selectablePool.length, anyCount));
+        const selected = count > 0 ? getSelectedChoiceValues(character, sourceKey, choiceId, selectablePool, count) : [];
         selected.forEach((skillKey) => taken.add(skillKey));
         blocks.push(`
           <div class="auto-choice-card">
-            <p class="muted"><strong>${esc(sourceLabel)} skill choice</strong></p>
-            ${renderChoiceCheckboxes(sourceKey, choiceId, anyCount, pool, selected, (skillKey) => skills.find((skill) => skill.key === skillKey)?.label ?? skillKey)}
+            ${renderAutoChoiceCardHeading(`${sourceLabel} skill choice`, count)}
+            ${renderChoiceCheckboxes(
+              sourceKey,
+              choiceId,
+              count,
+              pool,
+              selected,
+              (skillKey) => skills.find((skill) => skill.key === skillKey)?.label ?? skillKey,
+              { metaByOption: skillMetaByOption, disabledValues: blockedSkillValues, checkedDisabledValues: blockedSkillValues }
+            )}
           </div>
         `);
       }
@@ -1054,20 +1174,22 @@ export function createRenderers(deps) {
           .filter(Boolean)
           .filter((skillKey, index, list) => list.indexOf(skillKey) === index)
           .filter((skillKey) => !taken.has(skillKey));
-        const count = Math.max(1, Math.min(from.length, toNumber(choose.count, 1)));
-        if (from.length && count > 0) {
+        const selectableFrom = from.filter((skillKey) => !blockedSkillValues.has(skillKey));
+        const count = Math.max(0, Math.min(selectableFrom.length, toNumber(choose.count, 1)));
+        if (from.length) {
           const choiceId = `s:${skillOptionIndex}:choose`;
-          const selected = getSelectedChoiceValues(character, sourceKey, choiceId, from, count);
+          const selected = count > 0 ? getSelectedChoiceValues(character, sourceKey, choiceId, selectableFrom, count) : [];
           blocks.push(`
             <div class="auto-choice-card">
-              <p class="muted"><strong>${esc(sourceLabel)} skill choice</strong></p>
+              ${renderAutoChoiceCardHeading(`${sourceLabel} skill choice`, count)}
               ${renderChoiceCheckboxes(
                 sourceKey,
                 choiceId,
                 count,
                 from,
                 selected,
-                (skillKey) => skills.find((skill) => skill.key === skillKey)?.label ?? skillKey
+                (skillKey) => skills.find((skill) => skill.key === skillKey)?.label ?? skillKey,
+                { metaByOption: skillMetaByOption, disabledValues: blockedSkillValues, checkedDisabledValues: blockedSkillValues }
               )}
             </div>
           `);
@@ -1091,7 +1213,7 @@ export function createRenderers(deps) {
           const selected = getSelectedChoiceValues(character, sourceKey, choiceId, from, count);
           blocks.push(`
             <div class="auto-choice-card">
-              <p class="muted"><strong>${esc(sourceLabel)} tool choice</strong></p>
+              ${renderAutoChoiceCardHeading(`${sourceLabel} tool choice`, count)}
               ${renderChoiceCheckboxes(sourceKey, choiceId, count, from, selected, (toolName) => toolName)}
             </div>
           `);
@@ -1107,9 +1229,7 @@ export function createRenderers(deps) {
         const selected = getSelectedChoiceValues(character, sourceKey, choiceId, pool, count);
         blocks.push(`
           <div class="auto-choice-card">
-            <p class="muted"><strong>${esc(sourceLabel)} tool choice</strong> - ${esc(
-              getToolCategoryTitle(key, count)
-            )}</p>
+            ${renderAutoChoiceCardHeading(`${sourceLabel} tool choice - ${getToolCategoryTitle(key, count)}`, count)}
             ${renderChoiceCheckboxes(sourceKey, choiceId, count, pool, selected, (toolName) => toolName)}
           </div>
         `);
@@ -1141,7 +1261,7 @@ export function createRenderers(deps) {
         const selected = getSelectedChoiceValues(character, sourceKey, choiceId, from, count);
         blocks.push(`
           <div class="auto-choice-card">
-            <p class="muted"><strong>${esc(sourceLabel)} ${esc(spec.singular)} choice</strong></p>
+            ${renderAutoChoiceCardHeading(`${sourceLabel} ${spec.singular} choice`, count)}
             ${renderChoiceCheckboxes(sourceKey, choiceId, count, from, selected, (defenseType) => defenseType)}
           </div>
         `);
@@ -1205,6 +1325,21 @@ export function createRenderers(deps) {
     return map;
   }
 
+  function getBackgroundGrantedSkillSourceMap(catalogs, character) {
+    const map = {};
+    const sourceOrder = getPreferredSourceOrder(character);
+    const backgroundEntry = findCatalogEntryByNameWithSelectedSourcePreference(
+      catalogs?.backgrounds,
+      character?.background,
+      character?.backgroundSource,
+      sourceOrder
+    );
+    collectEntitySkillSelections(backgroundEntry, "background", character).forEach((skillKey) => {
+      map[skillKey] = ["Background"];
+    });
+    return map;
+  }
+
   function renderClassSkillChoiceEditors(classEntry, character, catalogs) {
     if (!classEntry || typeof classEntry !== "object") return "";
     const skillEntries = Array.isArray(classEntry?.startingProficiencies?.skills) ? classEntry.startingProficiencies.skills : [];
@@ -1224,15 +1359,9 @@ export function createRenderers(deps) {
       const count = Math.max(0, Math.min(selectable.length, toNumber(choose.count, 1)));
       const choiceId = `cs:${optionIndex}:choose`;
       const selected = count > 0 ? getSelectedChoiceValues(character, classSourceKey, choiceId, selectable, count) : [];
-      const helperText = blocked.size
-        ? `<p class="muted auto-choice-help">Unavailable: already granted by ${[...new Set([...blocked].flatMap((skillKey) => autoSourceMap[skillKey] ?? []))]
-            .join(" / ")
-            .toLowerCase()}.</p>`
-        : "";
       blocks.push(`
         <div class="auto-choice-card">
-          <p class="muted"><strong>Class skill choice</strong></p>
-          ${helperText}
+          ${renderAutoChoiceCardHeading("Class skill choice", count)}
           ${renderChoiceCheckboxes(
             classSourceKey,
             choiceId,
@@ -1240,7 +1369,7 @@ export function createRenderers(deps) {
             from,
             selected,
             (skillKey) => skills.find((skill) => skill.key === skillKey)?.label ?? skillKey,
-            { metaByOption: autoSourceMap, disabledValues: blocked }
+            { metaByOption: autoSourceMap, disabledValues: blocked, checkedDisabledValues: blocked }
           )}
         </div>
       `);
@@ -1319,7 +1448,7 @@ export function createRenderers(deps) {
       const selected = getSelectedChoiceValues(character, sourceKey, choiceId, uniqueOptions, 1);
       blocks.push(`
         <div class="auto-choice-card">
-          <p class="muted"><strong>${esc(entry?.name ?? "Feature")} skill bonus</strong></p>
+          ${renderAutoChoiceCardHeading(`${entry?.name ?? "Feature"} skill bonus`, 1)}
           ${renderChoiceCheckboxes(
             sourceKey,
             choiceId,
@@ -1385,7 +1514,7 @@ export function createRenderers(deps) {
         return `
         <div class="inventory-row">
           <div class="inventory-row-main">
-            <span class="inventory-item-name">${esc(displayName)}</span>
+            <button type="button" class="inventory-item-name spell-picker-name-btn" data-open-item-details-index="${esc(entry.index)}" title="View item details">${esc(displayName)}</button>
           </div>
           <div class="inventory-row-actions">
             ${
@@ -1535,6 +1664,17 @@ export function createRenderers(deps) {
       if (typeof ritualMeta === "string" && ritualMeta.trim().toLowerCase() === "true") return true;
       return false;
     };
+    const getSpellCastTypeAbbreviation = (spell) => {
+      const timeEntries = Array.isArray(spell?.time) ? spell.time : [];
+      if (!timeEntries.length) return "";
+      const primaryTimeEntry = timeEntries[0];
+      const unit = String(primaryTimeEntry?.unit ?? "").trim().toLowerCase();
+      const condition = String(primaryTimeEntry?.condition ?? "").trim().toLowerCase();
+      if (unit === "bonus" || unit === "bonus action" || unit.includes("bonus")) return "BA";
+      if (unit === "reaction" || unit.includes("reaction") || condition.includes("reaction")) return "R";
+      if (unit === "action" || unit.includes("action")) return "A";
+      return "";
+    };
 
     const play = state.character.play ?? {};
     const defaultSpellSlots = getCharacterSpellSlotDefaults(state.catalogs, state.character);
@@ -1568,7 +1708,7 @@ export function createRenderers(deps) {
       const hasSlotsAvailable = level === 0 || toNumber(slotInfo.max, 0) - toNumber(slotInfo.used, 0) > 0;
       const stateClass = !isPrepared ? "is-unprepared" : hasSlotsAvailable ? "is-prepared-available" : "is-prepared-unavailable";
       const canTogglePrepared = !isCantrip && !alwaysPrepared && (isPrepared || preparedCount < preparedLimit);
-      const row = { name, spell, level, isPrepared, canTogglePrepared, isCantrip, alwaysPrepared };
+      const row = { name, spell, level, isPrepared, canTogglePrepared, isCantrip, alwaysPrepared, slotInfo };
       const list = grouped.get(level) ?? [];
       list.push({ ...row, stateClass, hasSlotsAvailable });
       grouped.set(level, list);
@@ -1609,7 +1749,7 @@ export function createRenderers(deps) {
         const visibleRows = showPreparedOnly ? rows.filter((row) => row.isPrepared) : rows;
         const body = visibleRows
           .sort((a, b) => String(a?.name ?? "").localeCompare(String(b?.name ?? "")))
-          .map(({ name, spell, isPrepared, stateClass, hasSlotsAvailable, canTogglePrepared, isCantrip, alwaysPrepared }) => {
+          .map(({ name, spell, isPrepared, stateClass, hasSlotsAvailable, canTogglePrepared, isCantrip, alwaysPrepared, slotInfo }) => {
             const spellCombat = getSpellCombatContext(state, spell);
             const school = spell?.school ? spellSchoolLabels[spell.school] ?? spell.school : "";
             const source = spell?.sourceLabel ?? spell?.source ?? "";
@@ -1618,15 +1758,12 @@ export function createRenderers(deps) {
                 ? `DC ${spellCombat.saveDc} ${spellCombat.saveText}`
                 : "";
             const meta = [school, source, saveMeta].filter(Boolean).join(" - ");
-            const knownTag = usesPreparedSpells
-              ? alwaysPrepared
-                ? "Always Prepared"
-                : isPrepared
-                  ? "Prepared"
-                  : "Unprepared"
-              : "";
-            const slotTag = toNumber(spell?.level, 0) > 0 && isPrepared ? (hasSlotsAvailable ? "Slots Available" : "No Slots Left") : "";
-            const knownAndSlotTag = [knownTag, slotTag].filter(Boolean).join(" · ");
+            const slotLevel = toNumber(spell?.level, 0);
+            const maxSlots = toNumber(slotInfo?.max, 0);
+            const usedSlots = toNumber(slotInfo?.used, 0);
+            const remainingSlots = Math.max(0, maxSlots - usedSlots);
+            const slotTag = slotLevel > 0 && Number.isFinite(maxSlots) && maxSlots > 0 ? `${remainingSlots}/${maxSlots}` : "";
+            const slotTagHtml = slotTag ? `<span class="spell-known-tag-text muted">${esc(slotTag)}</span>` : "";
             const prepButtonTitle = isCantrip
               ? "Cantrips are always prepared"
               : alwaysPrepared
@@ -1634,6 +1771,20 @@ export function createRenderers(deps) {
               : !isPrepared && !canTogglePrepared
                 ? "Preparation limit reached"
                 : "Toggle prepared";
+            const prepControlHtml = usesPreparedSpells
+              ? `
+                <button
+                  type="button"
+                  class="spell-prep-btn spell-prep-btn-inline ${isPrepared ? "is-active" : ""}"
+                  data-spell-prepared-btn="${esc(name)}"
+                  aria-pressed="${isPrepared ? "true" : "false"}"
+                  title="${prepButtonTitle}"
+                  ${!canTogglePrepared ? "disabled" : ""}
+                >
+                  ${isPrepared ? "P" : "-"}
+                </button>
+              `
+              : '<span class="spell-prep-static spell-prep-static-inline" title="Known spell">K</span>';
             const castDisabled = usesPreparedSpells && toNumber(spell?.level, 0) > 0 && !isPrepared;
             const spellDamageNotation = extractSimpleNotation(getSpellPrimaryDiceNotation(spell));
             const hasAttackDamageSplit = spellCombat.hasSpellAttack && Boolean(spellDamageNotation);
@@ -1648,36 +1799,22 @@ export function createRenderers(deps) {
                   spellDamageNotation
                 )}</button>`
               : "";
-            const castLabel = "Cast";
+            const castType = getSpellCastTypeAbbreviation(spell);
+            const castLabel = castType ? `Cast (${castType})` : "Cast";
+            const castTypeAttr = castType ? ` data-spell-cast-type="${esc(castType)}"` : "";
             const ritualBadgeHtml = isSpellRitualCast(spell)
               ? '<span class="spell-ritual-pill" title="Can be cast as a ritual">R</span>'
               : "";
             return `
             <div class="spell-row ${stateClass}">
-              ${
-                usesPreparedSpells
-                  ? `
-                <button
-                  type="button"
-                  class="spell-prep-btn ${isPrepared ? "is-active" : ""}"
-                  data-spell-prepared-btn="${esc(name)}"
-                  aria-pressed="${isPrepared ? "true" : "false"}"
-                  title="${prepButtonTitle}"
-                  ${!canTogglePrepared ? "disabled" : ""}
-                >
-                  ${isPrepared ? "P" : "-"}
-                </button>
-              `
-                  : '<span class="spell-prep-static">K</span>'
-              }
               <button type="button" class="spell-name-btn" data-spell-open="${esc(name)}">${esc(name)}</button>
-              <span class="spell-known-tag muted">${knownAndSlotTag}</span>
+              <span class="spell-known-tag">${slotTagHtml}${prepControlHtml}</span>
               <span class="spell-meta muted">${esc(meta || "")}</span>
               <div class="spell-action-group">
                 ${spellAttackButtonHtml}
                 ${spellDamageButtonHtml}
                 ${ritualBadgeHtml}
-                <button type="button" class="btn secondary spell-cast-btn" data-spell-cast="${esc(name)}" ${castDisabled ? "disabled" : ""}>${castLabel}</button>
+                <button type="button" class="btn secondary spell-cast-btn" data-spell-cast="${esc(name)}"${castTypeAttr} ${castDisabled ? "disabled" : ""}>${castLabel}</button>
               </div>
             </div>
           `;
@@ -1888,19 +2025,24 @@ export function createRenderers(deps) {
     const manualAttacks = Array.isArray(play.attacks) ? play.attacks : [];
     const attacksHtml = [...autoAttacks, ...manualAttacks]
       .map((attack, idx) => {
-        const isAutoAttack = attack?.source === "auto" || attack?.source === "auto-feature";
+        const isAutoAttack = String(attack?.source ?? "").startsWith("auto");
         const attackName = attack.name?.trim() || `Attack ${idx + 1}`;
+        const actionType = String(attack?.actionType ?? "").trim();
+        const actionTypeHtml = actionType ? `<span class="pill attack-action-pill">${esc(actionType)}</span>` : "";
         if (attackMode === "edit") {
           if (isAutoAttack) {
             const autoSourceDetail =
               attack?.source === "auto-feature"
                 ? `Auto from class feature (${String(attack.autoSourceLabel ?? "feature")}).`
+                : attack?.source === "auto-bonus"
+                  ? `Auto from feat/feature (${String(attack.autoSourceLabel ?? "bonus action")}).`
                 : `Auto from equipped weapon (${String(attack.ability ?? "").toUpperCase()}${attack.proficient ? ", proficient" : ", not proficient"}).`;
             return `
           <div class="attack-card attack-card-view">
             <div class="attack-row-top">
               <span class="attack-title-inline">
                 <strong class="attack-title">${esc(attackName)}</strong>
+                ${actionTypeHtml}
                 ${attack.proficient ? '<span class="attack-prof-pill" title="Proficient">P</span>' : ""}
               </span>
             </div>
@@ -1969,6 +2111,7 @@ export function createRenderers(deps) {
           <div class="attack-row-top">
             <span class="attack-title-inline">
               <strong class="attack-title">${esc(attackName)}</strong>
+              ${actionTypeHtml}
               ${attack.proficient ? '<span class="attack-prof-pill" title="Proficient">P</span>' : ""}
             </span>
           </div>
@@ -2073,6 +2216,14 @@ export function createRenderers(deps) {
       if (activation?.trackerKey) return true;
       return Boolean(extractSimpleNotation(activation?.rollNotation ?? ""));
     };
+    const getClassFeatureSummaryText = (feature) => {
+      if (!feature || typeof feature !== "object") return "";
+      const detail = typeof resolveFeatureEntryFromCatalogs === "function"
+        ? resolveFeatureEntryFromCatalogs(state.catalogs, feature)
+        : null;
+      const descriptionLines = getRuleDescriptionLines(detail).filter(Boolean);
+      return String(descriptionLines[0] ?? "").trim();
+    };
     const featureListHtml = unlockedFeatures.length
       ? unlockedFeatures
           .filter((feature) => !movedReferencedFeatureIds.has(String(feature?.id ?? "")))
@@ -2081,6 +2232,10 @@ export function createRenderers(deps) {
             const isAsiFeature = isAbilityScoreImprovementSlot({ slotType: feature?.name ?? "" });
             const asiFeatureKey = `${String(feature?.className ?? "").trim().toLowerCase()}|${toNumber(feature?.level, 0)}`;
             const displayName = isAsiFeature && selectedAsiSlotKeys.has(asiFeatureKey) ? "Feat" : String(feature?.name ?? "");
+            const featureOpenRef = String(feature?.id ?? "").trim()
+              || `name:${String(feature?.name ?? "").trim().toLowerCase()}|class:${String(feature?.className ?? "")
+                .trim()
+                .toLowerCase()}|subclass:${String(feature?.subclassName ?? "").trim().toLowerCase()}|level:${toNumber(feature?.level, 0)}`;
             const useKey = `${autoResourceIdPrefix}${feature.id}`;
             const tracker = featureUses[useKey];
             const activation = getFeatureActivationDescriptor(state.catalogs, character, feature, featureUses);
@@ -2119,7 +2274,7 @@ export function createRenderers(deps) {
             <li class="feature-row">
               <span class="class-feature-level">Lv ${esc(feature.level ?? "?")}</span>
               <div class="feature-main">
-                <button type="button" class="spell-name-btn feature-name-btn" data-open-feature="${esc(feature.id)}">${esc(
+                <button type="button" class="spell-name-btn feature-name-btn" data-open-feature="${esc(featureOpenRef)}">${esc(
                   `${displayName}${subtitle}`
                 )}</button>
                 ${firstUseFreePillHtml}
@@ -2135,6 +2290,7 @@ export function createRenderers(deps) {
       ? classTableEffects
           .map((effect) => {
             const effectLabel = `${String(effect?.className ?? "").trim()} - ${String(effect?.label ?? "").trim()}`.trim();
+            const effectId = String(effect?.id ?? "").trim();
             const tableResourceKey = `${autoResourceIdPrefix}${effect.id}`;
             const tableResourceTracker = featureUses[tableResourceKey];
             const rollNotation = extractSimpleNotation(effect?.rollNotation ?? effect?.value ?? "");
@@ -2163,7 +2319,7 @@ export function createRenderers(deps) {
             <li class="feature-row feature-row-table-effect">
               <span class="class-feature-level">Class</span>
               <div class="feature-main">
-                <strong>${esc(effectLabel)}</strong>
+                <button type="button" class="spell-name-btn feature-name-btn" data-open-class-table-effect="${esc(effectId)}">${esc(effectLabel)}</button>
                 ${valueHtml}
               </div>
             </li>
@@ -2193,9 +2349,10 @@ export function createRenderers(deps) {
             const prerequisites = Array.isArray(detail?.prerequisite) ? detail.prerequisite : [];
             const descriptionLines = getRuleDescriptionLines(detail);
             const summaryRaw = String(descriptionLines.find(Boolean) ?? "").trim();
-            const summaryText = summaryRaw
-              ? (summaryRaw.length > 180 ? `${summaryRaw.slice(0, 177).trimEnd()}...` : summaryRaw)
-              : "No preview available. Click to open full feat details.";
+            const summaryText = summaryRaw || "No preview available. Click to open full feat details.";
+            const featMetaText = `${feat.levelGranted ? `Lv ${feat.levelGranted}` : "Level ?"} - ${feat.via || "feat slot"}${
+              prerequisites.length ? ` - Prerequisite (${prerequisites.length})` : ""
+            }`;
             const useKey = `${autoResourceIdPrefix}${feat.id}`;
             const tracker = featureUses[useKey];
             const trackerHtml = tracker
@@ -2217,15 +2374,11 @@ export function createRenderers(deps) {
                   tabindex="0"
                   data-open-feat="${esc(feat.id)}"
                   aria-label="Open ${esc(featName)} details"
+                  title="${esc(featMetaText)}"
                 >
                   <span class="feat-tile-head">
                     <strong class="feat-tile-title">${esc(featName)}</strong>
                     ${actionControlsHtml}
-                  </span>
-                  <span class="feat-tile-meta">
-                    ${feat.levelGranted ? `Lv ${esc(feat.levelGranted)}` : "Level ?"} - ${esc(feat.via || "feat slot")}${
-                      prerequisites.length ? ` - Prerequisite (${esc(prerequisites.length)})` : ""
-                    }
                   </span>
                   <span class="feat-tile-summary">${esc(summaryText)}</span>
                 </div>
@@ -2243,6 +2396,10 @@ export function createRenderers(deps) {
             const featureName = String(feature?.name ?? "").trim();
             const subtitle = feature.type === "subclass" && feature.subclassName ? ` (${feature.subclassName})` : "";
             const metaLabel = feature.level ? `Lv ${feature.level}` : "Level ?";
+            const featureOpenRef = String(feature?.id ?? "").trim()
+              || `name:${String(feature?.name ?? "").trim().toLowerCase()}|class:${String(feature?.className ?? "")
+                .trim()
+                .toLowerCase()}|subclass:${String(feature?.subclassName ?? "").trim().toLowerCase()}|level:${toNumber(feature?.level, 0)}`;
             const useKey = `${autoResourceIdPrefix}${feature.id}`;
             const tracker = featureUses[useKey];
             const activation = getFeatureActivationDescriptor(state.catalogs, character, feature, featureUses);
@@ -2278,6 +2435,8 @@ export function createRenderers(deps) {
               firstUseFreePillHtml || activationButtonHtml || trackerHtml
                 ? `<span class="feat-tile-actions">${firstUseFreePillHtml}${activationButtonHtml}${trackerHtml}</span>`
                 : "";
+            const featureMetaText = `${metaLabel} - ${feature.className || "class feature"}`;
+            const summaryText = getClassFeatureSummaryText(feature);
             return `
             <div class="feature-row feature-row-feat">
               <div class="feature-main">
@@ -2285,14 +2444,15 @@ export function createRenderers(deps) {
                   class="feat-tile-btn"
                   role="button"
                   tabindex="0"
-                  data-open-feature="${esc(feature.id)}"
+                  data-open-feature="${esc(featureOpenRef)}"
                   aria-label="Open ${esc(featureName)} details"
+                  title="${esc(featureMetaText)}"
                 >
                   <span class="feat-tile-head">
                     <strong class="feat-tile-title">${esc(`${featureName}${subtitle}`)}</strong>
                     ${actionControlsHtml}
                   </span>
-                  <span class="feat-tile-meta">${esc(metaLabel)} - ${esc(feature.className || "class feature")}</span>
+                  ${summaryText ? `<span class="feat-tile-summary">${esc(summaryText)}</span>` : ""}
                 </div>
               </div>
             </div>
@@ -2311,6 +2471,10 @@ export function createRenderers(deps) {
             const featureName = String(feature?.name ?? "").trim();
             const subtitle = feature.type === "subclass" && feature.subclassName ? ` (${feature.subclassName})` : "";
             const metaLabel = feature.level ? `Lv ${feature.level}` : "Level ?";
+            const featureOpenRef = String(feature?.id ?? "").trim()
+              || `name:${String(feature?.name ?? "").trim().toLowerCase()}|class:${String(feature?.className ?? "")
+                .trim()
+                .toLowerCase()}|subclass:${String(feature?.subclassName ?? "").trim().toLowerCase()}|level:${toNumber(feature?.level, 0)}`;
             const useKey = `${autoResourceIdPrefix}${feature.id}`;
             const tracker = featureUses[useKey];
             const activation = getFeatureActivationDescriptor(state.catalogs, character, feature, featureUses);
@@ -2346,6 +2510,8 @@ export function createRenderers(deps) {
               firstUseFreePillHtml || activationButtonHtml || trackerHtml
                 ? `<span class="feat-tile-actions">${firstUseFreePillHtml}${activationButtonHtml}${trackerHtml}</span>`
                 : "";
+            const featureMetaText = `${metaLabel} - ${feature.className || "class feature"}`;
+            const summaryText = getClassFeatureSummaryText(feature);
             return `
             <div class="feature-row feature-row-feat">
               <div class="feature-main">
@@ -2353,14 +2519,15 @@ export function createRenderers(deps) {
                   class="feat-tile-btn"
                   role="button"
                   tabindex="0"
-                  data-open-feature="${esc(feature.id)}"
+                  data-open-feature="${esc(featureOpenRef)}"
                   aria-label="Open ${esc(featureName)} details"
+                  title="${esc(featureMetaText)}"
                 >
                   <span class="feat-tile-head">
                     <strong class="feat-tile-title">${esc(`${featureName}${subtitle}`)}</strong>
                     ${actionControlsHtml}
                   </span>
-                  <span class="feat-tile-meta">${esc(metaLabel)} - ${esc(feature.className || "class feature")}</span>
+                  ${summaryText ? `<span class="feat-tile-summary">${esc(summaryText)}</span>` : ""}
                 </div>
               </div>
             </div>
@@ -2380,6 +2547,7 @@ export function createRenderers(deps) {
           })
           .map((effect) => {
             const effectLabel = `${String(effect?.className ?? "").trim()} - ${String(effect?.label ?? "").trim()}`.trim();
+            const effectId = String(effect?.id ?? "").trim();
             const tableResourceKey = `${autoResourceIdPrefix}${effect.id}`;
             const tracker = featureUses[tableResourceKey];
             const rollNotation = extractSimpleNotation(effect?.rollNotation ?? effect?.value ?? "");
@@ -2406,15 +2574,24 @@ export function createRenderers(deps) {
               rollControlHtml || trackerHtml
                 ? `<span class="feat-tile-actions feat-tile-actions-nowrap">${rollControlHtml}${trackerHtml}</span>`
                 : "";
+            const effectMetaText = `${effect?.className || "class feature"} - Class table effect`;
             return `
             <div class="feature-row feature-row-feat">
               <div class="feature-main">
-                <div class="feat-tile-btn feat-tile-static" role="group" aria-label="${esc(effectLabel)}">
+                <div
+                  class="feat-tile-btn"
+                  role="button"
+                  tabindex="0"
+                  data-open-class-table-effect="${esc(effectId)}"
+                  aria-label="Open ${esc(effectLabel)} details"
+                  title="${esc(effectMetaText)}"
+                >
                   <span class="feat-tile-head">
-                    <strong class="feat-tile-title">${esc(String(effect?.label ?? "Class feature"))}</strong>
+                    <strong class="feat-tile-title">
+                      ${esc(String(effect?.label ?? "Class feature"))}
+                    </strong>
                     ${actionControlsHtml}
                   </span>
-                  <span class="feat-tile-meta">${esc(effect?.className || "class feature")} - Class table effect</span>
                 </div>
               </div>
             </div>
@@ -2445,9 +2622,10 @@ export function createRenderers(deps) {
             const prerequisites = Array.isArray(detail?.prerequisite) ? detail.prerequisite : [];
             const descriptionLines = getRuleDescriptionLines(detail);
             const summaryRaw = String(descriptionLines.find(Boolean) ?? "").trim();
-            const summaryText = summaryRaw
-              ? (summaryRaw.length > 180 ? `${summaryRaw.slice(0, 177).trimEnd()}...` : summaryRaw)
-              : "No preview available. Click to open full optional feature details.";
+            const summaryText = summaryRaw || "No preview available. Click to open full optional feature details.";
+            const featureMetaText = `${feature.levelGranted ? `Lv ${feature.levelGranted}` : "Level ?"} - ${
+              feature.slotType || "optional feature"
+            }${prerequisites.length ? ` - Prerequisite (${prerequisites.length})` : ""}`;
             const useKey = `${autoResourceIdPrefix}${feature.id}`;
             const tracker = featureUses[useKey];
             const activation = getFeatureActivationDescriptor(state.catalogs, character, feature, featureUses);
@@ -2492,15 +2670,11 @@ export function createRenderers(deps) {
                   tabindex="0"
                   data-open-optional-feature="${esc(feature.id)}"
                   aria-label="Open ${esc(featureName)} details"
+                  title="${esc(featureMetaText)}"
                 >
                   <span class="feat-tile-head">
                     <strong class="feat-tile-title">${esc(featureName)}</strong>
                     ${actionControlsHtml}
-                  </span>
-                  <span class="feat-tile-meta">
-                    ${feature.levelGranted ? `Lv ${esc(feature.levelGranted)}` : "Level ?"} - ${esc(feature.slotType || "optional feature")}${
-                      prerequisites.length ? ` - Prerequisite (${esc(prerequisites.length)})` : ""
-                    }
                   </span>
                   <span class="feat-tile-summary">${esc(summaryText)}</span>
                 </div>
@@ -2587,12 +2761,12 @@ export function createRenderers(deps) {
                   tabindex="0"
                   data-open-species-trait="${esc(trait.name)}"
                   aria-label="Open ${esc(trait.name)} details"
+                  title="${esc(traitMeta)}"
                 >
                   <span class="feat-tile-head">
                     <strong class="feat-tile-title">${esc(trait.name)}</strong>
                     ${actionControlsHtml}
                   </span>
-                  <span class="feat-tile-meta">${esc(traitMeta)}</span>
                 </div>
               </div>
             </div>
@@ -2899,6 +3073,12 @@ export function createRenderers(deps) {
         ? getSubraceCatalogEntries(catalogs, selectedBaseRace.name, selectedBaseRace.source, raceSourceOrder)
             .filter((entry) => String(entry?.name ?? "").trim())
         : [];
+      const selectedSubrace = findCatalogEntryByNameWithSelectedSourcePreference(
+        subraceOptions,
+        character.subrace,
+        character.subraceSource,
+        raceSourceOrder
+      );
       const selectedBackground = findCatalogEntryByNameWithSelectedSourcePreference(
         catalogs.backgrounds,
         character.background,
@@ -2922,32 +3102,33 @@ export function createRenderers(deps) {
           : hasBackgroundAbilityBonuses
             ? "<strong>2024-style active:</strong> background is currently providing ability bonuses."
             : "No automatic ability score bonuses detected from race/background.";
-      const raceChoiceEditors = renderAutoChoiceEditorsForEntity(selectedRace, "race", character, catalogs);
+      const raceBackgroundSkillMap = getBackgroundGrantedSkillSourceMap(catalogs, character);
+      const raceChoiceEditors = renderAutoChoiceEditorsForEntity(selectedRace, "race", character, catalogs, {
+        skillMetaByOption: raceBackgroundSkillMap,
+      });
       const backgroundChoiceEditors = renderAutoChoiceEditorsForEntity(selectedBackground, "background", character, catalogs);
       return `
       <h2 class="title">Ancestry & Background</h2>
-      <div class="row">
-        <label>Race
-          <select id="race">
-            <option value="">Select race</option>
-            ${optionList(catalogs.races, character.race, { includeSourceInValue: true, selectedSource: character.raceSource })}
-          </select>
-        </label>
-        <label>Subrace
-          <select id="subrace" ${subraceOptions.length ? "" : "disabled"}>
-            <option value="">None</option>
-            ${optionList(subraceOptions, character.subrace, { includeSourceInValue: true, selectedSource: character.subraceSource })}
-          </select>
-        </label>
-        <label>Background
-          <select id="background">
-            <option value="">Select background</option>
-            ${optionList(catalogs.backgrounds, character.background, {
-              includeSourceInValue: true,
-              selectedSource: character.backgroundSource,
-            })}
-          </select>
-        </label>
+      <div class="build-picker-grid">
+        ${renderBuildPickerField({
+          title: "Race",
+          triggerLabel: "Choose Race",
+          triggerAttr: 'data-open-build-picker="race"',
+          selectedEntry: selectedBaseRace,
+        })}
+        ${renderBuildPickerField({
+          title: "Subrace",
+          triggerLabel: subraceOptions.length ? "Choose Subrace" : "No Subraces",
+          triggerAttr: 'data-open-build-picker="subrace"',
+          selectedEntry: selectedSubrace,
+          disabled: !subraceOptions.length,
+        })}
+        ${renderBuildPickerField({
+          title: "Background",
+          triggerLabel: "Choose Background",
+          triggerAttr: 'data-open-build-picker="background"',
+          selectedEntry: selectedBackground,
+        })}
       </div>
       <p class="muted ability-rules-note ${raceAbilityTotal > 0 && backgroundAbilityTotal > 0 ? "is-warning" : ""}">
         ${abilityRulesHint}
@@ -3042,28 +3223,28 @@ export function createRenderers(deps) {
         character,
         catalogs
       );
+      const selectedSubclass = findCatalogEntryByNameWithSelectedSourcePreference(
+        catalogs.subclasses,
+        character?.classSelection?.subclass?.name ?? character.subclass,
+        character?.classSelection?.subclass?.source ?? character.subclassSource,
+        sourceOrder
+      );
       return `
       <h2 class="title">Class & Multiclass</h2>
-      <div class="row">
-        <label>Class
-          <select id="class">
-            <option value="">Select class</option>
-            ${optionList(catalogs.classes, character.class, { includeSourceInValue: true, selectedSource: character.classSource })}
-          </select>
-        </label>
-        <label>Subclass
-          <select id="subclass-select">
-            <option value="">Select subclass</option>
-            ${subclassOptions
-              .map(
-                (entry) =>
-                  `<option value="${esc(entry.name)}|${esc(entry.source)}" ${entry.isSelected ? "selected" : ""}>${esc(entry.name)} (${esc(
-                    entry.sourceLabel || entry.source || "Unknown Source"
-                  )})</option>`
-              )
-              .join("")}
-          </select>
-        </label>
+      <div class="build-picker-grid build-picker-grid-two">
+        ${renderBuildPickerField({
+          title: "Class",
+          triggerLabel: "Choose Class",
+          triggerAttr: 'data-open-build-picker="class"',
+          selectedEntry: classEntry,
+        })}
+        ${renderBuildPickerField({
+          title: "Subclass",
+          triggerLabel: subclassOptions.length ? "Choose Subclass" : "No Subclasses",
+          triggerAttr: 'data-open-build-picker="subclass"',
+          selectedEntry: selectedSubclass,
+          disabled: !subclassOptions.length,
+        })}
       </div>
       <div class="toolbar">
         <button class="btn secondary" id="open-multiclass">Edit Multiclass</button>
@@ -3075,7 +3256,7 @@ export function createRenderers(deps) {
       <h3 class="title">Feat Slots</h3>
       <p class="subtitle">Feat slots come from your class levels. Pick a feat for each slot.</p>
       <div class="option-list slot-list">
-        ${renderBuildFeatSlotsImpl(character)}
+        ${renderBuildFeatSlotsImpl(character, catalogs)}
       </div>
       <h3 class="title">Optional Feature Slots</h3>
       <p class="subtitle">Optional feature slots come from your class levels. Pick an option for each slot.</p>
@@ -3297,7 +3478,7 @@ export function createRenderers(deps) {
   `;
   }
 
-  function renderBuildFeatSlotsImpl(character) {
+  function renderBuildFeatSlotsImpl(character, catalogs) {
     const slots = getFeatSlotsWithSelection(character);
     if (!slots.length) return "<p class='muted'>No feat slots available from current progression.</p>";
     return slots
@@ -3344,6 +3525,21 @@ export function createRenderers(deps) {
             </div>
           `
           : "";
+        const selectedFeat = slot?.feat && typeof slot.feat === "object" ? slot.feat : null;
+        const selectedFeatEntry = selectedFeat
+          ? findCatalogEntryByNameWithSelectedSourcePreference(
+              catalogs?.feats,
+              selectedFeat?.name,
+              selectedFeat?.source,
+              getPreferredSourceOrder(character)
+            )
+          : null;
+        const featSourceKey = selectedFeat
+          ? `feat:${String(selectedFeat?.id ?? selectedFeatEntry?.name ?? "").trim() || String(selectedFeatEntry?.name ?? "").trim()}`
+          : "";
+        const featChoiceEditors = selectedFeatEntry
+          ? renderAutoChoiceEditorsForEntity(selectedFeatEntry, featSourceKey, character, catalogs, { featInlineStyle: true })
+          : "";
         return `
         <div class="option-row">
           <div class="slot-row-main">
@@ -3352,6 +3548,7 @@ export function createRenderers(deps) {
               <span class="muted">${slot.feat ? `${esc(slot.feat.name)} (${esc(slot.feat.source || "Unknown Source")})` : "No feat selected."}</span>
             </div>
             ${asiEditorHtml}
+            ${featChoiceEditors}
           </div>
           <div class="option-row-actions">
             <button type="button" class="btn secondary" data-open-feat-picker="${esc(slot.id)}">${slot.feat ? "Replace" : "Pick Feat"}</button>

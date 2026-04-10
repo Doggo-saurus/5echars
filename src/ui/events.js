@@ -13,18 +13,22 @@ export function createEvents(deps) {
     loadAvailableSources,
     loadCatalogs,
     updateCharacterWithRequiredSettings,
-    getClassCatalogEntry,
     getCharacterFightingStyleSet,
-    normalizeSourceTag,
     withUpdatedPlay,
     openModal,
     openSpellModal,
     openItemModal,
     openFeatModal,
     openOptionalFeatureModal,
+    openRacePickerModal,
+    openSubracePickerModal,
+    openBackgroundPickerModal,
+    openClassPickerModal,
+    openSubclassPickerModal,
     openMulticlassModal,
     openLevelUpModal,
     openSpellDetailsModal,
+    openItemDetailsModal,
     getCharacterSpellSlotDefaults,
     createOrSavePermanentCharacter,
     importCharacterFromJsonFile,
@@ -61,6 +65,58 @@ export function createEvents(deps) {
   } = deps;
   let playManualMenuOutsideClickHandler = null;
   let playCharacterLogMenuOutsideClickHandler = null;
+
+  function positionFloatingPanelWithinViewport(containerEl, panelEl) {
+    if (!(containerEl instanceof HTMLElement) || !(panelEl instanceof HTMLElement)) return;
+    const viewportWidth = Math.max(0, window.innerWidth || document.documentElement.clientWidth || 0);
+    const viewportHeight = Math.max(0, window.innerHeight || document.documentElement.clientHeight || 0);
+    if (viewportWidth <= 0 || viewportHeight <= 0) return;
+    const margin = 8;
+    containerEl.removeAttribute("data-overlay-direction");
+    panelEl.style.removeProperty("--overlay-shift-x");
+    panelEl.style.removeProperty("max-height");
+
+    const triggerRect = containerEl.getBoundingClientRect();
+    const spaceAbove = Math.max(0, triggerRect.top - margin);
+    const spaceBelow = Math.max(0, viewportHeight - triggerRect.bottom - margin);
+    const openUp = spaceBelow < 180 && spaceAbove > spaceBelow;
+    containerEl.dataset.overlayDirection = openUp ? "up" : "down";
+
+    const rect = panelEl.getBoundingClientRect();
+    let shiftX = 0;
+    if (rect.left < margin) shiftX = margin - rect.left;
+    else if (rect.right > viewportWidth - margin) shiftX = (viewportWidth - margin) - rect.right;
+    panelEl.style.setProperty("--overlay-shift-x", `${Math.round(shiftX)}px`);
+
+    const availableHeight = Math.max(160, Math.floor((openUp ? spaceAbove : spaceBelow) - 10));
+    panelEl.style.maxHeight = `${availableHeight}px`;
+  }
+
+  function positionDiceHistoryPopoverWithinViewport(wrapperEl, popoverEl) {
+    if (!(wrapperEl instanceof HTMLElement) || !(popoverEl instanceof HTMLElement)) return;
+    const viewportWidth = Math.max(0, window.innerWidth || document.documentElement.clientWidth || 0);
+    const viewportHeight = Math.max(0, window.innerHeight || document.documentElement.clientHeight || 0);
+    if (viewportWidth <= 0 || viewportHeight <= 0) return;
+    const margin = 8;
+    wrapperEl.removeAttribute("data-overlay-direction");
+    popoverEl.style.removeProperty("--overlay-shift-x");
+    popoverEl.style.removeProperty("max-height");
+
+    const triggerRect = wrapperEl.getBoundingClientRect();
+    const spaceAbove = Math.max(0, triggerRect.top - margin);
+    const spaceBelow = Math.max(0, viewportHeight - triggerRect.bottom - margin);
+    const openUp = spaceBelow < 180 && spaceAbove > spaceBelow;
+    wrapperEl.dataset.overlayDirection = openUp ? "up" : "down";
+
+    const rect = popoverEl.getBoundingClientRect();
+    let shiftX = 0;
+    if (rect.left < margin) shiftX = margin - rect.left;
+    else if (rect.right > viewportWidth - margin) shiftX = (viewportWidth - margin) - rect.right;
+    popoverEl.style.setProperty("--overlay-shift-x", `${Math.round(shiftX)}px`);
+
+    const availableHeight = Math.max(140, Math.floor((openUp ? spaceAbove : spaceBelow) - 10));
+    popoverEl.style.maxHeight = `${availableHeight}px`;
+  }
 
   function clearPlayManualMenuOutsideClickHandler() {
     if (typeof playManualMenuOutsideClickHandler === "function") {
@@ -265,16 +321,6 @@ export function createEvents(deps) {
       .trim()
       .toLowerCase()
       .replace(/[^a-z0-9]/g, "");
-  }
-
-  function parseSourceAwareSelection(value) {
-    const raw = String(value ?? "");
-    if (!raw) return { name: "", source: "" };
-    const [nameRaw = "", sourceRaw = ""] = raw.split("|");
-    return {
-      name: nameRaw.trim(),
-      source: normalizeSourceTag(sourceRaw),
-    };
   }
 
   function normalizeSkillProficiencyMode(value) {
@@ -498,6 +544,53 @@ export function createEvents(deps) {
     store.updateCharacter({ inventory: nextInventory });
   }
 
+  function openInventoryItemDetails(indexRaw) {
+    const index = toNumber(indexRaw, -1);
+    const currentState = store.getState();
+    const currentInventory = Array.isArray(currentState.character?.inventory) ? currentState.character.inventory : [];
+    if (index < 0 || index >= currentInventory.length) return;
+    const entry = currentInventory[index];
+    if (typeof entry === "string") {
+      openItemDetailsModal({ name: entry });
+      return;
+    }
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return;
+    const catalogsItems = Array.isArray(currentState.catalogs?.items) ? currentState.catalogs.items : [];
+    const entryName = String(entry.name ?? "").trim();
+    const entrySource = String(entry.source ?? "").trim();
+    const normalizedName = entryName.toLowerCase();
+    const normalizedSource = entrySource.toLowerCase();
+    const fallbackName = entryName.replace(/^\+\d+\s+/u, "").trim().toLowerCase();
+    let matchedItem = null;
+    if (normalizedName && normalizedSource) {
+      matchedItem = catalogsItems.find((item) =>
+        String(item?.name ?? "").trim().toLowerCase() === normalizedName
+        && String(item?.source ?? "").trim().toLowerCase() === normalizedSource
+      ) ?? null;
+    }
+    if (!matchedItem && normalizedName) {
+      matchedItem = catalogsItems.find((item) => String(item?.name ?? "").trim().toLowerCase() === normalizedName) ?? null;
+    }
+    if (!matchedItem && fallbackName && fallbackName !== normalizedName) {
+      matchedItem = catalogsItems.find((item) => String(item?.name ?? "").trim().toLowerCase() === fallbackName) ?? null;
+    }
+    if (matchedItem) {
+      openItemDetailsModal({
+        ...matchedItem,
+        name: entryName || matchedItem.name,
+        source: entrySource || matchedItem.source,
+        sourceLabel: String(entry.sourceLabel ?? matchedItem.sourceLabel ?? matchedItem.source ?? "").trim(),
+      });
+      return;
+    }
+    openItemDetailsModal({
+      ...entry,
+      type: entry.itemType ?? entry.type,
+      source: String(entry.source ?? "").trim(),
+      sourceLabel: String(entry.sourceLabel ?? entry.source ?? "").trim(),
+    });
+  }
+
   function bindBuildEvents(state) {
     clearPlayManualMenuOutsideClickHandler();
     bindCoreStatBreakdownButtons();
@@ -628,77 +721,16 @@ export function createEvents(deps) {
       editPasswordConfirmEl.addEventListener("click", confirmEditPassword);
       syncEditPasswordConfirmState();
     }
-    const raceEl = app.querySelector("#race");
-    if (raceEl) {
-      const handler = () => {
-        const selected = parseSourceAwareSelection(raceEl.value);
-        updateCharacterWithRequiredSettings(
-          state,
-          {
-            race: selected.name,
-            raceSource: selected.source,
-            // Reset stale subrace; canonical selection is reapplied by updateCharacterWithRequiredSettings.
-            subrace: "",
-            subraceSource: "",
-          },
-          { preserveUserOverrides: true }
-        );
-      };
-      raceEl.addEventListener("input", handler);
-      raceEl.addEventListener("change", handler);
-    }
-    const subraceEl = app.querySelector("#subrace");
-    if (subraceEl) {
-      const handler = () => {
-        const selected = parseSourceAwareSelection(subraceEl.value);
-        updateCharacterWithRequiredSettings(
-          state,
-          { subrace: selected.name, subraceSource: selected.source },
-          { preserveUserOverrides: true }
-        );
-      };
-      subraceEl.addEventListener("input", handler);
-      subraceEl.addEventListener("change", handler);
-    }
-    const backgroundEl = app.querySelector("#background");
-    if (backgroundEl) {
-      const handler = () => {
-        const selected = parseSourceAwareSelection(backgroundEl.value);
-        updateCharacterWithRequiredSettings(
-          state,
-          { background: selected.name, backgroundSource: selected.source },
-          { preserveUserOverrides: true }
-        );
-      };
-      backgroundEl.addEventListener("input", handler);
-      backgroundEl.addEventListener("change", handler);
-    }
-
-    const subclassSelectEl = app.querySelector("#subclass-select");
-    if (subclassSelectEl) {
-      subclassSelectEl.addEventListener("change", () => {
-        const [nameRaw = "", sourceRaw = ""] = String(subclassSelectEl.value || "").split("|");
-        const classEntry = getClassCatalogEntry(state.catalogs, state.character.class);
-        const name = nameRaw.trim();
-        const source = normalizeSourceTag(sourceRaw);
-        updateCharacterWithRequiredSettings(
-          state,
-          {
-            subclass: name,
-            classSelection: {
-              subclass: {
-                name,
-                source,
-                className: state.character.class,
-                classSource: normalizeSourceTag(classEntry?.source),
-              },
-            },
-          },
-          { preserveUserOverrides: true }
-        );
+    app.querySelectorAll("[data-open-build-picker]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const picker = String(button.dataset.openBuildPicker ?? "").trim().toLowerCase();
+        if (picker === "race") openRacePickerModal(state);
+        else if (picker === "subrace") openSubracePickerModal(state);
+        else if (picker === "background") openBackgroundPickerModal(state);
+        else if (picker === "class") openClassPickerModal(state);
+        else if (picker === "subclass") openSubclassPickerModal(state);
       });
-    }
-
+    });
     const levelEl = app.querySelector("#level");
     if (levelEl) {
       const handleLevelChange = () => {
@@ -712,25 +744,6 @@ export function createEvents(deps) {
       };
       levelEl.addEventListener("input", handleLevelChange);
       levelEl.addEventListener("change", handleLevelChange);
-    }
-
-    const classEl = app.querySelector("#class");
-    if (classEl) {
-      classEl.addEventListener("change", () => {
-        const selected = parseSourceAwareSelection(classEl.value);
-        updateCharacterWithRequiredSettings(
-          state,
-          {
-            class: selected.name,
-            classSource: selected.source,
-            subclass: "",
-            classSelection: {
-              subclass: { name: "", source: "", className: "", classSource: "" },
-            },
-          },
-          { preserveUserOverrides: true }
-        );
-      });
     }
 
     app.querySelectorAll("[data-ability]").forEach((input) => {
@@ -985,6 +998,11 @@ export function createEvents(deps) {
 
     app.querySelector("#open-spells")?.addEventListener("click", () => openSpellModal(state));
     app.querySelector("#open-items")?.addEventListener("click", () => openItemModal(state));
+    app.querySelectorAll("[data-open-item-details-index]").forEach((button) => {
+      button.addEventListener("click", () => {
+        openInventoryItemDetails(button.dataset.openItemDetailsIndex);
+      });
+    });
     app.querySelectorAll("[data-toggle-item-equipped]").forEach((button) => {
       button.addEventListener("click", () => {
         toggleInventoryItemEquipped(button.dataset.toggleItemEquipped);
@@ -1203,12 +1221,26 @@ export function createEvents(deps) {
           overlayEl.style.transform = "translate(-50%, 0)";
           return;
         }
-        const left = rect.left + rect.width / 2;
-        const top = Math.max(10, rect.top - 8);
-        overlayEl.style.left = `${Math.round(left)}px`;
-        overlayEl.style.top = `${Math.round(top)}px`;
+        const viewportWidth = Math.max(0, window.innerWidth || document.documentElement.clientWidth || 0);
+        const viewportHeight = Math.max(0, window.innerHeight || document.documentElement.clientHeight || 0);
+        const margin = 8;
+        const overlayWidth = Math.max(220, overlayEl.offsetWidth || 0);
+        const overlayHeight = Math.max(54, overlayEl.offsetHeight || 0);
+        const preferredLeft = rect.left + rect.width / 2;
+        const minCenter = margin + overlayWidth / 2;
+        const maxCenter = Math.max(minCenter, viewportWidth - margin - overlayWidth / 2);
+        const clampedLeft = Math.min(maxCenter, Math.max(minCenter, preferredLeft));
+
+        const preferredTop = rect.top - 8;
+        const canOpenAbove = preferredTop - overlayHeight >= margin;
+        const nextTop = canOpenAbove
+          ? preferredTop
+          : Math.min(viewportHeight - margin, rect.bottom + 8);
+
+        overlayEl.style.left = `${Math.round(clampedLeft)}px`;
+        overlayEl.style.top = `${Math.round(nextTop)}px`;
         overlayEl.style.bottom = "auto";
-        overlayEl.style.transform = "translate(-50%, -100%)";
+        overlayEl.style.transform = canOpenAbove ? "translate(-50%, -100%)" : "translate(-50%, 0)";
       };
 
       const hide = (delayMs = 0) => {
@@ -1600,12 +1632,26 @@ export function createEvents(deps) {
     app.querySelector("#open-custom-roll")?.addEventListener("click", () => {
       openCustomRollModal();
     });
-    app.querySelector("[data-open-class-info]")?.addEventListener("click", () => {
-      openClassDetailsModal(state);
+    app.querySelectorAll("[data-open-class-info]").forEach((button) => {
+      button.addEventListener("click", () => {
+        openClassDetailsModal(state);
+      });
     });
-    app.querySelector("[data-open-subclass-info]")?.addEventListener("click", () => {
-      openSubclassDetailsModal(state);
+    app.querySelectorAll("[data-open-subclass-info]").forEach((button) => {
+      button.addEventListener("click", () => {
+        openSubclassDetailsModal(state);
+      });
     });
+    const diceResultWrapEl = app.querySelector(".dice-result-wrap");
+    const diceHistoryPopoverEl = app.querySelector("#dice-history-popover");
+    if (diceResultWrapEl && diceHistoryPopoverEl) {
+      const updateDiceHistoryPopoverPosition = () => {
+        positionDiceHistoryPopoverWithinViewport(diceResultWrapEl, diceHistoryPopoverEl);
+      };
+      diceResultWrapEl.addEventListener("mouseenter", updateDiceHistoryPopoverPosition);
+      diceResultWrapEl.addEventListener("focusin", updateDiceHistoryPopoverPosition);
+      updateDiceHistoryPopoverPosition();
+    }
     const manualMenuEl = app.querySelector(".play-manual-menu");
     const characterLogMenuEl = app.querySelector(".play-character-log-menu");
     if (manualMenuEl) {
@@ -1625,6 +1671,13 @@ export function createEvents(deps) {
         if (event.key !== "Escape") return;
         manualMenuEl.removeAttribute("open");
       });
+      const manualLinksEl = manualMenuEl.querySelector(".play-manual-links");
+      if (manualLinksEl) {
+        manualMenuEl.addEventListener("toggle", () => {
+          if (!manualMenuEl.hasAttribute("open")) return;
+          positionFloatingPanelWithinViewport(manualMenuEl, manualLinksEl);
+        });
+      }
       if (characterLogMenuEl) {
         manualMenuEl.addEventListener("toggle", () => {
           if (!manualMenuEl.hasAttribute("open")) return;
@@ -1644,6 +1697,13 @@ export function createEvents(deps) {
         if (event.key !== "Escape") return;
         characterLogMenuEl.removeAttribute("open");
       });
+      const characterLogPanelEl = characterLogMenuEl.querySelector(".play-character-log-panel");
+      if (characterLogPanelEl) {
+        characterLogMenuEl.addEventListener("toggle", () => {
+          if (!characterLogMenuEl.hasAttribute("open")) return;
+          positionFloatingPanelWithinViewport(characterLogMenuEl, characterLogPanelEl);
+        });
+      }
       if (manualMenuEl) {
         characterLogMenuEl.addEventListener("toggle", () => {
           if (!characterLogMenuEl.hasAttribute("open")) return;
@@ -1679,6 +1739,47 @@ export function createEvents(deps) {
     });
     wireOpenDetailControl("[data-open-species-trait]", (control) => control.dataset.openSpeciesTrait, (traitName) => {
       openSpeciesTraitDetailsModal(state, traitName);
+    });
+    const normalizeFeatureLookupToken = (value) =>
+      String(value ?? "")
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, " ")
+        .replace(/[^\p{L}\p{N}\s]/gu, "");
+    const resolveFeatureFromClassTableEffect = (snapshot, effectId) => {
+      const normalizedEffectId = String(effectId ?? "").trim();
+      if (!normalizedEffectId) return null;
+      const classTableEffects = Array.isArray(snapshot?.character?.progression?.classTableEffects)
+        ? snapshot.character.progression.classTableEffects
+        : [];
+      const effect = classTableEffects.find((entry) => String(entry?.id ?? "").trim() === normalizedEffectId);
+      if (!effect) return null;
+      const unlockedFeatures = Array.isArray(snapshot?.character?.progression?.unlockedFeatures)
+        ? snapshot.character.progression.unlockedFeatures
+        : [];
+      const effectLabelToken = normalizeFeatureLookupToken(effect?.label);
+      const effectClassToken = normalizeFeatureLookupToken(effect?.className);
+      if (!effectLabelToken) return null;
+      const exactMatch = unlockedFeatures.find((feature) => {
+        if (effectClassToken && normalizeFeatureLookupToken(feature?.className) !== effectClassToken) return false;
+        return normalizeFeatureLookupToken(feature?.name) === effectLabelToken;
+      });
+      if (exactMatch) return exactMatch;
+      return unlockedFeatures.find((feature) => {
+        if (effectClassToken && normalizeFeatureLookupToken(feature?.className) !== effectClassToken) return false;
+        const featureNameToken = normalizeFeatureLookupToken(feature?.name);
+        if (!featureNameToken) return false;
+        return featureNameToken.includes(effectLabelToken) || effectLabelToken.includes(featureNameToken);
+      }) ?? null;
+    };
+    wireOpenDetailControl("[data-open-class-table-effect]", (control) => control.dataset.openClassTableEffect, (effectId) => {
+      const latestState = store.getState();
+      const matchedFeature = resolveFeatureFromClassTableEffect(latestState, effectId);
+      if (matchedFeature?.id) {
+        openFeatureDetailsModal(latestState, matchedFeature.id);
+        return;
+      }
+      openClassDetailsModal(latestState);
     });
     const getFeatureUseMetaMap = (playState) =>
       playState.featureUseMeta && typeof playState.featureUseMeta === "object" && !Array.isArray(playState.featureUseMeta)
@@ -1864,7 +1965,8 @@ export function createEvents(deps) {
       });
     });
     app.querySelectorAll("[data-class-table-roll]").forEach((button) => {
-      button.addEventListener("click", () => {
+      button.addEventListener("click", (event) => {
+        event.stopPropagation();
         const notation = extractSimpleNotation(button.dataset.classTableRoll);
         if (!notation) {
           setDiceResult("Class table effect: invalid dice notation.", true);
@@ -2457,6 +2559,11 @@ export function createEvents(deps) {
     });
 
     app.querySelector("#play-open-items")?.addEventListener("click", () => openItemModal(state));
+    app.querySelectorAll("[data-open-item-details-index]").forEach((button) => {
+      button.addEventListener("click", () => {
+        openInventoryItemDetails(button.dataset.openItemDetailsIndex);
+      });
+    });
     app.querySelectorAll("[data-toggle-item-equipped]").forEach((button) => {
       button.addEventListener("click", () => {
         toggleInventoryItemEquipped(button.dataset.toggleItemEquipped);

@@ -129,7 +129,9 @@ export function createAutoGrantedSpellRules({
   }
 
   function classUsesFullPreparedSpellList(classEntry) {
-    if (!catalogLookupDomain.isRecordObject(classEntry) || !classEntry.preparedSpells) return false;
+    const hasPreparedRules = Boolean(classEntry?.preparedSpells)
+      || (Array.isArray(classEntry?.preparedSpellsProgression) && classEntry.preparedSpellsProgression.length > 0);
+    if (!catalogLookupDomain.isRecordObject(classEntry) || !hasPreparedRules) return false;
     const classKey = getClassKey(classEntry.name);
     if (!FULL_LIST_PREPARED_CASTER_KEYS.has(classKey)) return false;
     if (Array.isArray(classEntry.spellsKnownProgression) && classEntry.spellsKnownProgression.length) return false;

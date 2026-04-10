@@ -5,8 +5,49 @@ export function createPreparedSpellRules({
   normalizeAbilityKey,
   getSpellByName,
 }) {
+  function getClassEntry(catalogs, character) {
+    const preferredSources =
+      typeof catalogLookupDomain.getPreferredSourceOrder === "function"
+        ? catalogLookupDomain.getPreferredSourceOrder(character)
+        : [];
+    return catalogLookupDomain.getClassCatalogEntry(
+      catalogs,
+      character?.class,
+      character?.classSource,
+      preferredSources
+    );
+  }
+
+  function classHasPreparedSpellRules(classEntry) {
+    return Boolean(classEntry?.preparedSpells)
+      || (Array.isArray(classEntry?.preparedSpellsProgression) && classEntry.preparedSpellsProgression.length > 0);
+  }
+
+  function getPreparedSpellLimitFromProgression(classEntry, classLevel) {
+    if (!Array.isArray(classEntry?.preparedSpellsProgression) || !classEntry.preparedSpellsProgression.length) return Number.NaN;
+    const index = Math.max(0, Math.min(classEntry.preparedSpellsProgression.length - 1, Math.floor(toNumber(classLevel, 1)) - 1));
+    return toNumber(classEntry.preparedSpellsProgression[index], Number.NaN);
+  }
+
+  function getPreparedSpellLimitFromFormula(preparedSpellsFormula, classLevel, abilityMod) {
+    if (typeof preparedSpellsFormula !== "string") return Number.NaN;
+    const expression = preparedSpellsFormula
+      .replace(/<\$level\$>/gi, String(classLevel))
+      .replace(/<\$[a-z]{3}_mod\$>/gi, String(abilityMod))
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!expression || !/^[0-9+\-*/().\s]+$/.test(expression)) return Number.NaN;
+    try {
+      const raw = Function(`"use strict"; return (${expression});`)();
+      if (!Number.isFinite(raw)) return Number.NaN;
+      return Math.floor(toNumber(raw, Number.NaN));
+    } catch {
+      return Number.NaN;
+    }
+  }
+
   function getClassSpellcastingAbility(catalogs, character) {
-    const classEntry = catalogLookupDomain.getClassCatalogEntry(catalogs, character?.class);
+    const classEntry = getClassEntry(catalogs, character);
     if (!classEntry) return null;
     const raw = classEntry.spellcastingAbility;
     if (typeof raw === "string") return normalizeAbilityKey(raw);
@@ -21,8 +62,7 @@ export function createPreparedSpellRules({
   }
 
   function doesClassUsePreparedSpells(catalogs, character) {
-    const classEntry = catalogLookupDomain.getClassCatalogEntry(catalogs, character?.class);
-    return Boolean(classEntry?.preparedSpells);
+    return classHasPreparedSpellRules(getClassEntry(catalogs, character));
   }
 
   function getPreparedSpellcastingAbility(catalogs, character) {
@@ -31,11 +71,17 @@ export function createPreparedSpellRules({
   }
 
   function getPreparedSpellLimit(state) {
-    if (!doesClassUsePreparedSpells(state?.catalogs, state?.character)) return Number.POSITIVE_INFINITY;
+    const classEntry = getClassEntry(state?.catalogs, state?.character);
+    if (!classHasPreparedSpellRules(classEntry)) return Number.POSITIVE_INFINITY;
     const ability = getPreparedSpellcastingAbility(state?.catalogs, state?.character);
     const { primaryLevel } = spellcastingRules.getCharacterClassLevels(state?.character);
+    const classLevel = Math.max(1, toNumber(primaryLevel, 1));
     const abilityMod = ability ? toNumber(state?.derived?.mods?.[ability], 0) : 0;
-    return Math.max(1, primaryLevel + abilityMod);
+    const progressionLimit = getPreparedSpellLimitFromProgression(classEntry, classLevel);
+    if (Number.isFinite(progressionLimit)) return Math.max(1, progressionLimit);
+    const formulaLimit = getPreparedSpellLimitFromFormula(classEntry?.preparedSpells, classLevel, abilityMod);
+    if (Number.isFinite(formulaLimit)) return Math.max(1, formulaLimit);
+    return Math.max(1, classLevel + abilityMod);
   }
 
   function isSpellAlwaysPrepared(state, spellName, playOverride = null) {

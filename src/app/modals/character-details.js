@@ -19,6 +19,26 @@ export function createCharacterDetailsModals({
   getPreferredSourceOrder,
   getEffectiveRaceEntry,
 }) {
+  function findCatalogEntryByNameWithSelectedSourcePreference(entries, selectedName, selectedSource = "", preferredSources = []) {
+    if (!Array.isArray(entries)) return null;
+    const normalizedName = String(selectedName ?? "").trim().toLowerCase();
+    if (!normalizedName) return null;
+    const matches = entries.filter((entry) => String(entry?.name ?? "").trim().toLowerCase() === normalizedName);
+    if (!matches.length) return null;
+    if (matches.length === 1) return matches[0];
+    const normalizedSelectedSource = normalizeSourceTag(selectedSource);
+    if (normalizedSelectedSource) {
+      const explicitMatch = matches.find((entry) => normalizeSourceTag(entry?.source) === normalizedSelectedSource);
+      if (explicitMatch) return explicitMatch;
+    }
+    const sourceOrder = (Array.isArray(preferredSources) ? preferredSources : []).map((source) => normalizeSourceTag(source)).filter(Boolean);
+    for (const source of sourceOrder) {
+      const sourceMatch = matches.find((entry) => normalizeSourceTag(entry?.source) === source);
+      if (sourceMatch) return sourceMatch;
+    }
+    return matches[0];
+  }
+
   function bindInlineDiceRoll(close, label) {
     document.querySelectorAll("[data-spell-roll]").forEach((button) => {
       button.addEventListener("click", () => {
@@ -42,7 +62,33 @@ export function createCharacterDetailsModals({
   }
 
   function openFeatureDetailsModal(state, featureId) {
-    const feature = (state.character?.progression?.unlockedFeatures ?? []).find((it) => it.id === featureId);
+    const unlockedFeatures = Array.isArray(state.character?.progression?.unlockedFeatures)
+      ? state.character.progression.unlockedFeatures
+      : [];
+    const featureRef = String(featureId ?? "").trim();
+    if (!featureRef) return;
+    let feature = unlockedFeatures.find((it) => String(it?.id ?? "").trim() === featureRef);
+    if (!feature && featureRef.startsWith("name:")) {
+      const rawParts = featureRef.split("|");
+      const tokenMap = new Map(
+        rawParts.map((part) => {
+          const [key, ...valueParts] = part.split(":");
+          return [String(key ?? "").trim(), String(valueParts.join(":") ?? "").trim()];
+        })
+      );
+      const nameToken = String(tokenMap.get("name") ?? "").trim().toLowerCase();
+      const classToken = String(tokenMap.get("class") ?? "").trim().toLowerCase();
+      const subclassToken = String(tokenMap.get("subclass") ?? "").trim().toLowerCase();
+      const levelToken = toNumber(tokenMap.get("level"), NaN);
+      feature = unlockedFeatures.find((entry) => {
+        const entryName = String(entry?.name ?? "").trim().toLowerCase();
+        if (!entryName || entryName !== nameToken) return false;
+        if (classToken && String(entry?.className ?? "").trim().toLowerCase() !== classToken) return false;
+        if (subclassToken && String(entry?.subclassName ?? "").trim().toLowerCase() !== subclassToken) return false;
+        if (Number.isFinite(levelToken) && toNumber(entry?.level, NaN) !== levelToken) return false;
+        return true;
+      });
+    }
     if (!feature) return;
     const detail = resolveFeatureEntryFromCatalogs(state.catalogs, feature);
     const lines = getRuleDescriptionLines(detail);
@@ -152,6 +198,132 @@ export function createCharacterDetailsModals({
       actions: [{ label: "Close", secondary: true, onClick: (done) => done() }],
     });
     bindInlineDiceRoll(close, selectedTraitName);
+  }
+
+  function openRaceDetailsModal(state) {
+    const raceName = String(state.character?.race ?? "").trim();
+    if (!raceName) {
+      setDiceResult("Race details unavailable: no race selected.", true);
+      return;
+    }
+    const sourceOrder = getPreferredSourceOrder(state.character);
+    const raceEntry = findCatalogEntryByNameWithSelectedSourcePreference(
+      state.catalogs?.races,
+      raceName,
+      state.character?.raceSource,
+      sourceOrder
+    );
+    if (!raceEntry) {
+      setDiceResult(`Race details unavailable: ${raceName}`, true);
+      return;
+    }
+    const lines = getRuleDescriptionLines(raceEntry);
+    const bodyHtml = linesToHtml(lines, "No description is available for this species.");
+    const sizeText = Array.isArray(raceEntry?.size)
+      ? raceEntry.size.map((entry) => toTitleCase(String(entry ?? ""))).filter(Boolean).join(", ")
+      : toTitleCase(String(raceEntry?.size ?? "").trim());
+    const speedText = toNumber(raceEntry?.speed, NaN);
+    const metaRows = [
+      { label: "Type", value: "Species" },
+      { label: "Source", value: raceEntry?.sourceLabel ?? raceEntry?.source ?? "" },
+      { label: "Size", value: sizeText },
+      { label: "Speed", value: Number.isFinite(speedText) ? `${speedText} ft` : "" },
+    ].filter((row) => row.value);
+    const close = openModal({
+      title: `${raceEntry.name} Details`,
+      bodyHtml: `
+        <div class="spell-meta-grid">
+          ${metaRows.map((row) => `<div><strong>${esc(row.label)}:</strong> ${esc(row.value)}</div>`).join("")}
+        </div>
+        <div class="spell-description">${bodyHtml}</div>
+      `,
+      actions: [{ label: "Close", secondary: true, onClick: (done) => done() }],
+    });
+    bindInlineDiceRoll(close, raceEntry.name);
+  }
+
+  function openSubraceDetailsModal(state) {
+    const subraceName = String(state.character?.subrace ?? "").trim();
+    if (!subraceName) {
+      setDiceResult("Subrace details unavailable: no subrace selected.", true);
+      return;
+    }
+    const sourceOrder = getPreferredSourceOrder(state.character);
+    const raceEntry = findCatalogEntryByNameWithSelectedSourcePreference(
+      state.catalogs?.races,
+      state.character?.race,
+      state.character?.raceSource,
+      sourceOrder
+    );
+    const raceName = String(raceEntry?.name ?? state.character?.race ?? "").trim().toLowerCase();
+    const subracePool = (Array.isArray(state.catalogs?.subraces) ? state.catalogs.subraces : []).filter((entry) => {
+      if (!raceName) return true;
+      return String(entry?.raceName ?? "").trim().toLowerCase() === raceName;
+    });
+    const subraceEntry = findCatalogEntryByNameWithSelectedSourcePreference(
+      subracePool,
+      subraceName,
+      state.character?.subraceSource,
+      sourceOrder
+    );
+    if (!subraceEntry) {
+      setDiceResult(`Subrace details unavailable: ${subraceName}`, true);
+      return;
+    }
+    const lines = getRuleDescriptionLines(subraceEntry);
+    const bodyHtml = linesToHtml(lines, "No description is available for this subrace.");
+    const metaRows = [
+      { label: "Type", value: "Subrace" },
+      { label: "Source", value: subraceEntry?.sourceLabel ?? subraceEntry?.source ?? "" },
+      { label: "Base Species", value: subraceEntry?.raceName ?? raceEntry?.name ?? "" },
+    ].filter((row) => row.value);
+    const close = openModal({
+      title: `${subraceEntry.name} Details`,
+      bodyHtml: `
+        <div class="spell-meta-grid">
+          ${metaRows.map((row) => `<div><strong>${esc(row.label)}:</strong> ${esc(row.value)}</div>`).join("")}
+        </div>
+        <div class="spell-description">${bodyHtml}</div>
+      `,
+      actions: [{ label: "Close", secondary: true, onClick: (done) => done() }],
+    });
+    bindInlineDiceRoll(close, subraceEntry.name);
+  }
+
+  function openBackgroundDetailsModal(state) {
+    const backgroundName = String(state.character?.background ?? "").trim();
+    if (!backgroundName) {
+      setDiceResult("Background details unavailable: no background selected.", true);
+      return;
+    }
+    const sourceOrder = getPreferredSourceOrder(state.character);
+    const backgroundEntry = findCatalogEntryByNameWithSelectedSourcePreference(
+      state.catalogs?.backgrounds,
+      backgroundName,
+      state.character?.backgroundSource,
+      sourceOrder
+    );
+    if (!backgroundEntry) {
+      setDiceResult(`Background details unavailable: ${backgroundName}`, true);
+      return;
+    }
+    const lines = getRuleDescriptionLines(backgroundEntry);
+    const bodyHtml = linesToHtml(lines, "No description is available for this background.");
+    const metaRows = [
+      { label: "Type", value: "Background" },
+      { label: "Source", value: backgroundEntry?.sourceLabel ?? backgroundEntry?.source ?? "" },
+    ].filter((row) => row.value);
+    const close = openModal({
+      title: `${backgroundEntry.name} Details`,
+      bodyHtml: `
+        <div class="spell-meta-grid">
+          ${metaRows.map((row) => `<div><strong>${esc(row.label)}:</strong> ${esc(row.value)}</div>`).join("")}
+        </div>
+        <div class="spell-description">${bodyHtml}</div>
+      `,
+      actions: [{ label: "Close", secondary: true, onClick: (done) => done() }],
+    });
+    bindInlineDiceRoll(close, backgroundEntry.name);
   }
 
   function normalizeAbilityLabel(value) {
@@ -419,6 +591,9 @@ export function createCharacterDetailsModals({
   return {
     openClassDetailsModal,
     openSubclassDetailsModal,
+    openRaceDetailsModal,
+    openSubraceDetailsModal,
+    openBackgroundDetailsModal,
     openFeatureDetailsModal,
     openFeatDetailsModal,
     openOptionalFeatureDetailsModal,

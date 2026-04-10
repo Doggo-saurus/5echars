@@ -78,6 +78,46 @@ export function createPersistence(deps) {
     }
     return patch;
   };
+  const readFiniteNumber = (value) => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  };
+  const deriveInitiativeFromState = (state) => {
+    const dexMod = readFiniteNumber(state?.derived?.mods?.dex);
+    const bonus = readFiniteNumber(state?.character?.play?.initiativeBonus) ?? 0;
+    if (dexMod == null) return null;
+    return dexMod + bonus;
+  };
+  const deriveSpeedFromCharacter = (character) => {
+    const direct = readFiniteNumber(character?.play?.speed);
+    if (direct != null) return direct;
+    const topLevel = readFiniteNumber(character?.speed);
+    if (topLevel != null) return topLevel;
+    const walk = readFiniteNumber(character?.speed?.walk);
+    if (walk != null) return walk;
+    return null;
+  };
+  const withPartySnapshot = (state, character) => {
+    const nextCharacter = isPlainObject(character) ? character : {};
+    const derived = state?.derived ?? {};
+    const initiative = deriveInitiativeFromState(state);
+    const speed = deriveSpeedFromCharacter(nextCharacter);
+    const snapshot = {
+      version: 1,
+      ac: readFiniteNumber(derived?.ac),
+      hp: readFiniteNumber(derived?.hp),
+      proficiencyBonus: readFiniteNumber(derived?.proficiencyBonus),
+      dexMod: readFiniteNumber(derived?.mods?.dex),
+      wisMod: readFiniteNumber(derived?.mods?.wis),
+      intMod: readFiniteNumber(derived?.mods?.int),
+      passivePerception: readFiniteNumber(derived?.passivePerception),
+      passiveInsight: readFiniteNumber(derived?.passiveInsight),
+      passiveInvestigation: readFiniteNumber(derived?.passiveInvestigation),
+      initiative,
+      speed,
+    };
+    return { ...nextCharacter, partySnapshot: snapshot };
+  };
   let lastSyncedCharacter = cloneCharacter(persistedState?.character);
 
   const isInvalidEditPasswordError = (error) =>
@@ -159,7 +199,8 @@ export function createPersistence(deps) {
     await flushPendingSaves();
     const existingId = isUuid(state.character?.id) ? state.character.id : null;
     const nextVersion = Math.max(appState.localCharacterVersion, getCharacterVersion(state.character)) + 1;
-    const versionedCharacter = withSyncMeta(withCharacterChangeLog(state.character), nextVersion);
+    const bakedCharacter = withPartySnapshot(state, state.character);
+    const versionedCharacter = withSyncMeta(withCharacterChangeLog(bakedCharacter), nextVersion);
     if (existingId) {
       const payload = await saveCharacter(existingId, versionedCharacter);
       await applyRemoteCharacterPayload(payload, existingId);
@@ -192,7 +233,8 @@ export function createPersistence(deps) {
           await flushPendingSaves();
           const latestState = store.getState();
           const nextVersion = Math.max(appState.localCharacterVersion, getCharacterVersion(latestState.character)) + 1;
-          const versionedCharacter = withSyncMeta(withCharacterChangeLog(latestState.character), nextVersion);
+          const bakedCharacter = withPartySnapshot(latestState, latestState.character);
+          const versionedCharacter = withSyncMeta(withCharacterChangeLog(bakedCharacter), nextVersion);
           const canUsePatch = typeof patchCharacter === "function" && latestState.mode === "play";
           const patchCharacterPayload = canUsePatch ? buildMergePatch(lastSyncedCharacter, versionedCharacter) : null;
           if (canUsePatch && Object.keys(patchCharacterPayload).length === 0) {

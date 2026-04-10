@@ -514,8 +514,78 @@ export function createProficiencyRules({
     return activeSkills;
   }
 
+  function collectLinkedAbilityChoicesFromEntity(entry, sourceKey, play) {
+    const selectedAbilities = [];
+    const abilityOptions = Array.isArray(entry?.ability) ? entry.ability : [];
+    const optionIndex = abilityOptions.findIndex((option) => isRecordObject(option));
+    const selectedOption = optionIndex >= 0 ? abilityOptions[optionIndex] : null;
+    if (!selectedOption) return selectedAbilities;
+    const chooseOptions = Array.isArray(selectedOption?.choose) ? selectedOption.choose : [selectedOption?.choose];
+    let choiceIndex = 0;
+    chooseOptions.forEach((choice) => {
+      if (!isRecordObject(choice)) return;
+      const weighted = isRecordObject(choice?.weighted) ? choice.weighted : null;
+      const fromRaw = Array.isArray(weighted?.from) ? weighted.from : Array.isArray(choice?.from) ? choice.from : [];
+      const from = fromRaw
+        .map((value) => normalizeAbilityKey(value))
+        .filter(Boolean)
+        .filter((ability, index, list) => list.indexOf(ability) === index);
+      if (!from.length) {
+        choiceIndex += 1;
+        return;
+      }
+      const count = Math.max(1, Math.min(from.length, toNumber(choice?.count ?? weighted?.count, 1)));
+      const choiceId = `a:${optionIndex}:choose:${choiceIndex}`;
+      getStoredAutoChoiceSelectedValues(play, sourceKey, choiceId, from, count, {
+        allowDuplicates: false,
+        preserveStoredOrder: true,
+      }).forEach((ability) => selectedAbilities.push(ability));
+      choiceIndex += 1;
+    });
+    return selectedAbilities.filter((ability, index, list) => list.indexOf(ability) === index);
+  }
+
+  function collectSaveProficienciesFromEntity(entry, sourceKey, play) {
+    const activeSaves = new Set();
+    const saveOptions = Array.isArray(entry?.savingThrowProficiencies)
+      ? entry.savingThrowProficiencies
+      : Array.isArray(entry?.saveProficiencies)
+        ? entry.saveProficiencies
+        : [];
+    const optionIndex = saveOptions.findIndex((option) => isRecordObject(option));
+    const selected = optionIndex >= 0 ? saveOptions[optionIndex] : null;
+    if (!selected) return activeSaves;
+    Object.entries(selected).forEach(([key, value]) => {
+      const ability = normalizeAbilityKey(key);
+      if (!ability || value !== true) return;
+      activeSaves.add(ability);
+    });
+    const choose = isRecordObject(selected?.choose) ? selected.choose : null;
+    if (!choose) return activeSaves;
+    const from = (Array.isArray(choose?.from) ? choose.from : [])
+      .map((value) => normalizeAbilityKey(value))
+      .filter(Boolean)
+      .filter((ability, index, list) => list.indexOf(ability) === index);
+    if (!from.length) return activeSaves;
+    const count = Math.max(1, Math.min(from.length, toNumber(choose?.count, 1)));
+    const choiceId = `sv:${optionIndex}:choose`;
+    const fromSet = new Set(from);
+    let selectedFromChoose = getStoredAutoChoiceSelectedValues(play, sourceKey, choiceId, from, count, { allowFallback: false });
+    if (!selectedFromChoose.length) {
+      selectedFromChoose = collectLinkedAbilityChoicesFromEntity(entry, sourceKey, play)
+        .filter((ability) => fromSet.has(ability))
+        .slice(0, count);
+    }
+    if (!selectedFromChoose.length) {
+      selectedFromChoose = getStoredAutoChoiceSelectedValues(play, sourceKey, choiceId, from, count);
+    }
+    selectedFromChoose.forEach((ability) => activeSaves.add(ability));
+    return activeSaves;
+  }
+
   function getAutomaticSaveProficiencies(catalogs, character) {
     const auto = { ...getClassSaveProficiencies(catalogs, character?.class) };
+    const play = isRecordObject(character?.play) ? character.play : {};
     const sourceOrder = getPreferredSourceOrder(character);
     const raceEntry = getEffectiveRaceEntry(catalogs, character, sourceOrder);
     const backgroundEntry = findCatalogEntryByNameWithSelectedSourcePreference(
@@ -525,13 +595,14 @@ export function createProficiencyRules({
       sourceOrder
     );
     const { featEntries, optionalFeatureEntries } = getSelectedFeatAndOptionalFeatureEntries(catalogs, character, sourceOrder);
-    [raceEntry, backgroundEntry, ...featEntries.map((item) => item.entry), ...optionalFeatureEntries.map((item) => item.entry)].forEach((entry) => {
-      const saveOptions = Array.isArray(entry?.saveProficiencies) ? entry.saveProficiencies : [];
-      const selected = saveOptions.find((option) => isRecordObject(option)) ?? null;
-      if (!selected) return;
-      Object.entries(selected).forEach(([key, value]) => {
-        const ability = normalizeAbilityKey(key);
-        if (!ability || value !== true) return;
+    const saveSources = [
+      { entry: raceEntry, sourceKey: "race" },
+      { entry: backgroundEntry, sourceKey: "background" },
+      ...featEntries,
+      ...optionalFeatureEntries,
+    ];
+    saveSources.forEach(({ entry, sourceKey }) => {
+      collectSaveProficienciesFromEntity(entry, sourceKey, play).forEach((ability) => {
         auto[ability] = true;
       });
     });

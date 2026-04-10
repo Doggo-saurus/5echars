@@ -21,6 +21,16 @@ export function createPickers(deps) {
     renderTextWithInlineDiceButtons,
     rollVisualNotation,
     setDiceResult,
+    normalizeSourceTag,
+    getPreferredSourceOrder,
+    getSubraceCatalogEntries,
+    getSubclassSelectOptions,
+    getClassCatalogEntry,
+    openClassDetailsModal,
+    openSubclassDetailsModal,
+    openRaceDetailsModal,
+    openSubraceDetailsModal,
+    openBackgroundDetailsModal,
   } = deps;
 
   function openSpellDetailsModal(state, spellName) {
@@ -345,6 +355,43 @@ export function createPickers(deps) {
       el.addEventListener("change", renderSpellRows);
     });
     renderSpellRows();
+  }
+
+  function openItemDetailsModal(item) {
+    if (!item || typeof item !== "object") return;
+    const descriptionLines = getRuleDescriptionLines(item);
+    const descriptionHtml = descriptionLines.length
+      ? descriptionLines
+          .map((line) => {
+            const body = renderTextWithInlineDiceButtons(line);
+            return `<p>${body}</p>`;
+          })
+          .join("")
+      : "<p class='muted'>No description available for this item.</p>";
+    const metaRows = [
+      { label: "Source", value: item.sourceLabel ?? item.source },
+      { label: "Type", value: item.type },
+      { label: "Rarity", value: item.rarity },
+      { label: "Requires Attunement", value: item.reqAttune ? "Yes" : "" },
+    ].filter((row) => String(row.value ?? "").trim());
+    openModal({
+      title: String(item.name ?? "Item"),
+      bodyHtml: `
+      <div class="spell-meta-grid">
+        ${metaRows.map((row) => `<div><strong>${esc(row.label)}:</strong> ${esc(row.value)}</div>`).join("")}
+      </div>
+      <div class="spell-description">${descriptionHtml}</div>
+    `,
+      actions: [{ label: "Close", secondary: true, onClick: (done) => done() }],
+    });
+
+    document.querySelectorAll("[data-spell-roll]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const notation = button.dataset.spellRoll;
+        if (!notation) return;
+        rollVisualNotation(String(item.name ?? "Item"), notation);
+      });
+    });
   }
 
   function openItemModal(state) {
@@ -779,7 +826,7 @@ export function createPickers(deps) {
                   return `
                 <div class="option-row">
                   <div>
-                    <strong>${esc(item.name)}</strong>
+                    <button type="button" class="spell-picker-name-btn" data-item-view="${idx}">${esc(item.name)}</button>
                     <div class="muted">${esc(item.sourceLabel ?? item.source)}</div>
                   </div>
                   <div class="option-row-actions">
@@ -809,6 +856,15 @@ export function createPickers(deps) {
             closeVariantPicker();
           });
         });
+
+        baseListEl.querySelectorAll("[data-item-view]").forEach((button) => {
+          button.addEventListener("click", () => {
+            const idx = toNumber(button.dataset.itemView, -1);
+            const item = filteredVariantCandidates[idx];
+            if (!item) return;
+            openItemDetailsModal(item);
+          });
+        });
       }
 
       baseSearchEl?.addEventListener("input", renderVariantBaseRows);
@@ -833,7 +889,7 @@ export function createPickers(deps) {
                 return `
             <div class="option-row">
               <div>
-                <strong>${esc(item.name)}</strong>
+                <button type="button" class="spell-picker-name-btn" data-item-view="${idx}">${esc(item.name)}</button>
                 <div class="muted">${esc(item.sourceLabel ?? item.source)}</div>
               </div>
               <div class="option-row-actions">
@@ -865,6 +921,15 @@ export function createPickers(deps) {
           if (!inventoryEntry) return;
           store.addItem(inventoryEntry);
           close();
+        });
+      });
+
+      listEl.querySelectorAll("[data-item-view]").forEach((button) => {
+        button.addEventListener("click", () => {
+          const idx = toNumber(button.dataset.itemView, -1);
+          const item = filteredItems[idx];
+          if (!item) return;
+          openItemDetailsModal(item);
         });
       });
     }
@@ -1158,5 +1223,284 @@ export function createPickers(deps) {
     renderOptionalFeatureRows();
   }
 
-  return { openSpellDetailsModal, openSpellModal, openItemModal, openFeatModal, openOptionalFeatureModal };
+  function openBuildEntityPickerModal(state, config) {
+    const title = String(config?.title ?? "Choose Option").trim();
+    const searchPlaceholder = String(config?.searchPlaceholder ?? "Search...").trim();
+    const entries = (Array.isArray(config?.getEntries?.(state)) ? config.getEntries(state) : [])
+      .map((entry) => ({
+        name: String(entry?.name ?? "").trim(),
+        source: String(entry?.source ?? "").trim(),
+        sourceLabel: String(entry?.sourceLabel ?? entry?.source ?? "").trim(),
+        rawEntry: entry,
+      }))
+      .filter((entry) => entry.name);
+    if (!entries.length) {
+      setDiceResult(`No options available for ${title.toLowerCase()}.`, true);
+      return;
+    }
+    const selected = config?.getSelected?.(state) ?? {};
+    const selectedName = String(selected?.name ?? "").trim().toLowerCase();
+    const selectedSource = normalizeSourceTag(selected?.source);
+    const sourceOptions = [...new Set(entries.map((entry) => entry.source).filter(Boolean))].sort();
+    const close = openModal({
+      title,
+      bodyHtml: `
+      <div class="row">
+        <label>Search
+          <input id="build-picker-search" placeholder="${esc(searchPlaceholder)}">
+        </label>
+        <label>Source
+          <select id="build-picker-source">
+            <option value="">All sources</option>
+            ${sourceOptions.map((src) => `<option value="${esc(src)}">${esc(src)}</option>`).join("")}
+          </select>
+        </label>
+      </div>
+      <div class="option-list" id="build-picker-list"></div>
+    `,
+      actions: [{ label: "Close", secondary: true, onClick: (done) => done() }],
+    });
+    const searchEl = document.getElementById("build-picker-search");
+    const sourceEl = document.getElementById("build-picker-source");
+    const listEl = document.getElementById("build-picker-list");
+    const renderRows = () => {
+      const searchValue = String(searchEl?.value ?? "").trim();
+      const sourceValue = String(sourceEl?.value ?? "").trim();
+      const filtered = entries
+        .filter((entry) => matchesSearchQuery(searchValue, entry.name, entry.sourceLabel, entry.source))
+        .filter((entry) => !sourceValue || entry.source === sourceValue)
+        .slice(0, 250);
+      listEl.innerHTML = filtered.length
+        ? filtered
+            .map((entry) => {
+              const isSelected = entry.name.toLowerCase() === selectedName && normalizeSourceTag(entry.source) === selectedSource;
+              const detailDisabled = config?.onView ? "" : "disabled";
+              return `
+              <div class="option-row">
+                <div>
+                  <strong>${esc(entry.name)}</strong>
+                  <div class="muted">${esc(entry.sourceLabel || entry.source || "Unknown Source")}</div>
+                </div>
+                <div class="option-row-actions">
+                  <button type="button" class="btn secondary" data-build-picker-view="${esc(entry.name)}|${esc(entry.source)}" ${detailDisabled}>View</button>
+                  <button type="button" class="btn secondary" data-build-picker-select="${esc(entry.name)}|${esc(entry.source)}">
+                    ${isSelected ? "Selected" : "Select"}
+                  </button>
+                </div>
+              </div>
+            `;
+            })
+            .join("")
+        : "<p class='muted'>No options match this filter.</p>";
+      listEl.querySelectorAll("[data-build-picker-select]").forEach((button) => {
+        button.addEventListener("click", () => {
+          const [name = "", source = ""] = String(button.dataset.buildPickerSelect ?? "").split("|");
+          const entry = filtered.find((it) => it.name === name && it.source === source);
+          if (!entry) return;
+          config?.onSelect?.(store.getState(), entry);
+          close();
+        });
+      });
+      listEl.querySelectorAll("[data-build-picker-view]").forEach((button) => {
+        button.addEventListener("click", () => {
+          const [name = "", source = ""] = String(button.dataset.buildPickerView ?? "").split("|");
+          const entry = filtered.find((it) => it.name === name && it.source === source);
+          if (!entry) return;
+          config?.onView?.(store.getState(), entry);
+        });
+      });
+    };
+    [searchEl, sourceEl].forEach((el) => {
+      el?.addEventListener("input", renderRows);
+      el?.addEventListener("change", renderRows);
+    });
+    renderRows();
+  }
+
+  function openRacePickerModal(state) {
+    openBuildEntityPickerModal(state, {
+      title: "Choose Race",
+      searchPlaceholder: "Search races...",
+      getEntries: (snapshot) => snapshot.catalogs?.races ?? [],
+      getSelected: (snapshot) => ({ name: snapshot.character?.race, source: snapshot.character?.raceSource }),
+      onSelect: (snapshot, entry) => {
+        updateCharacterWithRequiredSettings(
+          snapshot,
+          { race: entry.name, raceSource: entry.source, subrace: "", subraceSource: "" },
+          { preserveUserOverrides: true }
+        );
+      },
+      onView: (snapshot, entry) => {
+        openRaceDetailsModal({
+          ...snapshot,
+          character: {
+            ...snapshot.character,
+            race: entry.name,
+            raceSource: entry.source,
+          },
+        });
+      },
+    });
+  }
+
+  function openSubracePickerModal(state) {
+    const sourceOrder = getPreferredSourceOrder(state.character);
+    const raceName = String(state.character?.race ?? "").trim();
+    const raceSource = String(state.character?.raceSource ?? "").trim();
+    const subraceOptions = getSubraceCatalogEntries(state.catalogs, raceName, raceSource, sourceOrder);
+    openBuildEntityPickerModal(state, {
+      title: "Choose Subrace",
+      searchPlaceholder: "Search subraces...",
+      getEntries: () => subraceOptions,
+      getSelected: (snapshot) => ({ name: snapshot.character?.subrace, source: snapshot.character?.subraceSource }),
+      onSelect: (snapshot, entry) => {
+        updateCharacterWithRequiredSettings(
+          snapshot,
+          { subrace: entry.name, subraceSource: entry.source },
+          { preserveUserOverrides: true }
+        );
+      },
+      onView: (snapshot, entry) => {
+        const selectedRaceName = String(entry?.rawEntry?.raceName ?? snapshot.character?.race ?? "").trim();
+        openSubraceDetailsModal({
+          ...snapshot,
+          character: {
+            ...snapshot.character,
+            race: selectedRaceName,
+            subrace: entry.name,
+            subraceSource: entry.source,
+          },
+        });
+      },
+    });
+  }
+
+  function openBackgroundPickerModal(state) {
+    openBuildEntityPickerModal(state, {
+      title: "Choose Background",
+      searchPlaceholder: "Search backgrounds...",
+      getEntries: (snapshot) => snapshot.catalogs?.backgrounds ?? [],
+      getSelected: (snapshot) => ({ name: snapshot.character?.background, source: snapshot.character?.backgroundSource }),
+      onSelect: (snapshot, entry) => {
+        updateCharacterWithRequiredSettings(
+          snapshot,
+          { background: entry.name, backgroundSource: entry.source },
+          { preserveUserOverrides: true }
+        );
+      },
+      onView: (snapshot, entry) => {
+        openBackgroundDetailsModal({
+          ...snapshot,
+          character: {
+            ...snapshot.character,
+            background: entry.name,
+            backgroundSource: entry.source,
+          },
+        });
+      },
+    });
+  }
+
+  function openClassPickerModal(state) {
+    openBuildEntityPickerModal(state, {
+      title: "Choose Class",
+      searchPlaceholder: "Search classes...",
+      getEntries: (snapshot) => snapshot.catalogs?.classes ?? [],
+      getSelected: (snapshot) => ({ name: snapshot.character?.class, source: snapshot.character?.classSource }),
+      onSelect: (snapshot, entry) => {
+        updateCharacterWithRequiredSettings(
+          snapshot,
+          {
+            class: entry.name,
+            classSource: entry.source,
+            subclass: "",
+            classSelection: {
+              subclass: { name: "", source: "", className: "", classSource: "" },
+            },
+          },
+          { preserveUserOverrides: true }
+        );
+      },
+      onView: (snapshot, entry) => {
+        openClassDetailsModal({
+          ...snapshot,
+          character: {
+            ...snapshot.character,
+            class: entry.name,
+            classSource: entry.source,
+          },
+        });
+      },
+    });
+  }
+
+  function openSubclassPickerModal(state) {
+    const subclassOptions = getSubclassSelectOptions(state).map((entry) => ({
+      name: String(entry?.name ?? "").trim(),
+      source: String(entry?.source ?? "").trim(),
+      sourceLabel: String(entry?.sourceLabel ?? entry?.source ?? "").trim(),
+    }));
+    openBuildEntityPickerModal(state, {
+      title: "Choose Subclass",
+      searchPlaceholder: "Search subclasses...",
+      getEntries: () => subclassOptions,
+      getSelected: (snapshot) => ({
+        name: snapshot.character?.classSelection?.subclass?.name ?? snapshot.character?.subclass,
+        source: snapshot.character?.classSelection?.subclass?.source ?? snapshot.character?.subclassSource,
+      }),
+      onSelect: (snapshot, entry) => {
+        const classEntry = getClassCatalogEntry(snapshot.catalogs, snapshot.character.class);
+        updateCharacterWithRequiredSettings(
+          snapshot,
+          {
+            subclass: entry.name,
+            classSelection: {
+              subclass: {
+                name: entry.name,
+                source: normalizeSourceTag(entry.source),
+                className: snapshot.character.class,
+                classSource: normalizeSourceTag(classEntry?.source),
+              },
+            },
+          },
+          { preserveUserOverrides: true }
+        );
+      },
+      onView: (snapshot, entry) => {
+        const className = String(entry?.rawEntry?.className ?? snapshot.character?.class ?? "").trim();
+        const classSource = String(entry?.rawEntry?.classSource ?? snapshot.character?.classSource ?? "").trim();
+        openSubclassDetailsModal({
+          ...snapshot,
+          character: {
+            ...snapshot.character,
+            class: className,
+            classSource,
+            classSelection: {
+              ...(snapshot.character?.classSelection ?? {}),
+              subclass: {
+                name: entry.name,
+                source: entry.source,
+                className,
+                classSource,
+              },
+            },
+          },
+        });
+      },
+    });
+  }
+
+  return {
+    openSpellDetailsModal,
+    openSpellModal,
+    openItemDetailsModal,
+    openItemModal,
+    openFeatModal,
+    openOptionalFeatureModal,
+    openRacePickerModal,
+    openSubracePickerModal,
+    openBackgroundPickerModal,
+    openClassPickerModal,
+    openSubclassPickerModal,
+  };
 }

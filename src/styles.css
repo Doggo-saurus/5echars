@@ -1432,13 +1432,18 @@ button:is(
   display: flex;
   align-items: center;
   justify-content: center;
+  padding:
+    max(0.75rem, env(safe-area-inset-top))
+    max(0.5rem, env(safe-area-inset-right))
+    max(0.75rem, env(safe-area-inset-bottom))
+    max(0.5rem, env(safe-area-inset-left));
   background: rgba(0, 0, 0, 0.6);
   z-index: 40;
 }
 
 .modal {
-  width: min(900px, 95vw);
-  max-height: 90vh;
+  width: min(900px, calc(100vw - 1rem));
+  max-height: calc(100dvh - 1.5rem);
   overflow: auto;
 }
 
@@ -1542,9 +1547,11 @@ body.play-mode #dice-overlay {
 
 .dice-offscreen-panel {
   position: fixed;
-  top: 0.85rem;
-  right: 0.85rem;
-  width: min(440px, calc(100vw - 1.7rem));
+  top: max(0.85rem, env(safe-area-inset-top));
+  right: max(0.85rem, env(safe-area-inset-right));
+  width: min(440px, calc(100vw - 1rem));
+  max-height: calc(100dvh - max(1.2rem, env(safe-area-inset-top) + env(safe-area-inset-bottom)));
+  overflow: auto;
   padding: 0.65rem 0.75rem;
   border-radius: 11px;
   border: 1px solid rgba(255, 255, 255, 0.2);
@@ -1617,7 +1624,9 @@ body.play-mode #dice-overlay {
   opacity: 0;
   pointer-events: none;
   z-index: 55;
-  min-width: 220px;
+  width: min(320px, calc(100vw - 1rem));
+  min-width: min(220px, calc(100vw - 1rem));
+  max-width: calc(100vw - 1rem);
   padding: 0.55rem 0.6rem;
   border-radius: 12px;
   border: 1px solid rgba(34, 211, 238, 0.4);
@@ -1647,7 +1656,7 @@ body.play-mode #dice-overlay {
   font-size: 0.78rem;
   font-weight: 700;
   letter-spacing: 0.01em;
-  white-space: nowrap;
+  white-space: normal;
   text-align: center;
 }
 
@@ -1705,12 +1714,12 @@ body.play-mode #dice-overlay {
 }
 
 .slot-list .auto-choice-shell {
-  margin: 0.16rem 0 0.1rem;
-  gap: 0.22rem;
+  margin: 0.22rem 0 0.28rem;
+  gap: 0.45rem;
 }
 
 .slot-list .auto-choice-card {
-  padding: 0.28rem 0.4rem;
+  padding: 0.45rem 0.55rem;
 }
 
 .slot-list .slot-row-main {
@@ -1837,6 +1846,34 @@ body.play-mode #dice-overlay {
   margin: 0.15rem 0 0.4rem;
 }
 
+.build-picker-grid {
+  display: grid;
+  gap: 0.6rem;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  margin-bottom: 0.45rem;
+}
+
+.build-picker-grid-two {
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+
+.build-picker-card {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.02);
+  padding: 0.55rem;
+  display: grid;
+  gap: 0.45rem;
+}
+
+.build-picker-label {
+  margin: 0;
+}
+
+.build-picker-trigger {
+  justify-content: center;
+}
+
 .auto-choice-card {
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 10px;
@@ -1850,13 +1887,19 @@ body.play-mode #dice-overlay {
 
 .auto-choice-group {
   display: grid;
-  gap: 0.32rem;
+  gap: 0.38rem;
 }
 
 .auto-choice-options {
   display: flex;
   flex-wrap: wrap;
   gap: 0.45rem 0.65rem;
+}
+
+.auto-choice-options.auto-choice-options-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 0.5rem;
 }
 
 .auto-choice-option {
@@ -1872,10 +1915,89 @@ body.play-mode #dice-overlay {
   font-weight: 500;
 }
 
+.auto-choice-card-heading {
+  margin: 0 0 0.35rem;
+  display: flex;
+  align-items: baseline;
+  justify-content: flex-start;
+  gap: 0.45rem;
+}
+
+.auto-choice-card-count {
+  font-size: 0.78rem;
+  color: var(--muted);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.auto-choice-option-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.015);
+  padding: 0.58rem 0.65rem;
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease, transform 120ms ease;
+}
+
+.auto-choice-option-card.is-checked {
+  border-color: rgba(56, 189, 248, 0.7);
+  background: rgba(56, 189, 248, 0.14);
+}
+
+.auto-choice-option-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  min-height: 1.35rem;
+}
+
+.auto-choice-option-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.auto-choice-option-check {
+  width: 1rem;
+  height: 1rem;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.45);
+  background: rgba(15, 23, 42, 0.7);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+}
+
+.auto-choice-option-card.is-checked .auto-choice-option-check {
+  border-color: rgba(56, 189, 248, 0.95);
+  background: rgba(56, 189, 248, 0.32);
+}
+
+.auto-choice-option-card.is-checked .auto-choice-option-check::after {
+  content: "";
+  width: 0.5rem;
+  height: 0.3rem;
+  border-left: 2px solid #e0f2fe;
+  border-bottom: 2px solid #e0f2fe;
+  transform: rotate(-45deg) translate(0, -1px);
+}
+
 .auto-choice-option-meta {
   display: inline-flex;
   align-items: center;
   gap: 0.25rem;
+  flex-wrap: wrap;
+  padding-left: 1.55rem;
 }
 
 .auto-choice-badge {
@@ -1892,6 +2014,21 @@ body.play-mode #dice-overlay {
 
 .auto-choice-option.is-disabled {
   opacity: 0.7;
+}
+
+.auto-choice-option-card.is-disabled {
+  opacity: 0.52;
+  cursor: not-allowed;
+}
+
+.auto-choice-option-card:hover:not(.is-disabled) {
+  border-color: rgba(255, 255, 255, 0.3);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.auto-choice-option-input:focus-visible + .auto-choice-option-check {
+  outline: 2px solid rgba(56, 189, 248, 0.9);
+  outline-offset: 2px;
 }
 
 .auto-choice-help {
@@ -2316,6 +2453,11 @@ body.play-mode #dice-overlay {
   color: rgba(229, 231, 235, 0.95);
   font-size: 0.84rem;
   line-height: 1.35;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .feature-mode-heading {
@@ -2599,21 +2741,31 @@ body.play-mode #dice-overlay {
 }
 
 .play-manual-links {
+  --overlay-shift-x: 0px;
   position: absolute;
   top: calc(100% + 0.35rem);
   right: 0;
-  min-width: 250px;
+  width: min(340px, calc(100vw - 1rem));
+  min-width: min(250px, calc(100vw - 1rem));
+  max-width: calc(100vw - 1rem);
+  max-height: min(65dvh, 420px);
   display: none;
+  transform: translateX(var(--overlay-shift-x));
   z-index: 35;
   border: 1px solid rgba(255, 255, 255, 0.18);
   border-radius: 10px;
   background: rgba(11, 18, 32, 0.98);
   box-shadow: 0 12px 24px rgba(0, 0, 0, 0.34);
-  overflow: hidden;
+  overflow: auto;
 }
 
 .play-manual-menu[open] .play-manual-links {
   display: block;
+}
+
+.play-manual-menu[data-overlay-direction="up"] .play-manual-links {
+  top: auto;
+  bottom: calc(100% + 0.35rem);
 }
 
 .play-manual-links a {
@@ -2651,14 +2803,16 @@ body.play-mode #dice-overlay {
 }
 
 .play-character-log-panel {
+  --overlay-shift-x: 0px;
   position: absolute;
   top: calc(100% + 0.35rem);
   right: 0;
-  width: min(560px, 94vw);
-  min-width: 290px;
-  max-height: 460px;
+  width: min(560px, calc(100vw - 1rem));
+  min-width: min(290px, calc(100vw - 1rem));
+  max-height: min(460px, 70dvh);
   display: none;
-  overflow: hidden;
+  overflow: auto;
+  transform: translateX(var(--overlay-shift-x));
   z-index: 35;
   border: 1px solid rgba(255, 255, 255, 0.18);
   border-radius: 12px;
@@ -2668,6 +2822,11 @@ body.play-mode #dice-overlay {
 
 .play-character-log-menu[open] .play-character-log-panel {
   display: block;
+}
+
+.play-character-log-menu[data-overlay-direction="up"] .play-character-log-panel {
+  top: auto;
+  bottom: calc(100% + 0.35rem);
 }
 
 .character-log-panel-head {
@@ -2886,12 +3045,13 @@ body.play-mode #dice-overlay {
 }
 
 .dice-history-popover {
+  --overlay-shift-x: 0px;
   position: absolute;
   top: calc(100% + 0.45rem);
   left: 0;
   right: auto;
-  width: min(560px, calc(100vw - 2rem));
-  max-height: 230px;
+  width: min(560px, calc(100vw - 1rem));
+  max-height: min(230px, 45dvh);
   overflow: auto;
   padding: 0.55rem 0.65rem;
   border-radius: 10px;
@@ -2901,7 +3061,7 @@ body.play-mode #dice-overlay {
   backdrop-filter: blur(2px);
   z-index: 25;
   opacity: 0;
-  transform: translateY(-4px);
+  transform: translate(var(--overlay-shift-x), -4px);
   pointer-events: none;
   transition: opacity 120ms ease, transform 120ms ease;
 }
@@ -2909,8 +3069,13 @@ body.play-mode #dice-overlay {
 .dice-result-wrap:hover .dice-history-popover,
 .dice-result-wrap:focus-within .dice-history-popover {
   opacity: 1;
-  transform: translateY(0);
+  transform: translate(var(--overlay-shift-x), 0);
   pointer-events: auto;
+}
+
+.dice-result-wrap[data-overlay-direction="up"] .dice-history-popover {
+  top: auto;
+  bottom: calc(100% + 0.45rem);
 }
 
 .dice-history-title {
@@ -3171,7 +3336,7 @@ body.play-mode #dice-overlay {
 
 .spell-row {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   grid-template-rows: auto auto auto;
   align-items: center;
   row-gap: 0.22rem;
@@ -3263,7 +3428,7 @@ body.play-mode #dice-overlay {
   padding: 0;
   cursor: pointer;
   font-weight: 600;
-  grid-column: 2;
+  grid-column: 1;
   grid-row: 1;
 }
 
@@ -3273,14 +3438,35 @@ body.play-mode #dice-overlay {
 
 .spell-known-tag {
   font-size: 0.78rem;
-  text-align: right;
-  grid-column: 3;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.32rem;
+  grid-column: 2;
   grid-row: 1;
   white-space: nowrap;
 }
 
+.spell-known-tag-text {
+  color: var(--muted);
+}
+
+.spell-known-indicator {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 999px;
+  padding: 0.08rem 0.46rem;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  color: rgba(229, 231, 235, 0.95);
+  background: rgba(255, 255, 255, 0.06);
+}
+
 .spell-meta {
-  grid-column: 2 / 4;
+  grid-column: 1 / 3;
   grid-row: 2;
   font-size: 0.77rem;
   margin-top: -0.08rem;
@@ -3292,7 +3478,7 @@ body.play-mode #dice-overlay {
 }
 
 .spell-action-group {
-  grid-column: 2 / 4;
+  grid-column: 1 / 3;
   grid-row: 3;
   justify-self: end;
   align-self: end;
@@ -3300,6 +3486,11 @@ body.play-mode #dice-overlay {
   align-items: center;
   gap: 0.35rem;
   flex-wrap: wrap;
+}
+
+.spell-prep-btn-inline,
+.spell-prep-static-inline {
+  margin-left: 0.06rem;
 }
 
 .spell-ritual-pill {
@@ -3321,6 +3512,24 @@ body.play-mode #dice-overlay {
 .spell-cast-btn {
   padding: 0.28rem 0.65rem;
   font-size: 0.78rem;
+}
+
+.spell-cast-btn[data-spell-cast-type="A"] {
+  border-color: rgba(96, 165, 250, 0.62);
+  background: rgba(30, 58, 138, 0.32);
+  color: #dbeafe;
+}
+
+.spell-cast-btn[data-spell-cast-type="BA"] {
+  border-color: rgba(196, 181, 253, 0.66);
+  background: rgba(91, 33, 182, 0.34);
+  color: #ede9fe;
+}
+
+.spell-cast-btn[data-spell-cast-type="R"] {
+  border-color: rgba(251, 113, 133, 0.64);
+  background: rgba(127, 29, 29, 0.33);
+  color: #ffe4e6;
 }
 
 .spell-meta-grid {
@@ -4391,7 +4600,7 @@ button.skill-btn-clickable-roll[data-skill-roll-row]:focus-visible {
   }
 
   .play-manual-links {
-    width: min(92vw, 340px);
+    width: min(92vw, calc(100vw - 1rem));
     min-width: 0;
   }
 
