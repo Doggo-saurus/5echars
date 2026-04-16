@@ -243,6 +243,124 @@ export function createProficiencySummaryRules({
     });
   }
 
+  function addSimpleProficienciesFromStructuredSpec(collector, spec, sourceLabel = "", options = {}) {
+    if (!Array.isArray(spec)) return;
+    const sourceKey = String(options?.sourceKey ?? "").trim();
+    const play = catalogLookupDomain.isRecordObject(options?.play) ? options.play : null;
+    const fallbackLabel = String(options?.fallbackLabel ?? "proficiency").trim();
+    const fallbackPluralLabel = String(options?.fallbackPluralLabel ?? `${fallbackLabel}s`).trim();
+    spec.forEach((entry, optionIndex) => {
+      if (typeof entry === "string") {
+        const label = formatSourceSummaryLabel(entry);
+        if (label) collector.add(label, sourceLabel);
+        return;
+      }
+      if (!catalogLookupDomain.isRecordObject(entry)) return;
+      Object.entries(entry).forEach(([key, value]) => {
+        if (key === "choose" && catalogLookupDomain.isRecordObject(value)) {
+          const from = (Array.isArray(value.from) ? value.from : [])
+            .map((item) => formatSourceSummaryLabel(item))
+            .filter(Boolean);
+          const count = Math.max(1, toNumber(value.count, 1));
+          if (sourceKey && play && from.length) {
+            const choiceId = `${String(options?.choicePrefix ?? "p")}:${optionIndex}:choose`;
+            const selected = proficiencyRules.getStoredAutoChoiceSelectedValues(play, sourceKey, choiceId, from, count, {
+              allowDuplicates: false,
+              preserveStoredOrder: true,
+            });
+            if (selected.length) {
+              selected.forEach((selectedEntry) => collector.add(selectedEntry, sourceLabel));
+              return;
+            }
+          }
+          collector.add(`Choose ${count} ${count > 1 ? fallbackPluralLabel : fallbackLabel}`, sourceLabel);
+          return;
+        }
+        if (value === true) {
+          collector.add(formatSourceSummaryLabel(key), sourceLabel);
+          return;
+        }
+        const count = Math.max(0, toNumber(value, 0));
+        if (count > 0) {
+          if (normalizeChoiceToken(key) === "any") collector.add(`Any ${fallbackLabel}${count > 1 ? ` (${count})` : ""}`, sourceLabel);
+          else collector.add(`${formatSourceSummaryLabel(key)}${count > 1 ? ` (${count})` : ""}`, sourceLabel);
+        }
+      });
+    });
+  }
+
+  function addSkillToolLanguageEntries(toolCollector, languageCollector, spec, sourceLabel = "", options = {}) {
+    if (!Array.isArray(spec)) return;
+    const sourceKey = String(options?.sourceKey ?? "").trim();
+    const play = catalogLookupDomain.isRecordObject(options?.play) ? options.play : null;
+    const toolPools = options?.pools ?? getToolPoolsFromCatalogs(options?.catalogs);
+    const normalizeToolToken = (value) => normalizeSummaryLabel(value).replace(/\s+/g, "");
+    spec.forEach((entry, optionIndex) => {
+      if (!catalogLookupDomain.isRecordObject(entry)) return;
+      const chooseList = Array.isArray(entry?.choose) ? entry.choose : [entry?.choose];
+      chooseList.forEach((choose, chooseIndex) => {
+        if (!catalogLookupDomain.isRecordObject(choose)) return;
+        const from = Array.isArray(choose?.from) ? choose.from.map((item) => String(item ?? "").trim()).filter(Boolean) : [];
+        const count = Math.max(1, toNumber(choose?.count, 1));
+        const selectionMap = sourceKey && play ? proficiencyRules.getAutoChoiceSelectionMap(play, sourceKey) : {};
+        const choiceId = `stl:${optionIndex}:choose:${chooseIndex}`;
+        const selectedRaw = Array.isArray(selectionMap?.[choiceId]) ? selectionMap[choiceId] : [];
+        const selected = selectedRaw.map((item) => String(item ?? "").trim()).filter(Boolean);
+        if (selected.length) {
+          selected.forEach((value) => {
+            const raw = String(value ?? "").trim();
+            if (!raw) return;
+            if (raw.startsWith("tool:")) {
+              toolCollector.add(raw.slice(5), sourceLabel);
+              return;
+            }
+            if (raw.startsWith("language:")) {
+              const languageValue = raw.slice(9);
+              if (!languageValue || normalizeChoiceToken(languageValue) === "any") languageCollector.add("Any language", sourceLabel);
+              else languageCollector.add(languageValue, sourceLabel);
+              return;
+            }
+            if (raw.startsWith("skill:")) return;
+            const normalizedRaw = normalizeToolToken(raw);
+            const toolMatch = toolPools.allTools.find((toolName) => normalizeToolToken(toolName) === normalizedRaw);
+            if (toolMatch) {
+              toolCollector.add(toolMatch, sourceLabel);
+              return;
+            }
+            languageCollector.add(raw, sourceLabel);
+          });
+          return;
+        }
+        const hasAnyTool = from.some((value) => proficiencyRules.normalizeChoiceToken(value) === "anytool");
+        const hasAnyLanguage = from.some((value) => proficiencyRules.normalizeChoiceToken(value) === "anylanguage");
+        if (hasAnyTool && hasAnyLanguage) {
+          toolCollector.add(`Choose ${count} skills/tools/languages`, sourceLabel);
+          return;
+        }
+        if (hasAnyTool) {
+          toolCollector.add(`Choose ${count} skill/tool proficiency${count > 1 ? "ies" : "y"}`, sourceLabel);
+          return;
+        }
+        if (hasAnyLanguage) {
+          languageCollector.add(`Choose ${count} language${count > 1 ? "s" : ""}`, sourceLabel);
+        }
+      });
+    });
+  }
+
+  function addSenseEntries(collector, entries, sourceLabel = "") {
+    if (!Array.isArray(entries)) return;
+    entries.forEach((entry) => {
+      if (!catalogLookupDomain.isRecordObject(entry)) return;
+      Object.entries(entry).forEach(([key, value]) => {
+        const amount = Math.max(0, toNumber(value, 0));
+        const label = formatSourceSummaryLabel(key);
+        if (!label) return;
+        if (amount > 0) collector.add(`${label} ${amount} ft`, sourceLabel);
+      });
+    });
+  }
+
   function getCharacterToolAndDefenseSummary(catalogs, character) {
     const sourceOrder = catalogLookupDomain.getPreferredSourceOrder(character);
     const raceEntry = catalogLookupDomain.getEffectiveRaceEntry(catalogs, character, sourceOrder);
@@ -258,6 +376,10 @@ export function createProficiencySummaryRules({
     const immunityCollector = createSummaryCollector();
     const conditionImmunityCollector = createSummaryCollector();
     const vulnerabilityCollector = createSummaryCollector();
+    const weaponCollector = createSummaryCollector();
+    const armorCollector = createSummaryCollector();
+    const languageCollector = createSummaryCollector();
+    const senseCollector = createSummaryCollector();
     const toolPools = getToolPoolsFromCatalogs(catalogs);
 
     addToolProficienciesFromStructuredSpec(toolCollector, raceEntry?.toolProficiencies, "Race", {
@@ -310,7 +432,39 @@ export function createProficiencySummaryRules({
     feats.forEach((feat) => {
       const featEntry = catalogLookupDomain.findCatalogEntryByNameWithSelectedSourcePreference(catalogs?.feats, feat?.name, feat?.source, sourceOrder);
       if (!featEntry) return;
-      addToolProficienciesFromStructuredSpec(toolCollector, featEntry?.toolProficiencies, "Feat", { pools: toolPools });
+      const featSourceKey = `feat:${String(feat?.id ?? featEntry?.name ?? "").trim() || String(featEntry?.name ?? "").trim()}`;
+      addToolProficienciesFromStructuredSpec(toolCollector, featEntry?.toolProficiencies, "Feat", {
+        sourceKey: featSourceKey,
+        play: character?.play,
+        pools: toolPools,
+      });
+      addSimpleProficienciesFromStructuredSpec(weaponCollector, featEntry?.weaponProficiencies, "Feat", {
+        sourceKey: featSourceKey,
+        play: character?.play,
+        fallbackLabel: "weapon proficiency",
+        fallbackPluralLabel: "weapon proficiencies",
+        choicePrefix: "w",
+      });
+      addSimpleProficienciesFromStructuredSpec(armorCollector, featEntry?.armorProficiencies, "Feat", {
+        sourceKey: featSourceKey,
+        play: character?.play,
+        fallbackLabel: "armor proficiency",
+        fallbackPluralLabel: "armor proficiencies",
+        choicePrefix: "a",
+      });
+      addSimpleProficienciesFromStructuredSpec(languageCollector, featEntry?.languageProficiencies, "Feat", {
+        sourceKey: featSourceKey,
+        play: character?.play,
+        fallbackLabel: "language",
+        choicePrefix: "l",
+      });
+      addSkillToolLanguageEntries(toolCollector, languageCollector, featEntry?.skillToolLanguageProficiencies, "Feat", {
+        sourceKey: featSourceKey,
+        play: character?.play,
+        pools: toolPools,
+      });
+      addSenseEntries(senseCollector, featEntry?.senses, "Feat");
+      addSenseEntries(senseCollector, featEntry?.bonusSenses, "Feat");
       addDefenseEntries(resistanceCollector, featEntry?.resist, "Feat", { singular: "resistance" });
       addDefenseEntries(immunityCollector, featEntry?.immune, "Feat", { singular: "immunity" });
       addDefenseEntries(conditionImmunityCollector, featEntry?.conditionImmune, "Feat", { singular: "condition immunity" });
@@ -326,7 +480,39 @@ export function createProficiencySummaryRules({
         sourceOrder
       );
       if (!entry) return;
-      addToolProficienciesFromStructuredSpec(toolCollector, entry?.toolProficiencies, "Optional Feature", { pools: toolPools });
+      const sourceKey = `optionalfeature:${String(feature?.id ?? entry?.name ?? "").trim() || String(entry?.name ?? "").trim()}`;
+      addToolProficienciesFromStructuredSpec(toolCollector, entry?.toolProficiencies, "Optional Feature", {
+        sourceKey,
+        play: character?.play,
+        pools: toolPools,
+      });
+      addSimpleProficienciesFromStructuredSpec(weaponCollector, entry?.weaponProficiencies, "Optional Feature", {
+        sourceKey,
+        play: character?.play,
+        fallbackLabel: "weapon proficiency",
+        fallbackPluralLabel: "weapon proficiencies",
+        choicePrefix: "w",
+      });
+      addSimpleProficienciesFromStructuredSpec(armorCollector, entry?.armorProficiencies, "Optional Feature", {
+        sourceKey,
+        play: character?.play,
+        fallbackLabel: "armor proficiency",
+        fallbackPluralLabel: "armor proficiencies",
+        choicePrefix: "a",
+      });
+      addSimpleProficienciesFromStructuredSpec(languageCollector, entry?.languageProficiencies, "Optional Feature", {
+        sourceKey,
+        play: character?.play,
+        fallbackLabel: "language",
+        choicePrefix: "l",
+      });
+      addSkillToolLanguageEntries(toolCollector, languageCollector, entry?.skillToolLanguageProficiencies, "Optional Feature", {
+        sourceKey,
+        play: character?.play,
+        pools: toolPools,
+      });
+      addSenseEntries(senseCollector, entry?.senses, "Optional Feature");
+      addSenseEntries(senseCollector, entry?.bonusSenses, "Optional Feature");
       addDefenseEntries(resistanceCollector, entry?.resist, "Optional Feature", { singular: "resistance" });
       addDefenseEntries(immunityCollector, entry?.immune, "Optional Feature", { singular: "immunity" });
       addDefenseEntries(conditionImmunityCollector, entry?.conditionImmune, "Optional Feature", { singular: "condition immunity" });
@@ -357,9 +543,15 @@ export function createProficiencySummaryRules({
       play: character?.play,
       entryKey: "vulnerable",
     });
+    addSenseEntries(senseCollector, raceEntry?.senses, "Race");
+    addSenseEntries(senseCollector, raceEntry?.bonusSenses, "Race");
 
     return {
       tools: toolCollector.list(),
+      weapons: weaponCollector.list(),
+      armor: armorCollector.list(),
+      languages: languageCollector.list(),
+      senses: senseCollector.list(),
       resistances: resistanceCollector.list(),
       immunities: immunityCollector.list(),
       conditionImmunities: conditionImmunityCollector.list(),

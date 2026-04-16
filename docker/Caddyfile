@@ -6,6 +6,15 @@ http://localhost:3080, http://127.0.0.1:3080 {
 	@hidden path_regexp hidden ^/(\.|.*/\.).*
 	respond @hidden 404
 
+	handle_path /tools* {
+		@tools_denied {
+			not path_regexp (?i)^/(?:$|.*/$|.*\.(?:html|js|mjs|css|json|map|png|jpe?g|gif|webp|svg|ico|woff2?|ttf|eot|txt|webmanifest))$
+		}
+		respond @tools_denied 403
+		root * /srv/tools
+		file_server
+	}
+
 	reverse_proxy 127.0.0.1:3000
 }
 
@@ -16,6 +25,15 @@ http://{$DOMAIN}:3080 {
 {$DOMAIN}:3443 {
 	@hidden path_regexp hidden ^/(\.|.*/\.).*
 	respond @hidden 404
+
+	handle_path /tools* {
+		@tools_denied {
+			not path_regexp (?i)^/(?:$|.*/$|.*\.(?:html|js|mjs|css|json|map|png|jpe?g|gif|webp|svg|ico|woff2?|ttf|eot|txt|webmanifest))$
+		}
+		respond @tools_denied 403
+		root * /srv/tools
+		file_server
+	}
 
 	reverse_proxy 127.0.0.1:3000
 

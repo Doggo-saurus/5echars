@@ -29,6 +29,7 @@ services:
     network_mode: host
     volumes:
       - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./tools:/srv/tools:ro
       - caddy_data:/data
       - caddy_config:/config
     tmpfs:

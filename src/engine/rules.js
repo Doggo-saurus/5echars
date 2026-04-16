@@ -285,6 +285,40 @@ function getSpeciesUnarmoredAcRule(catalogs, character) {
   return null;
 }
 
+function collectSenseMapFromEntry(entry, map) {
+  if (!entry || typeof entry !== "object") return;
+  ["senses", "bonusSenses"].forEach((fieldKey) => {
+    const values = Array.isArray(entry?.[fieldKey]) ? entry[fieldKey] : [];
+    values.forEach((senseEntry) => {
+      if (!senseEntry || typeof senseEntry !== "object" || Array.isArray(senseEntry)) return;
+      Object.entries(senseEntry).forEach(([senseKey, amountRaw]) => {
+        const key = String(senseKey ?? "").trim().toLowerCase();
+        if (!key) return;
+        const amount = Math.max(0, toNumber(amountRaw, 0));
+        if (amount <= 0) return;
+        map[key] = Math.max(toNumber(map?.[key], 0), amount);
+      });
+    });
+  });
+}
+
+function getCharacterSenseSummary(catalogs, character) {
+  const senseMap = {};
+  const raceEntry = getSelectedRaceEntry(catalogs, character);
+  collectSenseMapFromEntry(raceEntry, senseMap);
+  const feats = Array.isArray(character?.feats) ? character.feats : [];
+  feats.forEach((feat) => {
+    const detail = findFeatCatalogEntry(catalogs, feat);
+    collectSenseMapFromEntry(detail, senseMap);
+  });
+  const optionalFeatures = Array.isArray(character?.optionalFeatures) ? character.optionalFeatures : [];
+  optionalFeatures.forEach((feature) => {
+    const detail = findOptionalFeatureCatalogEntry(catalogs, feature);
+    collectSenseMapFromEntry(detail, senseMap);
+  });
+  return senseMap;
+}
+
 export function getArmorClassBreakdown(character, dexMod, fightingStyles = new Set(), catalogs = null) {
   const equippedItems = getEquippedInventoryEntries(character);
   let bestArmorTotal = null;
@@ -398,6 +432,7 @@ export function computeDerivedStats(character, catalogs = null) {
   const passivePerception = getPassiveSkillValue("perception", "wis");
   const passiveInsight = getPassiveSkillValue("insight", "wis");
   const passiveInvestigation = getPassiveSkillValue("investigation", "int");
+  const senses = getCharacterSenseSummary(catalogs, character);
 
   return {
     mods,
@@ -407,5 +442,6 @@ export function computeDerivedStats(character, catalogs = null) {
     passivePerception,
     passiveInsight,
     passiveInvestigation,
+    senses,
   };
 }

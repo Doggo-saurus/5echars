@@ -490,6 +490,51 @@ export function createProficiencyRules({
     return activeSkills;
   }
 
+  function collectSkillToolLanguageSkillProficienciesFromEntity(entry, sourceKey, play) {
+    const activeSkills = new Set();
+    const options = Array.isArray(entry?.skillToolLanguageProficiencies) ? entry.skillToolLanguageProficiencies : [];
+    const optionIndex = options.findIndex((option) => isRecordObject(option));
+    const selected = optionIndex >= 0 ? options[optionIndex] : null;
+    if (!selected) return activeSkills;
+    const chooseOptions = Array.isArray(selected?.choose) ? selected.choose : [selected?.choose];
+    let choiceIndex = 0;
+    chooseOptions.forEach((choice) => {
+      if (!isRecordObject(choice)) return;
+      const from = (Array.isArray(choice?.from) ? choice.from : [])
+        .map((value) => String(value ?? "").trim())
+        .filter(Boolean);
+      const includeAnySkill = from.some((value) => normalizeChoiceToken(value) === "anyskill");
+      const skillPool = [
+        ...new Set(
+          [
+            ...(includeAnySkill ? skills.map((skill) => `skill:${skill.key}`) : []),
+            ...from
+              .map((value) => normalizeSkillKey(value))
+              .filter(Boolean)
+              .map((skillKey) => `skill:${skillKey}`),
+          ].filter(Boolean)
+        ),
+      ];
+      const count = Math.max(1, Math.min(skillPool.length || 1, toNumber(choice?.count, 1)));
+      if (!skillPool.length) {
+        choiceIndex += 1;
+        return;
+      }
+      const choiceId = `stl:${optionIndex}:choose:${choiceIndex}`;
+      const selectedSkills = getStoredAutoChoiceSelectedValues(play, sourceKey, choiceId, skillPool, count, {
+        allowDuplicates: false,
+        preserveStoredOrder: true,
+      });
+      selectedSkills.forEach((value) => {
+        const raw = String(value ?? "").trim();
+        const skillKey = normalizeSkillKey(raw.startsWith("skill:") ? raw.slice(6) : raw);
+        if (skillKey) activeSkills.add(skillKey);
+      });
+      choiceIndex += 1;
+    });
+    return activeSkills;
+  }
+
   function collectSkillProficienciesFromClassEntry(classEntry, play, sourceKey = "class") {
     const activeSkills = new Set();
     const skillEntries = Array.isArray(classEntry?.startingProficiencies?.skills) ? classEntry.startingProficiencies.skills : [];
@@ -583,6 +628,35 @@ export function createProficiencyRules({
     return activeSaves;
   }
 
+  function collectExpertiseSkillKeysFromEntity(entry, sourceKey, play, currentlyProficientKeys = new Set()) {
+    const expertiseSkills = new Set();
+    const options = Array.isArray(entry?.expertise) ? entry.expertise : [];
+    const optionIndex = options.findIndex((option) => isRecordObject(option));
+    const selected = optionIndex >= 0 ? options[optionIndex] : null;
+    if (!selected) return expertiseSkills;
+    Object.entries(selected).forEach(([key, value]) => {
+      const skillKey = normalizeSkillKey(key);
+      if (skillKey && value === true) expertiseSkills.add(skillKey);
+    });
+    const anyProficientCount = Math.max(0, toNumber(selected?.anyProficientSkill, 0));
+    if (anyProficientCount > 0) {
+      const pool = skills
+        .map((skill) => skill.key)
+        .filter((skillKey) => currentlyProficientKeys.has(skillKey))
+        .filter((skillKey) => !expertiseSkills.has(skillKey));
+      const count = Math.max(0, Math.min(pool.length, anyProficientCount));
+      if (count > 0) {
+        const choiceId = `ex:${optionIndex}:anyProficientSkill`;
+        const selectedSkills = getStoredAutoChoiceSelectedValues(play, sourceKey, choiceId, pool, count, {
+          allowDuplicates: false,
+          preserveStoredOrder: true,
+        });
+        selectedSkills.forEach((skillKey) => expertiseSkills.add(skillKey));
+      }
+    }
+    return expertiseSkills;
+  }
+
   function getAutomaticSaveProficiencies(catalogs, character) {
     const auto = { ...getClassSaveProficiencies(catalogs, character?.class) };
     const play = isRecordObject(character?.play) ? character.play : {};
@@ -634,9 +708,11 @@ export function createProficiencyRules({
     });
     featEntries.forEach(({ entry, sourceKey }) => {
       collectSkillProficienciesFromEntity(entry, sourceKey, play).forEach((skillKey) => activeSkills.add(skillKey));
+      collectSkillToolLanguageSkillProficienciesFromEntity(entry, sourceKey, play).forEach((skillKey) => activeSkills.add(skillKey));
     });
     optionalFeatureEntries.forEach(({ entry, sourceKey }) => {
       collectSkillProficienciesFromEntity(entry, sourceKey, play).forEach((skillKey) => activeSkills.add(skillKey));
+      collectSkillToolLanguageSkillProficienciesFromEntity(entry, sourceKey, play).forEach((skillKey) => activeSkills.add(skillKey));
     });
     return skills.reduce((acc, skill) => {
       acc[skill.key] = activeSkills.has(skill.key);
@@ -656,6 +732,27 @@ export function createProficiencyRules({
         if (modes[skill.key] === skillProficiencyNone) modes[skill.key] = skillProficiencyHalf;
       });
     }
+    const sourceOrder = getPreferredSourceOrder(character);
+    const { featEntries, optionalFeatureEntries } = getSelectedFeatAndOptionalFeatureEntries(catalogs, character, sourceOrder);
+    const currentlyProficient = new Set(
+      skills
+        .map((skill) => skill.key)
+        .filter((skillKey) => modes[skillKey] === skillProficiencyProficient || modes[skillKey] === skillProficiencyExpertise)
+    );
+    featEntries.forEach(({ entry, sourceKey }) => {
+      collectExpertiseSkillKeysFromEntity(entry, sourceKey, play, currentlyProficient).forEach((skillKey) => {
+        if (modes[skillKey] === skillProficiencyProficient || modes[skillKey] === skillProficiencyExpertise) {
+          modes[skillKey] = skillProficiencyExpertise;
+        }
+      });
+    });
+    optionalFeatureEntries.forEach(({ entry, sourceKey }) => {
+      collectExpertiseSkillKeysFromEntity(entry, sourceKey, play, currentlyProficient).forEach((skillKey) => {
+        if (modes[skillKey] === skillProficiencyProficient || modes[skillKey] === skillProficiencyExpertise) {
+          modes[skillKey] = skillProficiencyExpertise;
+        }
+      });
+    });
     return modes;
   }
 

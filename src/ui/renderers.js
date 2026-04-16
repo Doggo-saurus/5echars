@@ -1236,6 +1236,76 @@ export function createRenderers(deps) {
       });
     });
 
+    const skillToolLanguageOptions = Array.isArray(entry?.skillToolLanguageProficiencies) ? entry.skillToolLanguageProficiencies : [];
+    skillToolLanguageOptions.forEach((mixedOption, optionIndex) => {
+      if (!mixedOption || typeof mixedOption !== "object" || Array.isArray(mixedOption)) return;
+      const chooseList = Array.isArray(mixedOption?.choose) ? mixedOption.choose : [mixedOption?.choose];
+      chooseList.forEach((choose, chooseIndex) => {
+        if (!choose || typeof choose !== "object" || Array.isArray(choose)) return;
+        const from = Array.isArray(choose?.from) ? choose.from.map((entryValue) => String(entryValue ?? "").trim()).filter(Boolean) : [];
+        const optionPool = [];
+        const optionLabelByValue = {};
+        const anySkill = from.some((value) => normalizeChoiceToken(value) === "anyskill");
+        const anyTool = from.some((value) => normalizeChoiceToken(value) === "anytool");
+        const anyLanguage = from.some((value) => normalizeChoiceToken(value) === "anylanguage");
+        if (anySkill) {
+          skills.forEach((skill) => {
+            const value = `skill:${skill.key}`;
+            optionPool.push(value);
+            optionLabelByValue[value] = `Skill: ${skill.label}`;
+          });
+        }
+        if (anyTool) {
+          toolPools.allTools.forEach((toolName) => {
+            const value = `tool:${toolName}`;
+            optionPool.push(value);
+            optionLabelByValue[value] = `Tool: ${toolName}`;
+          });
+        }
+        if (anyLanguage) {
+          const value = "language:any";
+          optionPool.push(value);
+          optionLabelByValue[value] = "Language: Any";
+        }
+        from.forEach((entryValue) => {
+          const raw = String(entryValue ?? "").trim();
+          if (!raw) return;
+          const token = normalizeChoiceToken(raw);
+          if (token === "anyskill" || token === "anytool" || token === "anylanguage") return;
+          const skillKey = normalizeSkillKey(raw);
+          if (skillKey) {
+            const value = `skill:${skillKey}`;
+            optionPool.push(value);
+            optionLabelByValue[value] = `Skill: ${skills.find((skill) => skill.key === skillKey)?.label ?? skillKey}`;
+            return;
+          }
+          const toolMatch = toolPools.allTools.find((toolName) => normalizeChoiceToken(toolName) === token);
+          if (toolMatch) {
+            const value = `tool:${toolMatch}`;
+            optionPool.push(value);
+            optionLabelByValue[value] = `Tool: ${toolMatch}`;
+            return;
+          }
+          const value = `language:${raw}`;
+          optionPool.push(value);
+          optionLabelByValue[value] = `Language: ${raw}`;
+        });
+        const uniquePool = optionPool.filter(
+          (value, index, list) => list.findIndex((entryValue) => normalizeChoiceToken(entryValue) === normalizeChoiceToken(value)) === index
+        );
+        const count = Math.max(1, Math.min(uniquePool.length || 1, toNumber(choose?.count, 1)));
+        if (!uniquePool.length) return;
+        const choiceId = `stl:${optionIndex}:choose:${chooseIndex}`;
+        const selected = getSelectedChoiceValues(character, sourceKey, choiceId, uniquePool, count);
+        blocks.push(`
+          <div class="auto-choice-card">
+            ${renderAutoChoiceCardHeading(`${sourceLabel} proficiency choice`, count)}
+            ${renderChoiceCheckboxes(sourceKey, choiceId, count, uniquePool, selected, (value) => optionLabelByValue[value] ?? value)}
+          </div>
+        `);
+      });
+    });
+
     const defenseChoiceSpecs = [
       { key: "resist", singular: "resistance" },
       { key: "immune", singular: "immunity" },
@@ -2015,6 +2085,10 @@ export function createRenderers(deps) {
       renderTraitGroup("Condition Immunities", traitSummary.conditionImmunities),
       renderTraitGroup("Vulnerabilities", traitSummary.vulnerabilities),
       renderTraitGroup("Tool Proficiencies", traitSummary.tools),
+      renderTraitGroup("Weapon Proficiencies", traitSummary.weapons ?? []),
+      renderTraitGroup("Armor Proficiencies", traitSummary.armor ?? []),
+      renderTraitGroup("Languages", traitSummary.languages ?? []),
+      renderTraitGroup("Senses", traitSummary.senses ?? []),
     ]
       .filter(Boolean)
       .join("");

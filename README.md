@@ -135,6 +135,13 @@ docker compose up -d
 docker compose ps
 ```
 
+### Optional: host a static 5etools build at `/tools`
+
+- Place your static site files in the repo-local `tools/` directory.
+- This directory is bind-mounted into Caddy (`./tools:/srv/tools:ro`).
+- Requests to `/tools` are served directly by Caddy without hitting the Node app.
+- `/tools` serves only an allowlist of expected static extensions (`html`, `js`, `mjs`, `css`, `json`, `map`, image/font assets, `txt`, `webmanifest`).
+
 Optional log checks:
 
 ```bash

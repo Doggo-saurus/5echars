@@ -105,6 +105,33 @@ export function createAutoGrantedSpellRules({
         addGrant(grant.name, grant.grantType)
       );
     });
+    const sourceOrder = catalogLookupDomain.getPreferredSourceOrder(character);
+    const selectedFeats = Array.isArray(character?.feats) ? character.feats : [];
+    selectedFeats.forEach((feat) => {
+      const entry = catalogLookupDomain.findCatalogEntryByNameWithSelectedSourcePreference(
+        catalogs?.feats,
+        feat?.name,
+        feat?.source,
+        sourceOrder
+      );
+      if (!entry) return;
+      collectAdditionalSpellGrantsFromEntries(entry?.additionalSpells, Math.max(1, toNumber(character?.level, 1))).forEach((grant) =>
+        addGrant(grant.name, grant.grantType)
+      );
+    });
+    const selectedOptionalFeatures = Array.isArray(character?.optionalFeatures) ? character.optionalFeatures : [];
+    selectedOptionalFeatures.forEach((feature) => {
+      const entry = catalogLookupDomain.findCatalogEntryByNameWithSelectedSourcePreference(
+        catalogs?.optionalFeatures,
+        feature?.name,
+        feature?.source,
+        sourceOrder
+      );
+      if (!entry) return;
+      collectAdditionalSpellGrantsFromEntries(entry?.additionalSpells, Math.max(1, toNumber(character?.level, 1))).forEach((grant) =>
+        addGrant(grant.name, grant.grantType)
+      );
+    });
     const autoPreparedSpells = {};
     const autoSpellGrantTypes = {};
     [...grants.entries()].forEach(([key, grant]) => {

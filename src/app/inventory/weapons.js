@@ -20,7 +20,12 @@ export function createInventoryWeapons({
 
   function normalizeWeaponProficiencyToken(value) {
     const cleanedValue = cleanSpellInlineTags(String(value ?? ""));
-    return cleanedValue.trim().toLowerCase().replace(/\./g, "").replace(/\s+/g, " ");
+    const normalized = cleanedValue.trim().toLowerCase().replace(/\./g, "").replace(/\s+/g, " ");
+    if (normalized.includes("martial weapon")) return "martial weapons";
+    if (normalized.includes("simple weapon")) return "simple weapons";
+    if (normalized.includes("firearm")) return "firearms";
+    if (normalized.includes("improvised")) return "improvised";
+    return normalized;
   }
 
   function collectWeaponProficiencyStrings(value, out = []) {
@@ -34,7 +39,14 @@ export function createInventoryWeapons({
       return out;
     }
     if (value && typeof value === "object") {
-      Object.values(value).forEach((entry) => collectWeaponProficiencyStrings(entry, out));
+      Object.entries(value).forEach(([key, entry]) => {
+        if (entry === true) {
+          const token = normalizeWeaponProficiencyToken(key);
+          if (token) out.push(token);
+          return;
+        }
+        collectWeaponProficiencyStrings(entry, out);
+      });
     }
     return out;
   }
@@ -64,6 +76,20 @@ export function createInventoryWeapons({
         tokens.add("martial weapon");
         tokens.add("martial");
       }
+    });
+    const selectedFeats = Array.isArray(character?.feats) ? character.feats : [];
+    const featEntries = Array.isArray(catalogs?.feats) ? catalogs.feats : [];
+    selectedFeats.forEach((feat) => {
+      const featName = String(feat?.name ?? "").trim().toLowerCase();
+      if (!featName) return;
+      const featSource = String(feat?.source ?? "").trim().toLowerCase();
+      const detail = featEntries.find((entry) => {
+        if (String(entry?.name ?? "").trim().toLowerCase() !== featName) return false;
+        if (!featSource) return true;
+        return String(entry?.source ?? "").trim().toLowerCase() === featSource;
+      }) ?? featEntries.find((entry) => String(entry?.name ?? "").trim().toLowerCase() === featName);
+      if (!detail) return;
+      collectWeaponProficiencyStrings(detail?.weaponProficiencies).forEach((token) => tokens.add(token));
     });
     return tokens;
   }
