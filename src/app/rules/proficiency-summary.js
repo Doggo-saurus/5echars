@@ -1,3 +1,5 @@
+import { getActiveInventoryCatalogItems } from "../catalog/inventory-item-rules.js";
+
 export function createProficiencySummaryRules({
   toNumber,
   cleanSpellInlineTags,
@@ -5,6 +7,7 @@ export function createProficiencySummaryRules({
   buildEntityId,
   catalogLookupDomain,
   proficiencyRules,
+  inventoryWeapons,
 }) {
   function formatSourceSummaryLabel(value) {
     const token = String(value ?? "").trim();
@@ -349,9 +352,13 @@ export function createProficiencySummaryRules({
   }
 
   function addSenseEntries(collector, entries, sourceLabel = "") {
-    if (!Array.isArray(entries)) return;
-    entries.forEach((entry) => {
-      if (!catalogLookupDomain.isRecordObject(entry)) return;
+    if (entries == null) return;
+    const payloads = Array.isArray(entries)
+      ? entries.filter((entry) => catalogLookupDomain.isRecordObject(entry))
+      : catalogLookupDomain.isRecordObject(entries)
+        ? [entries]
+        : [];
+    payloads.forEach((entry) => {
       Object.entries(entry).forEach(([key, value]) => {
         const amount = Math.max(0, toNumber(value, 0));
         const label = formatSourceSummaryLabel(key);
@@ -381,6 +388,15 @@ export function createProficiencySummaryRules({
     const languageCollector = createSummaryCollector();
     const senseCollector = createSummaryCollector();
     const toolPools = getToolPoolsFromCatalogs(catalogs);
+    const attackWeaponTokens = typeof inventoryWeapons?.getCharacterWeaponProficiencyTokens === "function"
+      ? inventoryWeapons.getCharacterWeaponProficiencyTokens(catalogs, character)
+      : new Set();
+
+    if (attackWeaponTokens instanceof Set) {
+      attackWeaponTokens.forEach((token) => {
+        weaponCollector.add(token, "Attack Rules");
+      });
+    }
 
     addToolProficienciesFromStructuredSpec(toolCollector, raceEntry?.toolProficiencies, "Race", {
       sourceKey: "race",
@@ -517,6 +533,66 @@ export function createProficiencySummaryRules({
       addDefenseEntries(immunityCollector, entry?.immune, "Optional Feature", { singular: "immunity" });
       addDefenseEntries(conditionImmunityCollector, entry?.conditionImmune, "Optional Feature", { singular: "condition immunity" });
       addDefenseEntries(vulnerabilityCollector, entry?.vulnerable, "Optional Feature", { singular: "vulnerability" });
+    });
+    getActiveInventoryCatalogItems(catalogs, character).forEach(({ inventoryEntry, catalogItem }) => {
+      const sourceLabel = String(inventoryEntry?.name ?? catalogItem?.name ?? "Item").trim() || "Item";
+      const sourceKey = `item:${String(inventoryEntry?.id ?? "").trim() || sourceLabel.toLowerCase()}`;
+      addToolProficienciesFromStructuredSpec(toolCollector, catalogItem?.toolProficiencies, sourceLabel, {
+        sourceKey,
+        play: character?.play,
+        pools: toolPools,
+      });
+      addSimpleProficienciesFromStructuredSpec(weaponCollector, catalogItem?.weaponProficiencies, sourceLabel, {
+        sourceKey,
+        play: character?.play,
+        fallbackLabel: "weapon proficiency",
+        fallbackPluralLabel: "weapon proficiencies",
+        choicePrefix: "w",
+      });
+      addSimpleProficienciesFromStructuredSpec(armorCollector, catalogItem?.armorProficiencies, sourceLabel, {
+        sourceKey,
+        play: character?.play,
+        fallbackLabel: "armor proficiency",
+        fallbackPluralLabel: "armor proficiencies",
+        choicePrefix: "a",
+      });
+      addSimpleProficienciesFromStructuredSpec(languageCollector, catalogItem?.languageProficiencies, sourceLabel, {
+        sourceKey,
+        play: character?.play,
+        fallbackLabel: "language",
+        choicePrefix: "l",
+      });
+      addSkillToolLanguageEntries(toolCollector, languageCollector, catalogItem?.skillToolLanguageProficiencies, sourceLabel, {
+        sourceKey,
+        play: character?.play,
+        pools: toolPools,
+      });
+      addSenseEntries(senseCollector, catalogItem?.senses, sourceLabel);
+      addSenseEntries(senseCollector, catalogItem?.bonusSenses, sourceLabel);
+      addDefenseEntries(resistanceCollector, catalogItem?.resist, sourceLabel, {
+        singular: "resistance",
+        sourceKey,
+        play: character?.play,
+        entryKey: "resist",
+      });
+      addDefenseEntries(immunityCollector, catalogItem?.immune, sourceLabel, {
+        singular: "immunity",
+        sourceKey,
+        play: character?.play,
+        entryKey: "immune",
+      });
+      addDefenseEntries(conditionImmunityCollector, catalogItem?.conditionImmune, sourceLabel, {
+        singular: "condition immunity",
+        sourceKey,
+        play: character?.play,
+        entryKey: "conditionImmune",
+      });
+      addDefenseEntries(vulnerabilityCollector, catalogItem?.vulnerable, sourceLabel, {
+        singular: "vulnerability",
+        sourceKey,
+        play: character?.play,
+        entryKey: "vulnerable",
+      });
     });
 
     addDefenseEntries(resistanceCollector, raceEntry?.resist, "Race", {

@@ -1,3 +1,11 @@
+import {
+  getActiveInventoryCatalogItems,
+  isInventoryItemActiveForBonuses,
+  itemRequiresAttunement,
+  mergeCatalogItemWithInherits,
+  resolveInventoryCatalogItem,
+} from "./inventory-item-rules.js";
+
 export function createCatalogLookupDomain({
   toNumber,
   normalizeSourceTag,
@@ -389,5 +397,10 @@ export function createCatalogLookupDomain({
     resolveImportedFeats,
     resolveImportedOptionalFeatures,
     resolveImportedCharacterSelections,
+    mergeCatalogItemWithInherits,
+    resolveInventoryCatalogItem,
+    itemRequiresAttunement,
+    isInventoryItemActiveForBonuses,
+    getActiveInventoryCatalogItems,
   };
 }

@@ -1,3 +1,5 @@
+import { itemRequiresAttunement, mergeCatalogItemWithInherits } from "../app/catalog/inventory-item-rules.js";
+
 export function createPickers(deps) {
   const {
     openModal,
@@ -506,6 +508,11 @@ export function createPickers(deps) {
     function buildInventoryEntry(item, nameOverride = "", options = {}) {
       const variantItem = options.variantItem ?? null;
       const inherits = variantItem?.inherits && typeof variantItem.inherits === "object" ? variantItem.inherits : {};
+      const resolvedItemForBonuses = mergeCatalogItemWithInherits({
+        ...(item && typeof item === "object" ? item : {}),
+        ...(variantItem && typeof variantItem === "object" ? variantItem : {}),
+        inherits,
+      });
       const name = String(nameOverride || variantItem?.name || item?.name || "").trim();
       if (!name) return null;
       const source = String(variantItem?.source ?? item?.source ?? "").trim();
@@ -553,6 +560,8 @@ export function createPickers(deps) {
         counterKind: counterInfo.counterKind,
         counter: counterInfo.counter,
         counterMax: counterInfo.counterMax,
+        requiresAttunement: itemRequiresAttunement(resolvedItemForBonuses),
+        attuned: false,
         equipped: false,
       };
     }

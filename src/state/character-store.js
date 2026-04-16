@@ -107,11 +107,15 @@ function normalizeInventoryEntry(entry) {
   const counterKind = counterKindRaw === "charges" || counterKindRaw === "quantity" ? counterKindRaw : "";
   const counter = Math.max(0, Math.floor(toNumber(entry.counter, 0)));
   const counterMax = Math.max(0, Math.floor(toNumber(entry.counterMax, 0)));
+  const requiresAttunement = Boolean(entry.requiresAttunement);
+  const attuned = Boolean(entry.attuned);
   return {
     ...entry,
     id: String(entry.id ?? "").trim() || createInventoryEntryId(),
     name,
     equipped: Boolean(entry.equipped),
+    requiresAttunement,
+    attuned,
     counterKind,
     counter,
     counterMax,
@@ -635,7 +639,12 @@ export function createStore(initialState) {
       const next = (state.character.inventory ?? []).map((entry) => {
         if (!entry || typeof entry !== "object" || Array.isArray(entry)) return entry;
         if (String(entry.id ?? "").trim() !== id) return entry;
-        return { ...entry, equipped: !Boolean(entry.equipped) };
+        const equipped = !Boolean(entry.equipped);
+        return {
+          ...entry,
+          equipped,
+          attuned: equipped ? Boolean(entry.attuned) : false,
+        };
       });
       state.character = { ...state.character, inventory: next };
       notify();

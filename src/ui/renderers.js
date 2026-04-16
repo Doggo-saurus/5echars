@@ -1,3 +1,5 @@
+import { itemRequiresAttunement, resolveInventoryCatalogItem } from "../app/catalog/inventory-item-rules.js";
+
 export function createRenderers(deps) {
   const {
     STEPS,
@@ -37,6 +39,7 @@ export function createRenderers(deps) {
     getCharacterToolAndDefenseSummary,
     getLevelUpPreview,
     getClassCasterContribution,
+    getCharacterSpellSaveSummary,
     defaultDiceResultMessage,
     renderDiceStyleOptions,
     getSpellSlotRow,
@@ -374,7 +377,8 @@ export function createRenderers(deps) {
         const isProf = Boolean(play.saveProficiencies?.[ability]);
         const isAutoProf = Boolean(saveEditState?.autoByKey?.[ability]);
         const isOverLimit = Boolean(saveEditState?.invalidByKey?.[ability]);
-        const total = mod + (isProf ? derived.proficiencyBonus : 0);
+        const itemSaveBonus = toNumber(derived?.itemSavingThrowBonus, 0);
+        const total = mod + (isProf ? derived.proficiencyBonus : 0) + itemSaveBonus;
         const abilityLabel = abilityLabels[ability] ?? ability.toUpperCase();
         const saveName = `${abilityLabel} Save`;
         const profControl = canToggle
@@ -1553,11 +1557,15 @@ export function createRenderers(deps) {
     const counterKind = counterKindRaw === "charges" || counterKindRaw === "quantity" ? counterKindRaw : "";
     const counter = Math.max(0, Math.floor(toNumber(entry.counter, 0)));
     const counterMax = Math.max(0, Math.floor(toNumber(entry.counterMax, 0)));
+    const requiresAttunement = Boolean(entry.requiresAttunement);
+    const attuned = Boolean(entry.attuned);
     return {
       id: String(entry.id ?? "").trim(),
       index,
       name,
       equipped: Boolean(entry.equipped),
+      requiresAttunement,
+      attuned,
       counterKind,
       counter,
       counterMax,
@@ -1567,6 +1575,8 @@ export function createRenderers(deps) {
 
   function renderInventoryRowsImpl(character, options = {}) {
     const showCounters = Boolean(options?.showCounters);
+    const showAttunement = Boolean(options?.showAttunement);
+    const catalogs = options?.catalogs ?? null;
     const entries = (Array.isArray(character?.inventory) ? character.inventory : [])
       .map((entry, index) => normalizeInventoryEntry(entry, index))
       .filter(Boolean);
@@ -1574,6 +1584,11 @@ export function createRenderers(deps) {
     return entries
       .map((entry) => {
         const hasCounter = showCounters && !entry.isLegacy && Boolean(entry.counterKind) && entry.id;
+        const matchedCatalogItem = !entry.isLegacy ? resolveInventoryCatalogItem(catalogs, entry) : null;
+        const requiresAttunement =
+          !entry.isLegacy && (Boolean(entry.requiresAttunement) || itemRequiresAttunement(matchedCatalogItem));
+        const showAttunementToggle = showAttunement && requiresAttunement;
+        const isAttuned = requiresAttunement ? Boolean(entry.attuned) : false;
         const displayName = hasCounter
           ? String(entry.name ?? "").replace(/\s*\(\d+\)\s*$/, "").trim() || entry.name
           : entry.name;
@@ -1587,6 +1602,11 @@ export function createRenderers(deps) {
             <button type="button" class="inventory-item-name spell-picker-name-btn" data-open-item-details-index="${esc(entry.index)}" title="View item details">${esc(displayName)}</button>
           </div>
           <div class="inventory-row-actions">
+            ${
+              showAttunementToggle
+                ? `<button type="button" class="btn secondary ${isAttuned ? "btn-accent-soft" : ""}" data-toggle-item-attuned="${esc(entry.id)}" data-toggle-item-attuned-index="${esc(entry.index)}" ${entry.equipped ? "" : "disabled"} title="${entry.equipped ? (isAttuned ? "Attuned" : "Not attuned") : "Equip the item before attuning"}" aria-label="${isAttuned ? "Unattune" : "Attune"} ${esc(entry.name)}">A</button>`
+                : ""
+            }
             ${
               hasCounter
                 ? `<div class="inventory-item-counter" title="${esc(counterTitle)}">
@@ -3030,7 +3050,7 @@ export function createRenderers(deps) {
             <h3 class="title">Inventory</h3>
             <button class="btn secondary" id="play-open-items">Add Item</button>
           </div>
-          <div class="inventory-list">${renderInventoryRowsImpl(character, { showCounters: true })}</div>
+          <div class="inventory-list">${renderInventoryRowsImpl(character, { showCounters: true, showAttunement: true, catalogs: state.catalogs })}</div>
         </article>
 
         <article class="card">
@@ -3997,6 +4017,20 @@ export function createRenderers(deps) {
     const passiveInvestigation = Number.isFinite(toNumber(derived?.passiveInvestigation, Number.NaN))
       ? toNumber(derived?.passiveInvestigation, 10)
       : getPassiveSkillValue("investigation", "int");
+    const sensesMap = derived?.senses && typeof derived.senses === "object" ? derived.senses : {};
+    let darkvisionFeet = 0;
+    Object.entries(sensesMap).forEach(([key, raw]) => {
+      const k = String(key ?? "")
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, "");
+      if (k !== "darkvision" && k !== "dv" && k !== "u" && !k.includes("darkvision")) return;
+      darkvisionFeet = Math.max(darkvisionFeet, Math.max(0, toNumber(raw, 0)));
+    });
+    const spellSaveSummary =
+      typeof getCharacterSpellSaveSummary === "function"
+        ? getCharacterSpellSaveSummary(state.catalogs, character, derived?.mods ?? {}, derived?.proficiencyBonus ?? 0)
+        : null;
     const hasDiceTray = character?.showDiceTray !== false;
     const className = String(state.character.class ?? "").trim();
     const subclassName = String(state.character.classSelection?.subclass?.name ?? state.character.subclass ?? "").trim();
@@ -4141,6 +4175,22 @@ export function createRenderers(deps) {
                           <span class="core-stat-name"><span class="core-stat-icon" aria-hidden="true">🔎</span>Passive Investigation</span>
                           <span class="core-stat-value">${passiveInvestigation}</span>
                         </div>
+                        ${
+                          darkvisionFeet > 0
+                            ? `<div class="pill core-stat-pill" title="Includes species, class or subclass features, feats, optional features, and equipped items. When several sources apply, range uses the highest value (for example items that extend darkvision).">
+                          <span class="core-stat-name"><span class="core-stat-icon" aria-hidden="true">🌑</span>Darkvision</span>
+                          <span class="core-stat-value">${esc(String(darkvisionFeet))} ft</span>
+                        </div>`
+                            : ""
+                        }
+                        ${
+                          spellSaveSummary
+                            ? `<div class="pill core-stat-pill" title="${esc(spellSaveSummary.title)}">
+                          <span class="core-stat-name"><span class="core-stat-icon" aria-hidden="true">🪄</span>Spell Save DC</span>
+                          <span class="core-stat-value">${esc(spellSaveSummary.displayText)}</span>
+                        </div>`
+                            : ""
+                        }
                       </div>
                     </div>
                   </div>

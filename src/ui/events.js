@@ -1,3 +1,5 @@
+import { resolveInventoryCatalogItem } from "../app/catalog/inventory-item-rules.js";
+
 export function createEvents(deps) {
   const {
     app,
@@ -502,13 +504,33 @@ export function createEvents(deps) {
     const nextInventory = currentInventory.map((entry) => {
       if (!entry || typeof entry !== "object" || Array.isArray(entry)) return entry;
       const entryId = String(entry.id ?? "").trim();
-      if (entryId === id) return { ...entry, equipped: shouldEquip };
+      if (entryId === id) return { ...entry, equipped: shouldEquip, attuned: shouldEquip ? Boolean(entry?.attuned) : false };
       if (!shouldEquip) return entry;
-      if (isBodyArmorEntry(toggledEntry) && isBodyArmorEntry(entry)) return { ...entry, equipped: false };
-      if (isShieldEntry(toggledEntry) && isShieldEntry(entry)) return { ...entry, equipped: false };
+      if (isBodyArmorEntry(toggledEntry) && isBodyArmorEntry(entry)) return { ...entry, equipped: false, attuned: false };
+      if (isShieldEntry(toggledEntry) && isShieldEntry(entry)) return { ...entry, equipped: false, attuned: false };
       return entry;
     });
     store.updateCharacter({ inventory: nextInventory });
+    updateCharacterWithRequiredSettings(store.getState(), {}, { preserveUserOverrides: true });
+  }
+
+  function toggleInventoryItemAttuned(itemId, indexRaw = "") {
+    const id = String(itemId ?? "").trim();
+    const index = toNumber(indexRaw, -1);
+    if (!id && index < 0) return;
+    const currentState = store.getState();
+    const currentInventory = Array.isArray(currentState.character?.inventory) ? currentState.character.inventory : [];
+    const nextInventory = currentInventory.map((entry) => {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) return entry;
+      const entryId = String(entry.id ?? "").trim();
+      const matchesById = id && entryId === id;
+      const matchesByIndex = !id && index >= 0 && currentInventory[index] === entry;
+      if (!matchesById && !matchesByIndex) return entry;
+      if (!entry.equipped) return entry;
+      return { ...entry, attuned: !Boolean(entry.attuned) };
+    });
+    store.updateCharacter({ inventory: nextInventory });
+    updateCharacterWithRequiredSettings(store.getState(), {}, { preserveUserOverrides: true });
   }
 
   function removeInventoryItemByIndex(indexRaw) {
@@ -519,6 +541,7 @@ export function createEvents(deps) {
     const nextInventory = [...currentInventory];
     nextInventory.splice(index, 1);
     store.updateCharacter({ inventory: nextInventory });
+    updateCharacterWithRequiredSettings(store.getState(), {}, { preserveUserOverrides: true });
   }
 
   function adjustInventoryItemCounter(itemId, deltaRaw) {
@@ -555,25 +578,9 @@ export function createEvents(deps) {
       return;
     }
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) return;
-    const catalogsItems = Array.isArray(currentState.catalogs?.items) ? currentState.catalogs.items : [];
     const entryName = String(entry.name ?? "").trim();
     const entrySource = String(entry.source ?? "").trim();
-    const normalizedName = entryName.toLowerCase();
-    const normalizedSource = entrySource.toLowerCase();
-    const fallbackName = entryName.replace(/^\+\d+\s+/u, "").trim().toLowerCase();
-    let matchedItem = null;
-    if (normalizedName && normalizedSource) {
-      matchedItem = catalogsItems.find((item) =>
-        String(item?.name ?? "").trim().toLowerCase() === normalizedName
-        && String(item?.source ?? "").trim().toLowerCase() === normalizedSource
-      ) ?? null;
-    }
-    if (!matchedItem && normalizedName) {
-      matchedItem = catalogsItems.find((item) => String(item?.name ?? "").trim().toLowerCase() === normalizedName) ?? null;
-    }
-    if (!matchedItem && fallbackName && fallbackName !== normalizedName) {
-      matchedItem = catalogsItems.find((item) => String(item?.name ?? "").trim().toLowerCase() === fallbackName) ?? null;
-    }
+    const matchedItem = resolveInventoryCatalogItem(currentState.catalogs, entry);
     if (matchedItem) {
       openItemDetailsModal({
         ...matchedItem,
@@ -1006,6 +1013,11 @@ export function createEvents(deps) {
     app.querySelectorAll("[data-toggle-item-equipped]").forEach((button) => {
       button.addEventListener("click", () => {
         toggleInventoryItemEquipped(button.dataset.toggleItemEquipped);
+      });
+    });
+    app.querySelectorAll("[data-toggle-item-attuned]").forEach((button) => {
+      button.addEventListener("click", () => {
+        toggleInventoryItemAttuned(button.dataset.toggleItemAttuned, button.dataset.toggleItemAttunedIndex);
       });
     });
     app.querySelectorAll("[data-remove-item-index]").forEach((button) => {
@@ -2057,14 +2069,16 @@ export function createEvents(deps) {
           const ability = button.dataset.saveRollBtn;
           const mod = toNumber(state.derived.mods?.[ability], 0);
           const isProf = Boolean(state.character.play?.saveProficiencies?.[ability]);
-          const bonus = mod + (isProf ? state.derived.proficiencyBonus : 0);
+          const itemSaveBonus = toNumber(state.derived?.itemSavingThrowBonus, 0);
+          const bonus = mod + (isProf ? state.derived.proficiencyBonus : 0) + itemSaveBonus;
           rollVisualD20(`${ability.toUpperCase()} save`, bonus);
         },
         (rollMode) => {
           const ability = button.dataset.saveRollBtn;
           const mod = toNumber(state.derived.mods?.[ability], 0);
           const isProf = Boolean(state.character.play?.saveProficiencies?.[ability]);
-          const bonus = mod + (isProf ? state.derived.proficiencyBonus : 0);
+          const itemSaveBonus = toNumber(state.derived?.itemSavingThrowBonus, 0);
+          const bonus = mod + (isProf ? state.derived.proficiencyBonus : 0) + itemSaveBonus;
           rollVisualD20(`${ability.toUpperCase()} save`, bonus, rollMode);
         }
       );
@@ -2567,6 +2581,11 @@ export function createEvents(deps) {
     app.querySelectorAll("[data-toggle-item-equipped]").forEach((button) => {
       button.addEventListener("click", () => {
         toggleInventoryItemEquipped(button.dataset.toggleItemEquipped);
+      });
+    });
+    app.querySelectorAll("[data-toggle-item-attuned]").forEach((button) => {
+      button.addEventListener("click", () => {
+        toggleInventoryItemAttuned(button.dataset.toggleItemAttuned, button.dataset.toggleItemAttunedIndex);
       });
     });
     app.querySelectorAll("[data-remove-item-index]").forEach((button) => {

@@ -1,3 +1,5 @@
+import { getActiveInventoryCatalogItems } from "../catalog/inventory-item-rules.js";
+
 export function createProficiencyRules({
   toNumber,
   saveAbilities,
@@ -324,6 +326,19 @@ export function createProficiencyRules({
     return { featEntries, optionalFeatureEntries };
   }
 
+  function getActiveItemEntries(catalogs, character) {
+    return getActiveInventoryCatalogItems(catalogs, character)
+      .map(({ inventoryEntry, catalogItem }) => {
+        const sourceLabel = String(inventoryEntry?.id ?? "").trim();
+        return {
+          selection: inventoryEntry,
+          entry: catalogItem,
+          sourceKey: `item:${sourceLabel || String(catalogItem?.name ?? "").trim().toLowerCase()}`,
+        };
+      })
+      .filter((entry) => isRecordObject(entry?.entry));
+  }
+
   function getAutomaticAbilityBonuses(catalogs, character, play) {
     const sourceOrder = getPreferredSourceOrder(character);
     const raceEntry = getEffectiveRaceEntry(catalogs, character, sourceOrder);
@@ -334,6 +349,7 @@ export function createProficiencyRules({
       sourceOrder
     );
     const { featEntries, optionalFeatureEntries } = getSelectedFeatAndOptionalFeatureEntries(catalogs, character, sourceOrder);
+    const itemEntries = getActiveItemEntries(catalogs, character);
     const raceBonuses = getAbilityBonusesFromEntity(raceEntry, "race", play);
     const backgroundBonuses = getAbilityBonusesFromEntity(backgroundEntry, "background", play);
     const featBonuses = getEmptyAbilityMap();
@@ -348,6 +364,13 @@ export function createProficiencyRules({
       const bonuses = getAbilityBonusesFromEntity(entry, sourceKey, play);
       saveAbilities.forEach((ability) => {
         optionalFeatureBonuses[ability] = Math.max(0, toNumber(optionalFeatureBonuses?.[ability], 0) + toNumber(bonuses?.[ability], 0));
+      });
+    });
+    const itemBonuses = getEmptyAbilityMap();
+    itemEntries.forEach(({ entry, sourceKey }) => {
+      const bonuses = getAbilityBonusesFromEntity(entry, sourceKey, play);
+      saveAbilities.forEach((ability) => {
+        itemBonuses[ability] = Math.max(0, toNumber(itemBonuses?.[ability], 0) + toNumber(bonuses?.[ability], 0));
       });
     });
     const featSlots = Array.isArray(character?.progression?.featSlots) ? character.progression.featSlots : [];
@@ -378,6 +401,7 @@ export function createProficiencyRules({
           + toNumber(asiBonuses[ability], 0)
           + toNumber(featBonuses[ability], 0)
           + toNumber(optionalFeatureBonuses[ability], 0)
+          + toNumber(itemBonuses[ability], 0)
       );
       return acc;
     }, {});
@@ -669,11 +693,13 @@ export function createProficiencyRules({
       sourceOrder
     );
     const { featEntries, optionalFeatureEntries } = getSelectedFeatAndOptionalFeatureEntries(catalogs, character, sourceOrder);
+    const itemEntries = getActiveItemEntries(catalogs, character);
     const saveSources = [
       { entry: raceEntry, sourceKey: "race" },
       { entry: backgroundEntry, sourceKey: "background" },
       ...featEntries,
       ...optionalFeatureEntries,
+      ...itemEntries,
     ];
     saveSources.forEach(({ entry, sourceKey }) => {
       collectSaveProficienciesFromEntity(entry, sourceKey, play).forEach((ability) => {
@@ -697,6 +723,7 @@ export function createProficiencyRules({
       sourceOrder
     );
     const { featEntries, optionalFeatureEntries } = getSelectedFeatAndOptionalFeatureEntries(catalogs, character, sourceOrder);
+    const itemEntries = getActiveItemEntries(catalogs, character);
     const activeSkills = new Set();
     if (classEntry) {
       const className = String(classEntry?.name ?? character?.class ?? "").trim().toLowerCase();
@@ -711,6 +738,10 @@ export function createProficiencyRules({
       collectSkillToolLanguageSkillProficienciesFromEntity(entry, sourceKey, play).forEach((skillKey) => activeSkills.add(skillKey));
     });
     optionalFeatureEntries.forEach(({ entry, sourceKey }) => {
+      collectSkillProficienciesFromEntity(entry, sourceKey, play).forEach((skillKey) => activeSkills.add(skillKey));
+      collectSkillToolLanguageSkillProficienciesFromEntity(entry, sourceKey, play).forEach((skillKey) => activeSkills.add(skillKey));
+    });
+    itemEntries.forEach(({ entry, sourceKey }) => {
       collectSkillProficienciesFromEntity(entry, sourceKey, play).forEach((skillKey) => activeSkills.add(skillKey));
       collectSkillToolLanguageSkillProficienciesFromEntity(entry, sourceKey, play).forEach((skillKey) => activeSkills.add(skillKey));
     });
@@ -734,6 +765,7 @@ export function createProficiencyRules({
     }
     const sourceOrder = getPreferredSourceOrder(character);
     const { featEntries, optionalFeatureEntries } = getSelectedFeatAndOptionalFeatureEntries(catalogs, character, sourceOrder);
+    const itemEntries = getActiveItemEntries(catalogs, character);
     const currentlyProficient = new Set(
       skills
         .map((skill) => skill.key)
@@ -747,6 +779,13 @@ export function createProficiencyRules({
       });
     });
     optionalFeatureEntries.forEach(({ entry, sourceKey }) => {
+      collectExpertiseSkillKeysFromEntity(entry, sourceKey, play, currentlyProficient).forEach((skillKey) => {
+        if (modes[skillKey] === skillProficiencyProficient || modes[skillKey] === skillProficiencyExpertise) {
+          modes[skillKey] = skillProficiencyExpertise;
+        }
+      });
+    });
+    itemEntries.forEach(({ entry, sourceKey }) => {
       collectExpertiseSkillKeysFromEntity(entry, sourceKey, play, currentlyProficient).forEach((skillKey) => {
         if (modes[skillKey] === skillProficiencyProficient || modes[skillKey] === skillProficiencyExpertise) {
           modes[skillKey] = skillProficiencyExpertise;

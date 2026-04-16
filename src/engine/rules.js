@@ -1,3 +1,5 @@
+import { getActiveInventoryCatalogItems } from "../app/catalog/inventory-item-rules.js";
+
 function abilityMod(score) {
   return Math.floor((Number(score || 0) - 10) / 2);
 }
@@ -285,12 +287,39 @@ function getSpeciesUnarmoredAcRule(catalogs, character) {
   return null;
 }
 
+function normalizeSenseFieldList(fieldValue) {
+  if (fieldValue == null) return [];
+  if (Array.isArray(fieldValue)) {
+    return fieldValue.filter((senseEntry) => senseEntry && typeof senseEntry === "object" && !Array.isArray(senseEntry));
+  }
+  if (typeof fieldValue === "object" && !Array.isArray(fieldValue)) {
+    return [fieldValue];
+  }
+  return [];
+}
+
+function mergeDarkvisionFromCatalogEntryText(entry, map) {
+  if (!entry || typeof entry !== "object") return;
+  const blocks = Array.isArray(entry.entries) ? entry.entries : [];
+  if (!blocks.length) return;
+  const lines = [];
+  blocks.forEach((block) => collectTraitTextLines(block, lines));
+  const text = lines.join(" ").toLowerCase();
+  if (!/dark\s*vision|darkvision/.test(text)) return;
+  const anchor = text.includes("darkvision") ? text.indexOf("darkvision") : text.search(/\bdark\s+vision\b/);
+  if (anchor < 0) return;
+  const windowText = text.slice(anchor, anchor + 240);
+  const match = windowText.match(/(\d+)\s*(?:feet|ft)\b/);
+  if (!match?.[1]) return;
+  const ft = Math.max(0, toNumber(match[1], 0));
+  if (ft <= 0) return;
+  map.darkvision = Math.max(toNumber(map.darkvision, 0), ft);
+}
+
 function collectSenseMapFromEntry(entry, map) {
   if (!entry || typeof entry !== "object") return;
   ["senses", "bonusSenses"].forEach((fieldKey) => {
-    const values = Array.isArray(entry?.[fieldKey]) ? entry[fieldKey] : [];
-    values.forEach((senseEntry) => {
-      if (!senseEntry || typeof senseEntry !== "object" || Array.isArray(senseEntry)) return;
+    normalizeSenseFieldList(entry?.[fieldKey]).forEach((senseEntry) => {
       Object.entries(senseEntry).forEach(([senseKey, amountRaw]) => {
         const key = String(senseKey ?? "").trim().toLowerCase();
         if (!key) return;
@@ -300,6 +329,35 @@ function collectSenseMapFromEntry(entry, map) {
       });
     });
   });
+  mergeDarkvisionFromCatalogEntryText(entry, map);
+}
+
+function findClassCatalogEntrySimple(catalogs, className, classSource = "") {
+  const classes = Array.isArray(catalogs?.classes) ? catalogs.classes : [];
+  const normalizedName = String(className ?? "").trim().toLowerCase();
+  if (!normalizedName) return null;
+  const matches = classes.filter((entry) => String(entry?.name ?? "").trim().toLowerCase() === normalizedName);
+  if (!matches.length) return null;
+  const normalizedSource = normalizeSourceTag(classSource);
+  if (normalizedSource) {
+    const bySource = matches.find((entry) => normalizeSourceTag(entry?.source) === normalizedSource);
+    if (bySource) return bySource;
+  }
+  return matches[0];
+}
+
+function findSubclassCatalogEntrySimple(catalogs, character, primaryClassName) {
+  const subName = String(character?.classSelection?.subclass?.name ?? character?.subclass ?? "").trim().toLowerCase();
+  if (!subName) return null;
+  const subs = Array.isArray(catalogs?.subclasses) ? catalogs.subclasses : [];
+  const classMatches = subs.filter((entry) => String(entry?.name ?? "").trim().toLowerCase() === subName);
+  if (!classMatches.length) return null;
+  const primary = String(primaryClassName ?? "").trim().toLowerCase();
+  if (primary) {
+    const aligned = classMatches.find((entry) => String(entry?.className ?? "").trim().toLowerCase() === primary);
+    if (aligned) return aligned;
+  }
+  return classMatches[0];
 }
 
 function getCharacterSenseSummary(catalogs, character) {
@@ -316,7 +374,32 @@ function getCharacterSenseSummary(catalogs, character) {
     const detail = findOptionalFeatureCatalogEntry(catalogs, feature);
     collectSenseMapFromEntry(detail, senseMap);
   });
+  const primaryClassName = String(character?.class ?? "").trim();
+  if (primaryClassName) {
+    collectSenseMapFromEntry(findClassCatalogEntrySimple(catalogs, primaryClassName, character?.classSource), senseMap);
+    collectSenseMapFromEntry(findSubclassCatalogEntrySimple(catalogs, character, primaryClassName), senseMap);
+  }
+  const multiclassEntries = Array.isArray(character?.multiclass) ? character.multiclass : [];
+  multiclassEntries.forEach((entry) => {
+    const name = String(entry?.class ?? "").trim();
+    if (!name) return;
+    collectSenseMapFromEntry(findClassCatalogEntrySimple(catalogs, name, entry?.source), senseMap);
+  });
+  getActiveInventoryCatalogItems(catalogs, character).forEach(({ catalogItem }) => {
+    collectSenseMapFromEntry(catalogItem, senseMap);
+  });
   return senseMap;
+}
+
+function getActiveItemNumericBonusEntries(catalogs, character, fieldKey) {
+  return getActiveInventoryCatalogItems(catalogs, character)
+    .map(({ inventoryEntry, catalogItem }) => {
+      const value = toNumber(catalogItem?.[fieldKey], Number.NaN);
+      if (!Number.isFinite(value) || value === 0) return null;
+      const label = String(inventoryEntry?.name ?? catalogItem?.name ?? "Item").trim() || "Item";
+      return { label, value };
+    })
+    .filter(Boolean);
 }
 
 export function getArmorClassBreakdown(character, dexMod, fightingStyles = new Set(), catalogs = null) {
@@ -391,6 +474,13 @@ export function getArmorClassBreakdown(character, dexMod, fightingStyles = new S
       source: "Fighting Style",
     });
   }
+  getActiveItemNumericBonusEntries(catalogs, character, "bonusAc").forEach((entry) => {
+    components.push({
+      label: `${entry.label} (Item Bonus)`,
+      value: entry.value,
+      source: "Item",
+    });
+  });
   const customModifier = Math.floor(toNumber(character?.play?.customAcModifier, 0));
   if (customModifier !== 0) {
     components.push({
@@ -433,6 +523,8 @@ export function computeDerivedStats(character, catalogs = null) {
   const passiveInsight = getPassiveSkillValue("insight", "wis");
   const passiveInvestigation = getPassiveSkillValue("investigation", "int");
   const senses = getCharacterSenseSummary(catalogs, character);
+  const itemSavingThrowBonus = getActiveItemNumericBonusEntries(catalogs, character, "bonusSavingThrow")
+    .reduce((sum, entry) => sum + toNumber(entry?.value, 0), 0);
 
   return {
     mods,
@@ -443,5 +535,6 @@ export function computeDerivedStats(character, catalogs = null) {
     passiveInsight,
     passiveInvestigation,
     senses,
+    itemSavingThrowBonus,
   };
 }

@@ -239,6 +239,9 @@ const spellcastingRules = createSpellcastingRules({
   spellSlotLevels: SPELL_SLOT_LEVELS,
   getPreferredSourceOrder: catalogLookupDomain.getPreferredSourceOrder,
   getClassCatalogEntry: catalogLookupDomain.getClassCatalogEntry,
+  saveAbilities: SAVE_ABILITIES,
+  abilityLabels: ABILITY_LABELS,
+  getSelectedSubclassEntry: catalogLookupDomain.getSelectedSubclassEntry,
 });
 const progressionCore = createProgressionCore({
   toNumber,
@@ -361,6 +364,7 @@ const proficiencySummaryRules = createProficiencySummaryRules({
   buildEntityId,
   catalogLookupDomain,
   proficiencyRules,
+  inventoryWeapons,
 });
 const autoAttackRules = createAutoAttackRules({
   toNumber,
@@ -903,6 +907,7 @@ const renderers = createRenderers({
   getCharacterToolAndDefenseSummary: proficiencySummaryRules.getCharacterToolAndDefenseSummary,
   getLevelUpPreview: progressionRules.getLevelUpPreview,
   getClassCasterContribution: spellcastingRules.getClassCasterContribution,
+  getCharacterSpellSaveSummary: spellcastingRules.getCharacterSpellSaveSummary,
   renderCharacterHistorySelector: historyApi.renderCharacterHistorySelector,
   renderPersistenceNotice: changeLogDomain.renderPersistenceNotice,
   getModeToggle: characterViewHelpers.getModeToggle,

@@ -3,7 +3,12 @@ export function createSpellcastingRules({
   spellSlotLevels,
   getPreferredSourceOrder,
   getClassCatalogEntry,
+  saveAbilities,
+  abilityLabels,
+  getSelectedSubclassEntry,
 }) {
+  const saveAbilitiesList =
+    Array.isArray(saveAbilities) && saveAbilities.length ? saveAbilities : ["str", "dex", "con", "int", "wis", "cha"];
   const getClassKey = (className) =>
     String(className ?? "")
       .trim()
@@ -73,6 +78,82 @@ export function createSpellcastingRules({
     return 0;
   }
 
+  function normalizeAbilityKey(value) {
+    const key = String(value ?? "").trim().toLowerCase();
+    return saveAbilitiesList.includes(key) ? key : "";
+  }
+
+  function resolveSpellModsFromAbilityField(raw, mods) {
+    if (raw == null) return null;
+    const keys =
+      typeof raw === "string"
+        ? [normalizeAbilityKey(raw)].filter(Boolean)
+        : Array.isArray(raw)
+          ? raw.map((entry) => normalizeAbilityKey(entry)).filter(Boolean)
+          : [];
+    if (!keys.length) return null;
+    let bestKey = keys[0];
+    let bestMod = toNumber(mods[bestKey], 0);
+    for (let i = 1; i < keys.length; i += 1) {
+      const k = keys[i];
+      const m = toNumber(mods[k], 0);
+      if (m > bestMod) {
+        bestMod = m;
+        bestKey = k;
+      }
+    }
+    return { bestKey, bestMod, allKeys: keys };
+  }
+
+  function resolveSpellMods(classEntry, subclassEntry, mods) {
+    const fromClass = classEntry ? resolveSpellModsFromAbilityField(classEntry.spellcastingAbility, mods) : null;
+    if (fromClass) return fromClass;
+    if (subclassEntry) return resolveSpellModsFromAbilityField(subclassEntry.spellcastingAbility, mods);
+    return null;
+  }
+
+  function spellcastingTrackIsActive(catalogs, resolvedClassName, level) {
+    const t = getClassCasterType(catalogs, resolvedClassName);
+    if (t === "pact") return level >= 1;
+    return getClassCasterContribution(catalogs, resolvedClassName, level) > 0;
+  }
+
+  function getCharacterSpellSaveSummary(catalogs, character, mods, proficiencyBonus) {
+    const pb = Math.max(0, toNumber(proficiencyBonus, 0));
+    const { primaryLevel, multiclass } = getCharacterClassLevels(character);
+    const rows = [];
+    const considerTrack = (className, classSource, level, isPrimary) => {
+      const trimmed = String(className ?? "").trim();
+      if (!trimmed || level < 1) return;
+      const classEntry = getClassCatalogEntry(catalogs, trimmed, classSource, getPreferredSourceOrder(character));
+      if (!classEntry) return;
+      const resolvedName = String(classEntry.name ?? trimmed).trim();
+      if (!resolvedName) return;
+      const subclassEntry = isPrimary && typeof getSelectedSubclassEntry === "function" ? getSelectedSubclassEntry(catalogs, character) : null;
+      const modInfo = resolveSpellMods(classEntry, subclassEntry, mods);
+      if (!modInfo) return;
+      if (!spellcastingTrackIsActive(catalogs, resolvedName, level)) return;
+      const dc = 8 + pb + modInfo.bestMod;
+      const abilityLabel =
+        modInfo.allKeys.length > 1
+          ? `max ${modInfo.allKeys.map((k) => abilityLabels?.[k] ?? String(k).toUpperCase()).join("/")}`
+          : abilityLabels?.[modInfo.bestKey] ?? String(modInfo.bestKey).toUpperCase();
+      rows.push({ classLabel: resolvedName, dc, abilityLabel });
+    };
+    considerTrack(character?.class, character?.classSource, primaryLevel, true);
+    multiclass.forEach((entry) => considerTrack(entry.class, entry.source ?? "", entry.level, false));
+    if (!rows.length) return null;
+    const dcs = rows.map((r) => r.dc);
+    const minDc = Math.min(...dcs);
+    const maxDc = Math.max(...dcs);
+    const displayText = minDc === maxDc ? String(maxDc) : `${minDc}–${maxDc}`;
+    let title = rows.map((r) => `${r.classLabel}: spell save DC ${r.dc} (${r.abilityLabel})`).join(". ");
+    if (rows.length > 1) {
+      title += " Each spell uses the DC for the class that granted it.";
+    }
+    return { displayText, title, rows };
+  }
+
   function getCharacterClassLevels(character) {
     const totalLevel = Math.max(1, Math.min(20, toNumber(character?.level, 1)));
     const multiclassEntries = Array.isArray(character?.multiclass) ? character.multiclass : [];
@@ -125,5 +206,6 @@ export function createSpellcastingRules({
     getCharacterClassLevels,
     getFullCasterSpellSlotsByLevel,
     getCharacterSpellSlotDefaults,
+    getCharacterSpellSaveSummary,
   };
 }

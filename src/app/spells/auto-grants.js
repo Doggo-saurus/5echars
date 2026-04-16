@@ -1,3 +1,5 @@
+import { getActiveInventoryCatalogItems } from "../catalog/inventory-item-rules.js";
+
 const AUTO_SPELL_GRANT_PRIORITY = {
   expanded: 1,
   innate: 2,
@@ -129,6 +131,11 @@ export function createAutoGrantedSpellRules({
       );
       if (!entry) return;
       collectAdditionalSpellGrantsFromEntries(entry?.additionalSpells, Math.max(1, toNumber(character?.level, 1))).forEach((grant) =>
+        addGrant(grant.name, grant.grantType)
+      );
+    });
+    getActiveInventoryCatalogItems(catalogs, character).forEach(({ catalogItem }) => {
+      collectAdditionalSpellGrantsFromEntries(catalogItem?.additionalSpells, Math.max(1, toNumber(character?.level, 1))).forEach((grant) =>
         addGrant(grant.name, grant.grantType)
       );
     });

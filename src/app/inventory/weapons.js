@@ -109,7 +109,8 @@ export function createInventoryWeapons({
   function normalizeWeaponPropertyToken(value) {
     const token = String(value ?? "").trim().toUpperCase().replace(/\./g, "");
     if (!token) return "";
-    if (token === "FINESSE") return "F";
+    // Some data sources contain common finesse misspellings; normalize them.
+    if (token === "FINESSE" || token === "FINESE" || token === "FINESS") return "F";
     if (token === "LIGHT") return "L";
     if (token === "THROWN") return "T";
     if (token === "VERSATILE") return "V";
@@ -154,6 +155,20 @@ export function createInventoryWeapons({
     return "";
   }
 
+  function isFirearmWeaponEntry(entry) {
+    const category = getInventoryWeaponCategory(entry);
+    const properties = getInventoryWeaponProperties(entry);
+    const name = getInventoryItemName(entry).toLowerCase();
+    return category.includes("firearm") || properties.includes("FIREARM") || name.includes("firearm");
+  }
+
+  function isImprovisedWeaponEntry(entry) {
+    const category = getInventoryWeaponCategory(entry);
+    const properties = getInventoryWeaponProperties(entry);
+    const name = getInventoryItemName(entry).toLowerCase();
+    return category.includes("improvised") || properties.includes("IMPROVISED") || name.includes("improvised");
+  }
+
   function isRangedWeaponEntry(entry) {
     const category = getInventoryWeaponCategory(entry);
     const typeCode = normalizeItemTypeCode(entry?.itemType ?? entry?.type);
@@ -173,14 +188,20 @@ export function createInventoryWeapons({
     const family = getInventoryWeaponFamily(entry);
     const isRanged = isRangedWeaponEntry(entry);
     const isMelee = !isRanged;
+    const isFirearm = isFirearmWeaponEntry(entry);
+    const isImprovised = isImprovisedWeaponEntry(entry);
     const hasSimpleWeaponProficiency = tokenList.some((token) => token === "simple" || token === "simple weapon" || token === "simple weapons");
     const hasMartialWeaponProficiency = tokenList.some((token) => token === "martial" || token === "martial weapon" || token === "martial weapons");
     const hasRangedWeaponProficiency = tokenList.some((token) => token === "ranged weapon" || token === "ranged weapons");
     const hasMeleeWeaponProficiency = tokenList.some((token) => token === "melee weapon" || token === "melee weapons");
+    const hasFirearmsProficiency = tokenList.some((token) => token === "firearm" || token === "firearms");
+    const hasImprovisedWeaponProficiency = tokenList.some((token) => token === "improvised" || token === "improvised weapon" || token === "improvised weapons");
     if (family === "simple" && hasSimpleWeaponProficiency) return true;
     if (family === "martial" && hasMartialWeaponProficiency) return true;
     if (isRanged && hasRangedWeaponProficiency) return true;
     if (isMelee && hasMeleeWeaponProficiency) return true;
+    if (isFirearm && hasFirearmsProficiency) return true;
+    if (isImprovised && hasImprovisedWeaponProficiency) return true;
     const itemName = normalizeItemNameForProficiency(getInventoryItemName(entry));
     if (itemName && tokenList.some((token) => normalizeItemNameForProficiency(token) === itemName)) return true;
     return false;

@@ -33,7 +33,7 @@ This project now runs as a Node web service that serves the frontend and `/api` 
 ```bash
 cd server
 npm install
-npm start
+npm run dev
 ```
 
 Then open:
@@ -56,7 +56,7 @@ cd server
 npm run watch:client
 ```
 
-To run the app (which now serves the bundled shell by default):
+To run the app in production-like mode (one-time client build + server start):
 
 ```bash
 npm start
@@ -64,6 +64,7 @@ npm start
 
 Notes:
 
+- `npm run dev` watches both frontend bundle output and backend server files.
 - `npm start` builds the client bundle first, then starts the server.
 - Built assets are emitted to `public/dist/`.
 - `watch:client` is useful while iterating on frontend code in another terminal.

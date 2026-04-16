@@ -1,3 +1,5 @@
+import { itemRequiresAttunement, resolveInventoryCatalogItem } from "../catalog/inventory-item-rules.js";
+
 export function createCharacterUpdater({
   toNumber,
   isRecordObject,
@@ -107,6 +109,21 @@ export function createCharacterUpdater({
     nextCharacter = {
       ...nextCharacter,
       ...resolveImportedCharacterSelections(state.catalogs, nextCharacter),
+    };
+    const nextInventory = (Array.isArray(nextCharacter?.inventory) ? nextCharacter.inventory : []).map((entry) => {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) return entry;
+      const resolvedItem = resolveInventoryCatalogItem(state.catalogs, entry);
+      const requiresAttunement = resolvedItem ? itemRequiresAttunement(resolvedItem) : Boolean(entry?.requiresAttunement);
+      const equipped = Boolean(entry?.equipped);
+      return {
+        ...entry,
+        requiresAttunement,
+        attuned: equipped ? Boolean(entry?.attuned) : false,
+      };
+    });
+    nextCharacter = {
+      ...nextCharacter,
+      inventory: nextInventory,
     };
     const nextPlaySeed = isRecordObject(patch.play) ? patch.play : state.character.play;
     const nextPlay = structuredClone(nextPlaySeed ?? {});
