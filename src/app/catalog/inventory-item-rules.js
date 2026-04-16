@@ -18,6 +18,68 @@ function getInventoryLookupNameCandidates(name) {
   return [normalized, withoutBonusPrefix];
 }
 
+function dedupeLookupCandidates(values) {
+  const seen = new Set();
+  return (Array.isArray(values) ? values : [])
+    .map((value) => String(value ?? "").trim())
+    .filter((value) => {
+      if (!value) return false;
+      const key = normalizeLookupValue(value);
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+
+function parseVariantAndBaseNames(name) {
+  const normalized = normalizeInventoryItemName(name);
+  if (!normalized) return { variantName: "", baseName: "" };
+  const hyphenIndex = normalized.lastIndexOf(" - ");
+  if (hyphenIndex > 0 && hyphenIndex < normalized.length - 3) {
+    return {
+      variantName: normalized.slice(0, hyphenIndex).trim(),
+      baseName: normalized.slice(hyphenIndex + 3).trim(),
+    };
+  }
+  const parenMatch = normalized.match(/^(.*?)\s*\(([^()]+)\)\s*$/);
+  if (parenMatch) {
+    return {
+      variantName: String(parenMatch[1] ?? "").trim(),
+      baseName: String(parenMatch[2] ?? "").trim(),
+    };
+  }
+  return { variantName: "", baseName: "" };
+}
+
+function findCatalogItemByName(items, nameValue, sourceValues, requireSource) {
+  const normalizedName = normalizeLookupValue(nameValue);
+  if (!normalizedName) return null;
+  const normalizedSources = dedupeLookupCandidates(sourceValues).map((value) => normalizeLookupValue(value));
+  return (
+    items.find((item) => {
+      if (normalizeLookupValue(item?.name) !== normalizedName) return false;
+      if (!requireSource || !normalizedSources.length) return true;
+      const itemSource = normalizeLookupValue(item?.source);
+      return normalizedSources.includes(itemSource);
+    }) ?? null
+  );
+}
+
+function mergeVariantWithBaseCatalogItem(variantItem, baseItem) {
+  const mergedVariant = mergeCatalogItemWithInherits(variantItem);
+  const mergedBase = mergeCatalogItemWithInherits(baseItem);
+  if (!mergedVariant) return mergedBase;
+  if (!mergedBase) return mergedVariant;
+  const variantEntries = Array.isArray(mergedVariant?.entries) ? mergedVariant.entries : [];
+  const baseEntries = Array.isArray(mergedBase?.entries) ? mergedBase.entries : [];
+  const combinedEntries = [...variantEntries, ...baseEntries];
+  return {
+    ...mergedBase,
+    ...mergedVariant,
+    entries: combinedEntries.length ? combinedEntries : mergedVariant.entries ?? mergedBase.entries,
+  };
+}
+
 export function mergeCatalogItemWithInherits(item) {
   if (!isRecordObject(item)) return null;
   const inherits = isRecordObject(item?.inherits) ? item.inherits : {};
@@ -35,19 +97,19 @@ export function resolveInventoryCatalogItem(catalogs, inventoryEntry) {
   if (!isRecordObject(inventoryEntry)) return null;
   const items = Array.isArray(catalogs?.items) ? catalogs.items : [];
   if (!items.length) return null;
-  const names = getInventoryLookupNameCandidates(inventoryEntry?.name);
+  const parsedNames = parseVariantAndBaseNames(inventoryEntry?.name);
+  const names = dedupeLookupCandidates([
+    ...getInventoryLookupNameCandidates(inventoryEntry?.name),
+    ...getInventoryLookupNameCandidates(inventoryEntry?.catalogName),
+    ...getInventoryLookupNameCandidates(parsedNames.variantName),
+  ]);
   if (!names.length) return null;
-  const source = normalizeLookupValue(inventoryEntry?.source);
+  const sourceCandidates = dedupeLookupCandidates([
+    inventoryEntry?.catalogSource,
+    inventoryEntry?.source,
+  ]);
   const tryMatch = (nameValue, requireSource) => {
-    const normalizedName = normalizeLookupValue(nameValue);
-    if (!normalizedName) return null;
-    return (
-      items.find((item) => {
-        if (normalizeLookupValue(item?.name) !== normalizedName) return false;
-        if (!requireSource || !source) return true;
-        return normalizeLookupValue(item?.source) === source;
-      }) ?? null
-    );
+    return findCatalogItemByName(items, nameValue, sourceCandidates, requireSource);
   };
   let matched = null;
   for (const name of names) {
@@ -60,7 +122,29 @@ export function resolveInventoryCatalogItem(catalogs, inventoryEntry) {
       if (matched) break;
     }
   }
-  return mergeCatalogItemWithInherits(matched);
+  if (!matched) return null;
+  const baseNameCandidates = dedupeLookupCandidates([
+    inventoryEntry?.baseItemName,
+    parsedNames.baseName,
+  ]);
+  if (!baseNameCandidates.length) return mergeCatalogItemWithInherits(matched);
+  const baseSourceCandidates = dedupeLookupCandidates([
+    inventoryEntry?.baseItemSource,
+    inventoryEntry?.source,
+  ]);
+  let matchedBase = null;
+  for (const baseName of baseNameCandidates) {
+    matchedBase = findCatalogItemByName(items, baseName, baseSourceCandidates, true);
+    if (matchedBase) break;
+  }
+  if (!matchedBase) {
+    for (const baseName of baseNameCandidates) {
+      matchedBase = findCatalogItemByName(items, baseName, baseSourceCandidates, false);
+      if (matchedBase) break;
+    }
+  }
+  if (!matchedBase) return mergeCatalogItemWithInherits(matched);
+  return mergeVariantWithBaseCatalogItem(matched, matchedBase);
 }
 
 export function itemRequiresAttunement(item) {

@@ -1,4 +1,5 @@
 import { SOURCE_LABELS } from "./config/sources.js";
+import { getHomebrewItems } from "./homebrew/items.js";
 
 const DATA_ROOT = "./data/catalog-src/data";
 
@@ -216,6 +217,7 @@ function buildSourceEntries(sourceSet, bookLabels) {
 
 export async function loadAvailableSourceEntries() {
   try {
+    const homebrewItems = getHomebrewItems();
     const [classData, races, subraces, backgrounds, feats, optionalFeatures, spells, items, baseItems, magicVariants, conditions, books] = await Promise.all([
       loadClassDataFromIndex(),
       loadSingleFile("races.json", "race"),
@@ -232,7 +234,7 @@ export async function loadAvailableSourceEntries() {
     ]);
     const playableRaces = filterNpcRaces(races);
     const variantItems = mapMagicVariantsToItems(magicVariants);
-    const allItems = dedupeByNameAndSource([...items, ...baseItems, ...variantItems]);
+    const allItems = dedupeByNameAndSource([...items, ...baseItems, ...variantItems, ...homebrewItems]);
     const sourceSet = new Set([
       ...collectSourceKeys(classData.classes),
       ...collectSourceKeys(classData.subclasses),
@@ -258,6 +260,7 @@ export async function loadAvailableSourceEntries() {
 
 export async function isCatalogDataSrdOnly() {
   try {
+    const homebrewItems = getHomebrewItems();
     const [classData, races, subraces, backgrounds, feats, optionalFeatures, spells, items, baseItems, magicVariants, conditions] = await Promise.all([
       loadClassDataFromIndex(),
       loadSingleFile("races.json", "race"),
@@ -273,7 +276,7 @@ export async function isCatalogDataSrdOnly() {
     ]);
     const playableRaces = filterNpcRaces(races);
     const variantItems = mapMagicVariantsToItems(magicVariants);
-    const allItems = dedupeByNameAndSource([...items, ...baseItems, ...variantItems]);
+    const allItems = dedupeByNameAndSource([...items, ...baseItems, ...variantItems, ...homebrewItems]);
     return isSrdOnlyCatalogContent([
       classData.classes,
       classData.subclasses,
@@ -300,6 +303,7 @@ export async function loadAvailableSources() {
 
 export async function loadCatalogs(allowedSources) {
   try {
+    const homebrewItems = getHomebrewItems();
     const [classData, races, subraces, backgrounds, feats, optionalFeatures, spells, items, baseItems, magicVariants, spellSourceLookup, conditions] = await Promise.all([
       loadClassDataFromIndex(),
       loadSingleFile("races.json", "race"),
@@ -316,7 +320,7 @@ export async function loadCatalogs(allowedSources) {
     ]);
     const playableRaces = filterNpcRaces(races);
     const variantItems = mapMagicVariantsToItems(magicVariants);
-    const allItems = dedupeByNameAndSource([...items, ...baseItems, ...variantItems]);
+    const allItems = dedupeByNameAndSource([...items, ...baseItems, ...variantItems, ...homebrewItems]);
     const mappedSpells = mapNamed(filterBySources(spells, allowedSources)).map((spell) => {
       const sourceKey = String(spell?.source ?? "").trim().toLowerCase();
       const spellKey = String(spell?.name ?? "").trim().toLowerCase();
@@ -350,7 +354,13 @@ export async function loadCatalogs(allowedSources) {
         allowedSources
       ),
       spells: mappedSpells,
-      items: sortCatalogItemsByNameAndSourcePriority(mapNamed(filterBySources(allItems, allowedSources)), allowedSources),
+      items: sortCatalogItemsByNameAndSourcePriority(
+        dedupeByNameAndSource([
+          ...mapNamed(filterBySources(allItems, allowedSources)),
+          ...homebrewItems,
+        ]),
+        allowedSources
+      ),
       conditions: mappedConditions.length ? mappedConditions : getDefaultConditionsCatalog(),
     };
   } catch {

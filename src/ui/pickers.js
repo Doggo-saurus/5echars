@@ -517,6 +517,10 @@ export function createPickers(deps) {
       if (!name) return null;
       const source = String(variantItem?.source ?? item?.source ?? "").trim();
       const sourceLabel = String(variantItem?.sourceLabel ?? item?.sourceLabel ?? source).trim();
+      const catalogName = String(variantItem?.name ?? item?.name ?? "").trim();
+      const catalogSource = String(variantItem?.source ?? item?.source ?? "").trim();
+      const baseItemName = variantItem ? String(item?.name ?? "").trim() : "";
+      const baseItemSource = variantItem ? String(item?.source ?? "").trim() : "";
       const typeCode = normalizeItemTypeCode(firstNonEmpty(variantItem?.type, inherits?.type, item?.type));
       const acValue = Number(firstNonEmpty(variantItem?.ac, inherits?.ac, item?.ac));
       const damageType = String(firstNonEmpty(variantItem?.dmgType, inherits?.dmgType, item?.dmgType) ?? "").trim();
@@ -547,6 +551,10 @@ export function createPickers(deps) {
         name,
         source,
         sourceLabel,
+        catalogName,
+        catalogSource,
+        baseItemName,
+        baseItemSource,
         itemType: typeCode,
         weaponCategory,
         damageDice,
@@ -778,10 +786,13 @@ export function createPickers(deps) {
     function buildVariantItemName(variant, baseItem) {
       const prefix = String(variant?.inherits?.namePrefix ?? "");
       const suffix = String(variant?.inherits?.nameSuffix ?? "");
+      const variantName = String(variant?.name ?? "").trim();
       const baseName = String(baseItem?.name ?? "").trim();
       const combined = `${prefix}${baseName}${suffix}`.replace(/\s+/g, " ").trim();
-      if (combined) return combined;
-      return `${String(variant?.name ?? "Magic Variant").trim()} (${baseName})`.trim();
+      if ((prefix || suffix) && combined) return combined;
+      if (variantName && baseName) return `${variantName} - ${baseName}`;
+      if (variantName) return variantName;
+      return `${String(baseName || "Magic Variant").trim()}`.trim();
     }
 
     function openVariantBasePicker(variantItem) {
