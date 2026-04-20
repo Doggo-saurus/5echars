@@ -36,6 +36,7 @@ Provide one JSON object in this shape:
   "background": "",
   "class": "",
   "subclass": "",
+  "languages": [],
   "abilities": {
     "str": 10,
     "dex": 10,
@@ -133,6 +134,7 @@ Top-level constraints:
 - `level`: integer `1..20`.
 - `sourcePreset`: `"core"` or `"expanded"`. Default `"expanded"`.
 - `race`, `background`, `class`, `subclass`, `notes`: strings.
+- `languages`: array of language-name strings. Use `[]` when unknown.
 
 Ability constraints:
 
@@ -201,6 +203,7 @@ When confidence is limited, this compact payload is acceptable:
   "background": "",
   "class": "",
   "subclass": "",
+  "languages": [],
   "abilities": {
     "str": 10,
     "dex": 10,

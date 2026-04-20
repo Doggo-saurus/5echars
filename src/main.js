@@ -726,6 +726,7 @@ const partyFeature = createPartyFeature({
   loadCharacterHistory: historyApi.loadCharacterHistory,
   loadCharacterById: persistence.loadCharacterById,
   getCatalogsForCharacter: partyModalCatalogCacheApi.getCachedPartyModalCatalogs,
+  getCharacterToolAndDefenseSummary: proficiencySummaryRules.getCharacterToolAndDefenseSummary,
   openClassDetailsModalForCharacter: partyCharacterDetailsModals.openClassDetailsModalForCharacter,
   openSubclassDetailsModalForCharacter: partyCharacterDetailsModals.openSubclassDetailsModalForCharacter,
   render,

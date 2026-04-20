@@ -368,6 +368,14 @@ export function createProficiencySummaryRules({
     });
   }
 
+  function addCharacterLanguages(languageCollector, character, sourceLabel = "Additional") {
+    const languages = Array.isArray(character?.languages) ? character.languages : [];
+    languages.forEach((entry) => {
+      const label = formatSourceSummaryLabel(entry);
+      if (label) languageCollector.add(label, sourceLabel);
+    });
+  }
+
   function getCharacterToolAndDefenseSummary(catalogs, character) {
     const sourceOrder = catalogLookupDomain.getPreferredSourceOrder(character);
     const raceEntry = catalogLookupDomain.getEffectiveRaceEntry(catalogs, character, sourceOrder);
@@ -403,11 +411,29 @@ export function createProficiencySummaryRules({
       play: character?.play,
       pools: toolPools,
     });
+    addSimpleProficienciesFromStructuredSpec(languageCollector, raceEntry?.languageProficiencies, "Race", {
+      sourceKey: "race",
+      play: character?.play,
+      fallbackLabel: "language",
+      choicePrefix: "l",
+    });
+    if (Array.isArray(raceEntry?.languages)) {
+      raceEntry.languages.forEach((language) => languageCollector.add(language, "Race"));
+    }
     addToolProficienciesFromStructuredSpec(toolCollector, backgroundEntry?.toolProficiencies, "Background", {
       sourceKey: "background",
       play: character?.play,
       pools: toolPools,
     });
+    addSimpleProficienciesFromStructuredSpec(languageCollector, backgroundEntry?.languageProficiencies, "Background", {
+      sourceKey: "background",
+      play: character?.play,
+      fallbackLabel: "language",
+      choicePrefix: "l",
+    });
+    if (Array.isArray(backgroundEntry?.languages)) {
+      backgroundEntry.languages.forEach((language) => languageCollector.add(language, "Background"));
+    }
     const classSourceKey = `class:${String(classEntry?.name ?? character?.class ?? "").trim().toLowerCase() || "primary"}`;
     addToolProficienciesFromStructuredSpec(toolCollector, classEntry?.startingProficiencies?.toolProficiencies, "Class", {
       sourceKey: classSourceKey,
@@ -418,6 +444,20 @@ export function createProficiencySummaryRules({
       && classEntry.startingProficiencies.toolProficiencies.length > 0;
     if (!classHasStructuredTools && Array.isArray(classEntry?.startingProficiencies?.tools)) {
       classEntry.startingProficiencies.tools.forEach((tool) => toolCollector.add(tool, "Class"));
+    }
+    addSimpleProficienciesFromStructuredSpec(
+      languageCollector,
+      classEntry?.startingProficiencies?.languageProficiencies,
+      "Class",
+      {
+        sourceKey: classSourceKey,
+        play: character?.play,
+        fallbackLabel: "language",
+        choicePrefix: "l",
+      }
+    );
+    if (Array.isArray(classEntry?.startingProficiencies?.languages)) {
+      classEntry.startingProficiencies.languages.forEach((language) => languageCollector.add(language, "Class"));
     }
 
     const multiclassEntries = Array.isArray(character?.multiclass) ? character.multiclass : [];
@@ -442,6 +482,22 @@ export function createProficiencySummaryRules({
           pools: toolPools,
         }
       );
+      addSimpleProficienciesFromStructuredSpec(
+        languageCollector,
+        classCatalogEntry?.multiclassing?.proficienciesGained?.languageProficiencies,
+        "Multiclass",
+        {
+          sourceKey: multiclassSourceKey,
+          play: character?.play,
+          fallbackLabel: "language",
+          choicePrefix: "l",
+        }
+      );
+      if (Array.isArray(classCatalogEntry?.multiclassing?.proficienciesGained?.languages)) {
+        classCatalogEntry.multiclassing.proficienciesGained.languages.forEach((language) =>
+          languageCollector.add(language, "Multiclass")
+        );
+      }
     });
 
     const feats = Array.isArray(character?.feats) ? character.feats : [];
@@ -621,6 +677,7 @@ export function createProficiencySummaryRules({
     });
     addSenseEntries(senseCollector, raceEntry?.senses, "Race");
     addSenseEntries(senseCollector, raceEntry?.bonusSenses, "Race");
+    addCharacterLanguages(languageCollector, character, "Additional");
 
     return {
       tools: toolCollector.list(),

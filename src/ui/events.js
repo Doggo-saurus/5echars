@@ -138,6 +138,10 @@ export function createEvents(deps) {
       .toUpperCase();
   }
 
+  function normalizeLanguageLabel(value) {
+    return String(value ?? "").trim().replace(/\s+/g, " ");
+  }
+
   function esc(value) {
     return String(value ?? "")
       .replaceAll("&", "&amp;")
@@ -699,6 +703,41 @@ export function createEvents(deps) {
       const handler = () => store.updateCharacter({ [field]: el.value });
       el.addEventListener("input", handler);
       el.addEventListener("change", handler);
+    });
+    const addAdditionalLanguage = () => {
+      const languageSelect = app.querySelector("#additional-language-select");
+      if (!(languageSelect instanceof HTMLSelectElement)) return;
+      const nextLabel = normalizeLanguageLabel(languageSelect.value);
+      if (!nextLabel) return;
+      const currentLanguages = Array.isArray(store.getState().character?.languages)
+        ? store.getState().character.languages
+        : [];
+      const hasLabel = currentLanguages.some((entry) => normalizeLanguageLabel(entry).toLowerCase() === nextLabel.toLowerCase());
+      if (!hasLabel) {
+        store.updateCharacter({ languages: [...currentLanguages, nextLabel] });
+      }
+      languageSelect.value = "";
+    };
+    app.querySelector("#add-additional-language")?.addEventListener("click", () => {
+      addAdditionalLanguage();
+    });
+    app.querySelector("#additional-language-select")?.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      addAdditionalLanguage();
+    });
+    app.querySelectorAll("[data-remove-additional-language]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const label = normalizeLanguageLabel(button.dataset.removeAdditionalLanguage);
+        if (!label) return;
+        const currentLanguages = Array.isArray(store.getState().character?.languages)
+          ? store.getState().character.languages
+          : [];
+        const nextLanguages = currentLanguages.filter(
+          (entry) => normalizeLanguageLabel(entry).toLowerCase() !== label.toLowerCase()
+        );
+        store.updateCharacter({ languages: nextLanguages });
+      });
     });
     const showDiceTrayEl = app.querySelector("#show-dice-tray");
     if (showDiceTrayEl) {

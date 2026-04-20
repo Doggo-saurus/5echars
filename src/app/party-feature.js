@@ -19,12 +19,14 @@ export function createPartyFeature(deps) {
     loadCharacterHistory,
     loadCharacterById,
     getCatalogsForCharacter,
+    getCharacterToolAndDefenseSummary,
     openClassDetailsModalForCharacter,
     openSubclassDetailsModalForCharacter,
     render,
   } = deps;
   const memberCharacterCache = new Map();
   const memberDerivedCache = new Map();
+  const memberLanguageCache = new Map();
   let partyAutoRefreshTimer = null;
   let isPartyAutoRefreshInFlight = false;
 
@@ -190,6 +192,7 @@ export function createPartyFeature(deps) {
     stopPartyAutoRefresh();
     memberCharacterCache.clear();
     memberDerivedCache.clear();
+    memberLanguageCache.clear();
     appState.activePartyId = null;
     appState.activeParty = null;
     clearPartyIdInUrl(true);
@@ -394,6 +397,20 @@ export function createPartyFeature(deps) {
       return race || "Unknown ancestry";
     };
     const buildBackgroundSummary = (snapshot) => String(snapshot?.background ?? "").trim() || "No background";
+    const getMemberLanguages = (snapshot, characterId = "") => {
+      const parsedId = String(characterId ?? "").trim();
+      if (isUuid(parsedId)) {
+        const cached = memberLanguageCache.get(parsedId);
+        if (Array.isArray(cached) && cached.length) return cached;
+      }
+      const custom = Array.isArray(snapshot?.languages)
+        ? snapshot.languages
+            .map((entry) => String(entry ?? "").trim())
+            .filter(Boolean)
+            .map((label) => ({ label, sources: ["Additional"] }))
+        : [];
+      return custom;
+    };
     const normalizeSkillProficiencyMode = (value) => {
       const mode = String(value ?? "").trim().toLowerCase();
       if (mode === "half" || mode === "proficient" || mode === "expertise") return mode;
@@ -521,6 +538,7 @@ export function createPartyFeature(deps) {
         const speedSummary = getSpeedSummary(snapshot, derived);
         const initiativeSummary = getInitiativeSummary(snapshot, derived);
         const passiveSkills = getPassiveSkills(snapshot, derived);
+        const languages = getMemberLanguages(snapshot, characterId);
         return `
           <li class="party-member-row">
             <div class="party-member-details">
@@ -589,6 +607,27 @@ export function createPartyFeature(deps) {
                   <span class="party-passive-value">${esc(String(passiveSkills.investigation))}</span>
                 </div>
               </div>
+              ${
+                languages.length
+                  ? `<div class="party-member-languages" aria-label="Languages">
+                       <span class="party-languages-label">Languages</span>
+                       <div class="party-language-list">
+                         ${languages
+                           .map((entry) => {
+                             const label = String(entry?.label ?? "").trim();
+                             if (!label) return "";
+                             const sources = Array.isArray(entry?.sources)
+                               ? entry.sources.map((source) => String(source ?? "").trim()).filter(Boolean)
+                               : [];
+                             return `<span class="party-meta-chip">${esc(label)}${
+                               sources.length ? `<span class="party-chip-meta"> (${esc(sources.join(" / "))})</span>` : ""
+                             }</span>`;
+                           })
+                           .join("")}
+                       </div>
+                     </div>`
+                  : ""
+              }
             </div>
             <div class="party-member-actions">
               <a class="btn secondary" href="${esc(getCharacterUrl(characterId))}" data-party-open-character="${esc(characterId)}">Open</a>
@@ -742,14 +781,20 @@ export function createPartyFeature(deps) {
       const derivedResults = await Promise.allSettled(
         refreshedMembers.map(async ({ characterId, snapshot }) => {
           const catalogs = await getCatalogsForCharacter(snapshot);
-          return { characterId, derived: computeDerivedStats(snapshot, catalogs) };
+          const traitSummary =
+            typeof getCharacterToolAndDefenseSummary === "function"
+              ? getCharacterToolAndDefenseSummary(catalogs, snapshot)
+              : null;
+          return { characterId, derived: computeDerivedStats(snapshot, catalogs), traitSummary };
         })
       );
       derivedResults.forEach((result) => {
         if (result.status !== "fulfilled") return;
-        const { characterId, derived } = result.value;
+        const { characterId, derived, traitSummary } = result.value;
         if (!isUuid(characterId) || !derived || typeof derived !== "object" || Array.isArray(derived)) return;
         memberDerivedCache.set(characterId, derived);
+        const languages = Array.isArray(traitSummary?.languages) ? traitSummary.languages : [];
+        memberLanguageCache.set(characterId, languages);
       });
     }
     if (!didUpdate) return;

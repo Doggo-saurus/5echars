@@ -161,6 +161,30 @@ export function createRenderers(deps) {
     `;
   }
 
+  const STANDARD_LANGUAGE_OPTIONS = [
+    "Common",
+    "Dwarvish",
+    "Elvish",
+    "Giant",
+    "Gnomish",
+    "Goblin",
+    "Halfling",
+    "Orc",
+  ];
+
+  const EXOTIC_LANGUAGE_OPTIONS = [
+    "Abyssal",
+    "Celestial",
+    "Deep Speech",
+    "Draconic",
+    "Druidic",
+    "Infernal",
+    "Primordial",
+    "Sylvan",
+    "Undercommon",
+    "Thieves' Cant",
+  ];
+
   function buildClassesManualUrl(classEntry, subclassEntry = null) {
     const baseUrl = getManualBaseUrl();
     if (!baseUrl) return "";
@@ -567,15 +591,34 @@ export function createRenderers(deps) {
     if (!raceEntry || typeof raceEntry !== "object") return [];
     const ignoredTraitNames = new Set(["age", "alignment", "size", "language", "languages", "creature type"]);
     const entries = Array.isArray(raceEntry?.entries) ? raceEntry.entries : [];
+    const saveAdvantageTagMatchers = [
+      ["All Saves", /\b(all|every)\s+saving throws?\b/],
+      ["Magic", /\bmagical effects?\b|\bmagic\b/],
+      ["Spells", /\bspells?\b/],
+      ["Blinded", /\bblinded\b/],
+      ["Charmed", /\bcharmed\b/],
+      ["Deafened", /\bdeafened\b/],
+      ["Frightened", /\bfrightened\b/],
+      ["Grappled", /\bgrappled\b/],
+      ["Incapacitated", /\bincapacitated\b/],
+      ["Invisible", /\binvisible\b/],
+      ["Paralyzed", /\bparaly(?:zed|sis)\b/],
+      ["Petrified", /\bpetrified\b/],
+      ["Poisoned", /\bpoison(?:ed|ing)?\b/],
+      ["Prone", /\bprone\b/],
+      ["Restrained", /\brestrained\b/],
+      ["Stunned", /\bstunned\b/],
+      ["Unconscious", /\bunconscious\b/],
+      ["Disease", /\bdisease(?:d)?\b/],
+      ["Death", /\bdeath\b/],
+    ];
     const extractSaveAdvantageTags = (entry) => {
       const lines = getRuleDescriptionLines(entry);
       const text = lines.join(" ").toLowerCase();
       if (!/advantage on saving throws?/.test(text)) return [];
-      const tags = [];
-      if (/\bparaly(?:zed|sis)\b/.test(text)) tags.push("Paralyzed");
-      if (/\bpoison(?:ed|ing)?\b/.test(text)) tags.push("Poisoned");
-      if (!tags.length) tags.push("General");
-      return tags;
+      return saveAdvantageTagMatchers
+        .filter(([, matcher]) => matcher.test(text))
+        .map(([label]) => label);
     };
     return entries
       .map((entry, index) => {
@@ -2077,10 +2120,7 @@ export function createRenderers(deps) {
     const skillsHtml = renderSkillRowsImpl(state, { canToggle: false, includeRollButtons: true });
     const speciesTraits = getSpeciesTraitRows(raceEntry);
     const traitSummary = getCharacterToolAndDefenseSummary(state.catalogs, character);
-    const renderTraitChip = (entry) =>
-      `<span class="play-trait-chip">${esc(entry.label)}${
-        entry.sources?.length ? `<span class="play-trait-chip-meta">${esc(entry.sources.join(" / "))}</span>` : ""
-      }</span>`;
+    const renderTraitChip = (entry) => `<span class="play-trait-chip">${esc(entry.label)}</span>`;
     const renderTraitGroup = (title, entries) => {
       if (!entries.length) return "";
       return `
@@ -3201,6 +3241,12 @@ export function createRenderers(deps) {
         skillMetaByOption: raceBackgroundSkillMap,
       });
       const backgroundChoiceEditors = renderAutoChoiceEditorsForEntity(selectedBackground, "background", character, catalogs);
+      const additionalLanguages = Array.isArray(character?.languages)
+        ? character.languages.map((entry) => String(entry ?? "").trim()).filter(Boolean)
+        : [];
+      const standardLanguageOptions = [...STANDARD_LANGUAGE_OPTIONS, ...EXOTIC_LANGUAGE_OPTIONS];
+      const additionalLanguageSelectOptions = [...new Set([...standardLanguageOptions, ...additionalLanguages])]
+        .sort((left, right) => left.localeCompare(right));
       return `
       <h2 class="title">Ancestry & Background</h2>
       <div class="build-picker-grid">
@@ -3250,6 +3296,40 @@ export function createRenderers(deps) {
           }
         </p>
         ${backgroundChoiceEditors ? `<div class="auto-choice-shell">${backgroundChoiceEditors}</div>` : ""}
+        <h3 class="title">Additional Languages</h3>
+        <p class="muted">Add extra languages from the standard lists.</p>
+        <div class="inline-language-editor">
+          <div class="inline-language-add">
+            <select id="additional-language-select" aria-label="Select additional language">
+              <option value="">Select language</option>
+              ${additionalLanguageSelectOptions
+                .map((language) => `<option value="${esc(language)}">${esc(language)}</option>`)
+                .join("")}
+            </select>
+            <button type="button" class="btn secondary" id="add-additional-language">Add</button>
+          </div>
+          ${
+            additionalLanguages.length
+              ? `<div class="inline-language-list">
+                  ${additionalLanguages
+                    .map(
+                      (language) => `
+                        <span class="pill inline-language-pill">
+                          <span>${esc(language)}</span>
+                          <button
+                            type="button"
+                            class="pill-btn inline-language-remove"
+                            data-remove-additional-language="${esc(language)}"
+                            aria-label="Remove ${esc(language)}"
+                          >x</button>
+                        </span>
+                      `
+                    )
+                    .join("")}
+                </div>`
+              : `<p class="muted">No additional languages selected.</p>`
+          }
+        </div>
       </div>
     `;
     }

@@ -72,6 +72,16 @@ export function createCharacterImportExport({
     return parsed || "character";
   }
 
+  function normalizeImportedLanguages(candidate) {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return candidate;
+    if (Array.isArray(candidate.languages)) return candidate;
+    if (!Array.isArray(candidate.customLanguages)) return candidate;
+    return {
+      ...candidate,
+      languages: [...candidate.customLanguages],
+    };
+  }
+
   function exportCharacterToJsonFile(character) {
     if (!character || typeof character !== "object" || Array.isArray(character)) {
       throw new Error("No character available to export.");
@@ -105,7 +115,10 @@ export function createCharacterImportExport({
     const importedId = importedPayload.id;
     const currentId = getCurrentCharacterId();
     const nextVersion = Math.max(getLocalCharacterVersion(), getCharacterVersion(importedPayload.character)) + 1;
-    const preparedCharacter = withSyncMeta(withCharacterChangeLog(importedPayload.character), nextVersion);
+    const preparedCharacter = withSyncMeta(
+      withCharacterChangeLog(normalizeImportedLanguages(importedPayload.character)),
+      nextVersion
+    );
 
     if (importedId) {
       const isCurrentCharacter = importedId === currentId;

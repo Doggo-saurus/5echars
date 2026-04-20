@@ -860,6 +860,39 @@ input, select, textarea {
   font-size: 0.82rem;
 }
 
+.inline-language-editor {
+  display: grid;
+  gap: 0.45rem;
+  margin-bottom: 0.5rem;
+}
+
+.inline-language-add {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.45rem;
+}
+
+.inline-language-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.inline-language-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.inline-language-remove {
+  border: none;
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  min-width: 1rem;
+  cursor: pointer;
+}
+
 .party-member-list {
   list-style: none;
   margin: 0;
@@ -1018,6 +1051,29 @@ input, select, textarea {
   line-height: 1.1;
   font-weight: 700;
   color: #eef2ff;
+}
+
+.party-member-languages {
+  display: grid;
+  gap: 0.25rem;
+  margin-top: 0.25rem;
+}
+
+.party-languages-label {
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #cbd5e1;
+}
+
+.party-language-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.party-chip-meta {
+  opacity: 0.9;
 }
 
 .party-member-id {
@@ -3580,6 +3636,7 @@ body.play-mode #dice-overlay {
   border-top: 1px solid rgba(255, 255, 255, 0.12);
   padding-top: 0.65rem;
   display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0.6rem;
 }
 
@@ -4748,6 +4805,10 @@ button.skill-btn-clickable-roll[data-skill-roll-row]:focus-visible {
   }
 
   .ability-save-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .play-trait-shell {
     grid-template-columns: 1fr;
   }
 

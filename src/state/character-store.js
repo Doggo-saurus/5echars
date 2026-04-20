@@ -170,6 +170,54 @@ function normalizeOptionalFeatureEntry(entry) {
   };
 }
 
+function normalizeLanguageLabel(value) {
+  const text = String(value ?? "").trim();
+  if (!text) return "";
+  return text.replace(/\s+/g, " ");
+}
+
+function normalizeCharacterLanguages(raw) {
+  const labels = [];
+  const pushLabel = (value) => {
+    const label = normalizeLanguageLabel(value);
+    if (!label) return;
+    labels.push(label);
+  };
+  if (Array.isArray(raw)) {
+    raw.forEach((entry) => {
+      if (typeof entry === "string") {
+        pushLabel(entry);
+        return;
+      }
+      if (!entry || typeof entry !== "object") return;
+      if (typeof entry.name === "string") {
+        pushLabel(entry.name);
+        return;
+      }
+      if (typeof entry.label === "string") {
+        pushLabel(entry.label);
+        return;
+      }
+      if (typeof entry.value === "string") {
+        pushLabel(entry.value);
+      }
+    });
+  } else if (typeof raw === "string") {
+    raw.split(/[;,]/).map((part) => part.trim()).filter(Boolean).forEach((part) => pushLabel(part));
+  } else if (raw && typeof raw === "object") {
+    Object.entries(raw).forEach(([key, value]) => {
+      if (value === true) pushLabel(key);
+    });
+  }
+  const seen = new Set();
+  return labels.filter((label) => {
+    const token = label.toLowerCase();
+    if (seen.has(token)) return false;
+    seen.add(token);
+    return true;
+  });
+}
+
 function normalizeCharacter(character) {
   const incomingAutoChoiceSelections =
     character.play?.autoChoiceSelections && typeof character.play.autoChoiceSelections === "object" && !Array.isArray(character.play.autoChoiceSelections)
@@ -335,6 +383,7 @@ function normalizeCharacter(character) {
     backgroundSource: typeof character.backgroundSource === "string" ? character.backgroundSource : "",
     class: typeof character.class === "string" ? character.class : "",
     classSource: typeof character.classSource === "string" ? character.classSource : "",
+    languages: normalizeCharacterLanguages(character.languages ?? character.customLanguages),
     spells: Array.isArray(character.spells) ? character.spells : [],
     multiclass: Array.isArray(character.multiclass) ? character.multiclass : [],
     feats: Array.isArray(character.feats) ? character.feats.map((feat) => normalizeFeatEntry(feat)).filter(Boolean) : [],
@@ -459,6 +508,7 @@ export function createInitialCharacter() {
     class: "",
     classSource: "",
     subclass: "",
+    languages: [],
     abilities: {
       str: 10,
       dex: 10,
