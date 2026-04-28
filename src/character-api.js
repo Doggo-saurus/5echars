@@ -53,6 +53,17 @@ function normalizeCharacterForId(id, character) {
   return { ...next, id };
 }
 
+function getCharacterSyncVersion(character) {
+  const version = Number(character?.__syncMeta?.version);
+  return Number.isFinite(version) && version > 0 ? Math.floor(version) : 0;
+}
+
+function getCharacterSyncUpdatedAt(character) {
+  const updatedAt = character?.__syncMeta?.updatedAt;
+  if (typeof updatedAt !== "string") return "";
+  return updatedAt.trim();
+}
+
 function isPlainObject(value) {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
@@ -149,13 +160,42 @@ function getLocalCharacter(id) {
   return character;
 }
 
-function setLocalCharacter(id, character) {
+function getLocalCharacterServerVersion(id) {
+  if (!isUuid(id)) return 0;
+  const store = readLocalCharacterStore();
+  const entry = store[id];
+  const version = Number(entry?.serverVersion);
+  return Number.isFinite(version) && version > 0 ? Math.floor(version) : 0;
+}
+
+function getLocalCharacterServerUpdatedAt(id) {
+  if (!isUuid(id)) return "";
+  const store = readLocalCharacterStore();
+  const entry = store[id];
+  return typeof entry?.serverUpdatedAt === "string" ? entry.serverUpdatedAt : "";
+}
+
+function setLocalCharacter(id, character, options = {}) {
   if (!isUuid(id)) return;
   const store = readLocalCharacterStore();
+  const existingServerVersion = Number(store[id]?.serverVersion);
+  const existingServerUpdatedAt = typeof store[id]?.serverUpdatedAt === "string" ? store[id].serverUpdatedAt : "";
+  const explicitServerVersion = Number(options.serverVersion);
+  const explicitServerUpdatedAt = typeof options.serverUpdatedAt === "string" ? options.serverUpdatedAt : null;
+  const nextServerVersion = Number.isFinite(explicitServerVersion) && explicitServerVersion > 0
+    ? Math.floor(explicitServerVersion)
+    : Number.isFinite(existingServerVersion) && existingServerVersion > 0
+      ? Math.floor(existingServerVersion)
+      : 0;
+  const nextServerUpdatedAt = explicitServerUpdatedAt != null
+    ? explicitServerUpdatedAt
+    : existingServerUpdatedAt;
   const normalizedCharacter = normalizeCharacterForId(id, character);
   store[id] = {
     character: normalizedCharacter,
     updatedAt: new Date().toISOString(),
+    serverVersion: nextServerVersion,
+    serverUpdatedAt: nextServerUpdatedAt,
   };
   writeLocalCharacterStore(store);
   syncStoredEditPasswordForCharacter(id, normalizedCharacter);
@@ -194,6 +234,11 @@ function enqueueSyncCharacter(id, character) {
 function dequeueSyncCharacter(id) {
   const queue = readSyncQueue();
   writeSyncQueue(queue.filter((entry) => entry.id !== id));
+}
+
+export function clearPendingCharacterSync(id) {
+  if (!isUuid(id)) return;
+  dequeueSyncCharacter(id);
 }
 
 function createOfflineStorageMeta(warning = "offline-local-cache") {
@@ -242,6 +287,16 @@ async function saveCharacterToRemote(id, character, options = {}) {
     character: character ?? null,
     editPasswordAttempt: typeof options.editPasswordAttempt === "string" ? options.editPasswordAttempt : "",
   };
+  if (isPlainObject(options.overwriteAuthorization)) {
+    requestBody.overwriteAuthorization = options.overwriteAuthorization;
+  }
+  const baseServerVersion = Number(options.baseServerVersion);
+  if (Number.isFinite(baseServerVersion) && baseServerVersion >= 0) {
+    requestBody.baseServerVersion = Math.floor(baseServerVersion);
+  }
+  if (typeof options.baseServerUpdatedAt === "string") {
+    requestBody.baseServerUpdatedAt = options.baseServerUpdatedAt;
+  }
   if (options.returnCharacter === false) {
     requestBody.returnCharacter = false;
   }
@@ -279,13 +334,18 @@ export async function flushPendingCharacterSync() {
     try {
       const payload = await saveCharacterToRemote(entry.id, entry.character, {
         editPasswordAttempt: getCharacterEditPassword(entry.character) || getCharacterEditPassword(getLocalCharacter(entry.id)),
+        baseServerVersion: getLocalCharacterServerVersion(entry.id),
+        baseServerUpdatedAt: getLocalCharacterServerUpdatedAt(entry.id),
       });
       const remoteId = isUuid(payload?.id) ? payload.id : entry.id;
       const remoteCharacter = preserveLocalEditPassword(
         normalizeCharacterForId(remoteId, payload?.character ?? entry.character),
         entry.character
       );
-      setLocalCharacter(remoteId, remoteCharacter);
+      setLocalCharacter(remoteId, remoteCharacter, {
+        serverVersion: getCharacterSyncVersion(remoteCharacter),
+        serverUpdatedAt: getCharacterSyncUpdatedAt(remoteCharacter),
+      });
       dequeueSyncCharacter(entry.id);
       flushed += 1;
     } catch (error) {
@@ -311,7 +371,10 @@ export async function createCharacter(character) {
         normalizeCharacterForId(id, payload?.character ?? baseCharacter),
         baseCharacter
       );
-      setLocalCharacter(id, remoteCharacter);
+      setLocalCharacter(id, remoteCharacter, {
+        serverVersion: getCharacterSyncVersion(remoteCharacter),
+        serverUpdatedAt: getCharacterSyncUpdatedAt(remoteCharacter),
+      });
       dequeueSyncCharacter(id);
       return { ...payload, id, character: remoteCharacter };
     }
@@ -339,7 +402,10 @@ export async function getCharacter(id) {
         normalizeCharacterForId(parsedId, payload?.character),
         getLocalCharacter(parsedId)
       );
-      setLocalCharacter(parsedId, remoteCharacter);
+      setLocalCharacter(parsedId, remoteCharacter, {
+        serverVersion: getCharacterSyncVersion(remoteCharacter),
+        serverUpdatedAt: getCharacterSyncUpdatedAt(remoteCharacter),
+      });
       return { ...payload, id: parsedId, character: remoteCharacter };
     }
   } catch (error) {
@@ -386,7 +452,7 @@ export async function validateCharacterEditPassword(id, editPasswordAttempt) {
   return allowOfflineValidationBypass();
 }
 
-export async function saveCharacter(id, character) {
+export async function saveCharacter(id, character, options = {}) {
   const parsedId = String(id ?? "").trim();
   if (!isUuid(parsedId)) {
     throw createNotFoundError("Invalid character id");
@@ -398,12 +464,18 @@ export async function saveCharacter(id, character) {
     if (isOnline()) {
       const payload = await saveCharacterToRemote(parsedId, nextCharacter, {
         editPasswordAttempt,
+        overwriteAuthorization: isPlainObject(options.overwriteAuthorization) ? options.overwriteAuthorization : undefined,
+        baseServerVersion: Number(options.baseServerVersion),
+        baseServerUpdatedAt: typeof options.baseServerUpdatedAt === "string" ? options.baseServerUpdatedAt : undefined,
       });
       const remoteCharacter = preserveLocalEditPassword(
         normalizeCharacterForId(parsedId, payload?.character ?? nextCharacter),
         nextCharacter
       );
-      setLocalCharacter(parsedId, remoteCharacter);
+      setLocalCharacter(parsedId, remoteCharacter, {
+        serverVersion: getCharacterSyncVersion(remoteCharacter),
+        serverUpdatedAt: getCharacterSyncUpdatedAt(remoteCharacter),
+      });
       dequeueSyncCharacter(parsedId);
       return { ...payload, id: parsedId, character: remoteCharacter };
     }
@@ -416,7 +488,7 @@ export async function saveCharacter(id, character) {
   return toOfflinePayload(parsedId, nextCharacter, "offline-save-queued");
 }
 
-export async function patchCharacter(id, partialCharacter) {
+export async function patchCharacter(id, partialCharacter, options = {}) {
   const parsedId = String(id ?? "").trim();
   if (!isUuid(parsedId)) {
     throw createNotFoundError("Invalid character id");
@@ -432,6 +504,9 @@ export async function patchCharacter(id, partialCharacter) {
         editPasswordAttempt,
         method: "PATCH",
         returnCharacter: false,
+        overwriteAuthorization: isPlainObject(options.overwriteAuthorization) ? options.overwriteAuthorization : undefined,
+        baseServerVersion: Number(options.baseServerVersion),
+        baseServerUpdatedAt: typeof options.baseServerUpdatedAt === "string" ? options.baseServerUpdatedAt : undefined,
       });
       const fallbackCharacter = normalizeCharacterForId(
         parsedId,
@@ -441,7 +516,10 @@ export async function patchCharacter(id, partialCharacter) {
         normalizeCharacterForId(parsedId, payload?.character ?? fallbackCharacter),
         localCharacter ?? patchPayload
       );
-      setLocalCharacter(parsedId, remoteCharacter);
+      setLocalCharacter(parsedId, remoteCharacter, {
+        serverVersion: getCharacterSyncVersion(remoteCharacter),
+        serverUpdatedAt: getCharacterSyncUpdatedAt(remoteCharacter),
+      });
       dequeueSyncCharacter(parsedId);
       return { ...payload, id: parsedId, character: remoteCharacter };
     }

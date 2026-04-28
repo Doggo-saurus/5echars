@@ -12,6 +12,8 @@ const PARTY_PASSWORD_FIELD = "password";
 const INVALID_PARTY_PASSWORD_CODE = "INVALID_PARTY_PASSWORD";
 const MAX_CHARACTER_SAVE_BYTES = 256 * 1024;
 const CHARACTER_TOO_LARGE_CODE = "CHARACTER_TOO_LARGE";
+const STALE_CHARACTER_WRITE_CODE = "STALE_CHARACTER_WRITE";
+const STALE_CHARACTER_PRECONDITION_REQUIRED_CODE = "STALE_CHARACTER_PRECONDITION_REQUIRED";
 
 function isUuid(value) {
   return UUID_V4_REGEX.test(String(value ?? "").trim());
@@ -169,6 +171,94 @@ function mergeCharacterForPersist(existingCharacter, incomingCharacter, id) {
     ...normalizedIncoming,
     [EDIT_PASSWORD_FIELD]: getStoredEditPassword(normalizedExisting),
   };
+}
+
+function getCharacterSyncMeta(character) {
+  if (!character || typeof character !== "object" || Array.isArray(character)) return {};
+  const syncMeta = character.__syncMeta;
+  if (!syncMeta || typeof syncMeta !== "object" || Array.isArray(syncMeta)) return {};
+  return syncMeta;
+}
+
+function getCharacterSyncVersion(character) {
+  const version = Number(getCharacterSyncMeta(character).version);
+  return Number.isFinite(version) && version > 0 ? Math.floor(version) : 0;
+}
+
+function getCharacterSyncUpdatedAt(character) {
+  const updatedAt = getCharacterSyncMeta(character).updatedAt;
+  if (typeof updatedAt !== "string") return "";
+  return updatedAt.trim();
+}
+
+function getCharacterSyncUpdatedAtMs(character) {
+  const updatedAt = getCharacterSyncUpdatedAt(character);
+  if (!updatedAt) return 0;
+  const parsed = Date.parse(updatedAt);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function compareCharacterRecency(leftCharacter, rightCharacter) {
+  const versionDelta = getCharacterSyncVersion(leftCharacter) - getCharacterSyncVersion(rightCharacter);
+  if (versionDelta !== 0) return versionDelta;
+  return getCharacterSyncUpdatedAtMs(leftCharacter) - getCharacterSyncUpdatedAtMs(rightCharacter);
+}
+
+function buildStaleCharacterWriteConflict(existingCharacter, baseServerVersion, baseServerUpdatedAt) {
+  const serverVersion = getCharacterSyncVersion(existingCharacter);
+  const serverUpdatedAt = getCharacterSyncUpdatedAt(existingCharacter);
+  const clientVersion = Number.isFinite(Number(baseServerVersion)) ? Math.max(0, Math.floor(Number(baseServerVersion))) : 0;
+  const clientUpdatedAt = typeof baseServerUpdatedAt === "string" ? baseServerUpdatedAt : "";
+  return {
+    code: STALE_CHARACTER_WRITE_CODE,
+    error: "Incoming character precondition is stale. Reload the newer server version or explicitly authorize overwrite.",
+    serverVersion,
+    serverUpdatedAt,
+    clientVersion,
+    clientUpdatedAt,
+  };
+}
+
+function normalizeOverwriteAuthorization(input) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return null;
+  const normalizedServerVersion = Number(input.serverVersion);
+  const normalizedClientVersion = Number(input.clientVersion);
+  return {
+    confirmOverwriteNewer: input.confirmOverwriteNewer === true,
+    serverVersion: Number.isFinite(normalizedServerVersion) ? Math.floor(normalizedServerVersion) : 0,
+    serverUpdatedAt: typeof input.serverUpdatedAt === "string" ? input.serverUpdatedAt.trim() : "",
+    clientVersion: Number.isFinite(normalizedClientVersion) ? Math.floor(normalizedClientVersion) : 0,
+    clientUpdatedAt: typeof input.clientUpdatedAt === "string" ? input.clientUpdatedAt.trim() : "",
+  };
+}
+
+function isValidOverwriteAuthorization(authorization, conflict) {
+  const normalized = normalizeOverwriteAuthorization(authorization);
+  if (!normalized || !conflict) return false;
+  if (!normalized.confirmOverwriteNewer) return false;
+  return (
+    normalized.serverVersion === conflict.serverVersion &&
+    normalized.serverUpdatedAt === conflict.serverUpdatedAt &&
+    normalized.clientVersion === conflict.clientVersion &&
+    normalized.clientUpdatedAt === conflict.clientUpdatedAt
+  );
+}
+
+function hasOwnBodyField(body, field) {
+  return Boolean(body && typeof body === "object" && !Array.isArray(body) && Object.prototype.hasOwnProperty.call(body, field));
+}
+
+function getBaseServerVersionFromBody(body) {
+  if (!hasOwnBodyField(body, "baseServerVersion")) return null;
+  const parsed = Number(body.baseServerVersion);
+  if (!Number.isFinite(parsed) || parsed < 0) return null;
+  return Math.floor(parsed);
+}
+
+function getBaseServerUpdatedAtFromBody(body) {
+  if (!hasOwnBodyField(body, "baseServerUpdatedAt")) return null;
+  if (typeof body.baseServerUpdatedAt !== "string") return null;
+  return body.baseServerUpdatedAt.trim();
 }
 
 function isPlainObject(value) {
@@ -489,7 +579,29 @@ app.put("/api/characters/:id", async (req, res) => {
       return;
     }
 
-    const character = mergeCharacterForPersist(existingCharacter, req.body?.character, id);
+    const incomingCharacter = normalizeCharacterInput(req.body?.character, id);
+    const baseServerVersion = getBaseServerVersionFromBody(req.body);
+    const baseServerUpdatedAt = getBaseServerUpdatedAtFromBody(req.body);
+    if (baseServerVersion == null || baseServerUpdatedAt == null) {
+      res.status(409).json({
+        code: STALE_CHARACTER_PRECONDITION_REQUIRED_CODE,
+        error: "Missing stale-write precondition fields. Upgrade the client and retry.",
+        requiredFields: ["baseServerVersion", "baseServerUpdatedAt"],
+      });
+      return;
+    }
+    const conflict = buildStaleCharacterWriteConflict(existingCharacter, baseServerVersion, baseServerUpdatedAt);
+    const hasOverwriteAuthorization = isValidOverwriteAuthorization(req.body?.overwriteAuthorization, conflict);
+    if (!hasOverwriteAuthorization) {
+      const currentServerVersion = getCharacterSyncVersion(existingCharacter);
+      const currentServerUpdatedAt = getCharacterSyncUpdatedAt(existingCharacter);
+      if (baseServerVersion !== currentServerVersion || baseServerUpdatedAt !== currentServerUpdatedAt) {
+        res.status(409).json({ ...conflict, baseServerVersion, baseServerUpdatedAt });
+        return;
+      }
+    }
+
+    const character = mergeCharacterForPersist(existingCharacter, incomingCharacter, id);
     if (tryRejectOversizedCharacter(res, character)) return;
     await repository.save(id, character);
     res.json({ id, character: toPublicCharacter(character, id), storage });
@@ -525,6 +637,27 @@ app.patch("/api/characters/:id", async (req, res) => {
     }
 
     const incomingPatch = isPlainObject(req.body?.character) ? req.body.character : {};
+    const baseServerVersion = getBaseServerVersionFromBody(req.body);
+    const baseServerUpdatedAt = getBaseServerUpdatedAtFromBody(req.body);
+    if (baseServerVersion == null || baseServerUpdatedAt == null) {
+      res.status(409).json({
+        code: STALE_CHARACTER_PRECONDITION_REQUIRED_CODE,
+        error: "Missing stale-write precondition fields. Upgrade the client and retry.",
+        requiredFields: ["baseServerVersion", "baseServerUpdatedAt"],
+      });
+      return;
+    }
+    const conflict = buildStaleCharacterWriteConflict(existingCharacter, baseServerVersion, baseServerUpdatedAt);
+    const hasOverwriteAuthorization = isValidOverwriteAuthorization(req.body?.overwriteAuthorization, conflict);
+    if (!hasOverwriteAuthorization) {
+      const currentServerVersion = getCharacterSyncVersion(existingCharacter);
+      const currentServerUpdatedAt = getCharacterSyncUpdatedAt(existingCharacter);
+      if (baseServerVersion !== currentServerVersion || baseServerUpdatedAt !== currentServerUpdatedAt) {
+        res.status(409).json({ ...conflict, baseServerVersion, baseServerUpdatedAt });
+        return;
+      }
+    }
+
     const mergedCharacter = applyCharacterMergePatch(existingCharacter, incomingPatch);
     const normalizedMergedCharacter = normalizeCharacterInput(mergedCharacter, id);
     const character = hasOwnEditPassword(incomingPatch)

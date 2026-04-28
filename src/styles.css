@@ -615,6 +615,17 @@ input, select, textarea {
   color: var(--text);
 }
 
+.btn.btn-blue {
+  background: var(--state-blue-bg);
+  border-color: var(--state-blue-border);
+  color: var(--state-blue-text);
+}
+
+.btn.btn-blue:hover:not(:disabled) {
+  background: rgba(59, 130, 246, 0.28);
+  border-color: rgba(59, 130, 246, 0.75);
+}
+
 .btn.danger {
   background: rgba(248, 113, 113, 0.16);
   border-color: rgba(248, 113, 113, 0.38);

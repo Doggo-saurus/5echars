@@ -32,6 +32,8 @@ export function createAppState() {
     isRemoteSaveSuppressed: false,
     remoteSaveTimer: null,
     localCharacterVersion: 0,
+    lastKnownServerCharacterVersion: 0,
+    lastKnownServerCharacterUpdatedAt: "",
     localCharacterUpdatedAt: "",
     activePartyId: null,
     activeParty: null,

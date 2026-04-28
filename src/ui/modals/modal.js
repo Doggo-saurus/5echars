@@ -20,7 +20,12 @@ export function openModal({ title, bodyHtml, actions }) {
   const actionsEl = backdrop.querySelector("#modal-actions");
   actions.forEach((action) => {
     const btn = document.createElement("button");
-    btn.className = `btn ${action.secondary ? "secondary" : ""}`.trim();
+    const classNames = ["btn"];
+    if (action.secondary) classNames.push("secondary");
+    if (typeof action.className === "string" && action.className.trim()) {
+      classNames.push(action.className.trim());
+    }
+    btn.className = classNames.join(" ");
     btn.textContent = action.label;
     btn.addEventListener("click", () => action.onClick(close));
     actionsEl.append(btn);

@@ -9,6 +9,7 @@ import { isCatalogDataSrdOnly, loadAvailableSourceEntries, loadAvailableSources,
 import { STEPS, createInitialCharacter, createStore } from "./state/character-store.js";
 import { loadAppState, saveAppState } from "./state/persistence.js";
 import {
+  clearPendingCharacterSync,
   createCharacter,
   flushPendingCharacterSync,
   getCharacter,
@@ -48,6 +49,7 @@ import { createLevelUpModal } from "./app/modals/level-up.js";
 import { createMulticlassModal } from "./app/modals/multiclass.js";
 import { createPartyModalCatalogCache } from "./app/modals/party-catalog-cache.js";
 import { createPartyCharacterDetailsModals } from "./app/modals/party-character-details.js";
+import { createStaleWriteConflictModal } from "./app/modals/stale-write-conflict.js";
 import { createOnboardingView } from "./app/render/onboarding.js";
 import { createPersistentBrandLogo } from "./app/render/brand-logo.js";
 import { createFeatureResourceRules } from "./app/rules/feature-resources.js";
@@ -153,6 +155,8 @@ const diceRoller = createDiceRoller({
 changeLogDomain.setRestoreDiceStateFromCharacterLog(diceRoller.restoreDiceStateFromCharacterLog);
 
 appState.localCharacterVersion = changeLogDomain.getCharacterVersion(persistedState?.character);
+appState.lastKnownServerCharacterVersion = 0;
+appState.lastKnownServerCharacterUpdatedAt = "";
 lastPersistedCharacterFingerprint = changeLogDomain.buildCharacterFingerprint(persistedState?.character ?? store.getState().character);
 changeLogDomain.seedCharacterLogState(store.getState().character);
 appState.localCharacterUpdatedAt =
@@ -519,6 +523,7 @@ function getCharacterFromApiPayload(payload, fallbackId) {
   return parseCharacterApiPayload(payload, fallbackId, { isUuid });
 }
 
+const staleWriteConflictModal = createStaleWriteConflictModal({ openModal, esc });
 
 function rollDie(faces) {
   const max = Math.max(1, Math.floor(toNumber(faces, 0)));
@@ -569,9 +574,18 @@ async function loadCatalogsForCharacter(character) {
 
 async function applyRemoteCharacterPayload(payload, fallbackId = null, defaultMode = "build") {
   const parsed = getCharacterFromApiPayload(payload, fallbackId);
+  const parsedSyncMeta = changeLogDomain.getSyncMeta(parsed.character);
+  const parsedVersion = changeLogDomain.getCharacterVersion(parsed.character);
+  const parsedUpdatedAt =
+    (typeof parsedSyncMeta.updatedAt === "string" && parsedSyncMeta.updatedAt) ||
+    appState.localCharacterUpdatedAt;
   changeLogDomain.updatePersistenceStatusFromPayload(payload);
   appState.showOnboardingHome = false;
   appState.startupErrorMessage = "";
+  appState.localCharacterVersion = parsedVersion;
+  appState.localCharacterUpdatedAt = parsedUpdatedAt;
+  appState.lastKnownServerCharacterVersion = parsedVersion;
+  appState.lastKnownServerCharacterUpdatedAt = parsedUpdatedAt;
   appState.isRemoteSaveSuppressed = true;
   try {
     await runtimeSourcePresetsState.ensureRuntimeSourcePresets();
@@ -584,6 +598,7 @@ async function applyRemoteCharacterPayload(payload, fallbackId = null, defaultMo
     // on the first render of the loaded character.
     store.setCatalogs(catalogs);
     changeLogDomain.seedCharacterLogState(nextCharacter);
+    lastPersistedCharacterFingerprint = changeLogDomain.buildCharacterFingerprint(nextCharacter);
     store.hydrate(nextCharacter);
     store.setMode(defaultMode);
     store.setStep(0);
@@ -591,11 +606,6 @@ async function applyRemoteCharacterPayload(payload, fallbackId = null, defaultMo
   } finally {
     appState.isRemoteSaveSuppressed = false;
   }
-  appState.localCharacterVersion = Math.max(appState.localCharacterVersion, changeLogDomain.getCharacterVersion(parsed.character));
-  appState.localCharacterUpdatedAt =
-    (typeof changeLogDomain.getSyncMeta(parsed.character).updatedAt === "string" && changeLogDomain.getSyncMeta(parsed.character).updatedAt) ||
-    appState.localCharacterUpdatedAt;
-  lastPersistedCharacterFingerprint = changeLogDomain.buildCharacterFingerprint(parsed.character);
   historyApi.rememberLastCharacterId(parsed.id);
   historyApi.upsertCharacterHistory(parsed.character, { touchAccess: true });
   currentUrlCharacterId = parsed.id;
@@ -691,6 +701,7 @@ const persistence = createPersistence({
   patchCharacter,
   createCharacter,
   flushPendingCharacterSync,
+  clearPendingCharacterSync,
   isUuid,
   getCharacterVersion: changeLogDomain.getCharacterVersion,
   withSyncMeta: changeLogDomain.withSyncMeta,
@@ -701,6 +712,8 @@ const persistence = createPersistence({
     editPasswordController.openEditPasswordPromptModal(characterId);
     return true;
   },
+  onStaleWriteConflict: ({ characterId, conflict, localCharacter }) =>
+    staleWriteConflictModal.openStaleWriteConflictModal({ characterId, conflict, localCharacter }),
   markBrowserOnlyPersistence: changeLogDomain.markBrowserOnlyPersistence,
   applyRemoteCharacterPayload,
   isRemoteSameOrNewer: changeLogDomain.isRemoteSameOrNewer,
@@ -1017,7 +1030,14 @@ store.subscribe((state) => {
   changeLogDomain.captureCharacterLogChanges(state.character);
   render(state);
   const nextFingerprint = changeLogDomain.buildCharacterFingerprint(state.character);
-  if (nextFingerprint && nextFingerprint !== lastPersistedCharacterFingerprint) {
+  const stateSyncMeta = changeLogDomain.getSyncMeta(state.character);
+  const stateSyncVersion = changeLogDomain.getCharacterVersion(state.character);
+  const stateSyncUpdatedAt = typeof stateSyncMeta.updatedAt === "string" ? stateSyncMeta.updatedAt : "";
+  if (appState.isRemoteSaveSuppressed) {
+    if (stateSyncVersion > 0) appState.localCharacterVersion = stateSyncVersion;
+    if (stateSyncUpdatedAt) appState.localCharacterUpdatedAt = stateSyncUpdatedAt;
+    if (nextFingerprint) lastPersistedCharacterFingerprint = nextFingerprint;
+  } else if (nextFingerprint && nextFingerprint !== lastPersistedCharacterFingerprint) {
     appState.localCharacterVersion += 1;
     lastPersistedCharacterFingerprint = nextFingerprint;
     appState.localCharacterUpdatedAt = new Date().toISOString();
