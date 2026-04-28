@@ -184,6 +184,8 @@ export function createRenderers(deps) {
     "Undercommon",
     "Thieves' Cant",
   ];
+  const ALL_LANGUAGE_OPTIONS = [...STANDARD_LANGUAGE_OPTIONS, ...EXOTIC_LANGUAGE_OPTIONS];
+  const CHOICE_LANGUAGE_OPTIONS = ALL_LANGUAGE_OPTIONS.filter((language) => normalizeChoiceToken(language) !== "common");
 
   function buildClassesManualUrl(classEntry, subclassEntry = null) {
     const baseUrl = getManualBaseUrl();
@@ -553,6 +555,90 @@ export function createRenderers(deps) {
     const ordered = preferred.filter((source) => source !== "PHB" && source !== "XPHB");
     if (xphbFirst) return ["XPHB", "PHB", ...ordered];
     return ["PHB", "XPHB", ...ordered];
+  }
+
+  function parseLanguageChoiceCountToken(token) {
+    const normalized = String(token ?? "").trim().toLowerCase();
+    if (normalized === "a" || normalized === "an" || normalized === "one") return 1;
+    if (normalized === "two") return 2;
+    if (normalized === "three") return 3;
+    if (normalized === "four") return 4;
+    if (normalized === "five") return 5;
+    return Math.max(0, toNumber(normalized, 0));
+  }
+
+  function renderLanguageTextChoiceEditors(entry, sourceKey, character) {
+    if (!entry || typeof entry !== "object") return "";
+    const sourceLabel = getAutoChoiceSourceLabel(sourceKey);
+    const lines = getRuleDescriptionLines(entry);
+    let choiceIndex = 0;
+    const blocks = [];
+    const knownLanguages = [...new Set(ALL_LANGUAGE_OPTIONS.map((value) => String(value ?? "").trim()).filter(Boolean))];
+    lines.forEach((line) => {
+      const text = String(line ?? "").replace(/\s+/g, " ").trim();
+      if (!/(you can speak,\s*read,\s*and\s*write|you know)/i.test(text)) return;
+      const sentence = text.split(/[.?!]/)[0].trim();
+      if (!sentence) return;
+      const fixedLanguages = knownLanguages.filter((language) => {
+        const escaped = language.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        return new RegExp(`\\b${escaped}\\b`, "i").test(sentence);
+      });
+      const matches = [...sentence.matchAll(/\b(one|two|three|four|five|\d+)\s+other\s+languages?\s+of\s+your\s+choice\b/gi)];
+      matches.forEach((match) => {
+        const count = parseLanguageChoiceCountToken(match?.[1]);
+        if (count < 1) return;
+        const choiceId = `lt:${choiceIndex}:other`;
+        const sentenceHasThievesCant = /\bthieves'? cant\b/i.test(sentence);
+        const pool = CHOICE_LANGUAGE_OPTIONS.filter(
+          (language) => {
+            const token = normalizeChoiceToken(language);
+            if (sentenceHasThievesCant && token === "thievescant") return false;
+            return !fixedLanguages.some((fixed) => normalizeChoiceToken(fixed) === token);
+          }
+        );
+        const selected = getSelectedChoiceValues(character, sourceKey, choiceId, pool, count);
+        blocks.push(`
+          <div class="auto-choice-card">
+            ${renderAutoChoiceCardHeading(`${sourceLabel} language choice`, count)}
+            ${renderChoiceCheckboxes(sourceKey, choiceId, count, pool, selected, (language) => language)}
+          </div>
+        `);
+        choiceIndex += 1;
+      });
+    });
+    return blocks.join("");
+  }
+
+  function renderSet2024BaselineLanguageEditors(character) {
+    if (String(character?.sourcePreset ?? "").trim() !== "set2024") return "";
+    if (String(character?.class ?? "").trim().toLowerCase() === "rogue") return "";
+    const sourceKey = "rules:2024";
+    const choiceId = "core2024:language:standard:0";
+    const pool = CHOICE_LANGUAGE_OPTIONS;
+    const count = 2;
+    const selected = getSelectedChoiceValues(character, sourceKey, choiceId, pool, count);
+    return `
+      <div class="auto-choice-card">
+        ${renderAutoChoiceCardHeading("2024 baseline language choice", count)}
+        ${renderChoiceCheckboxes(sourceKey, choiceId, count, pool, selected, (language) => language)}
+      </div>
+    `;
+  }
+
+  function renderSet2024RogueLanguageEditors(character) {
+    if (String(character?.sourcePreset ?? "").trim() !== "set2024") return "";
+    if (String(character?.class ?? "").trim().toLowerCase() !== "rogue") return "";
+    const sourceKey = "rules:2024:rogue";
+    const choiceId = "rogue2024:language:other:0";
+    const pool = CHOICE_LANGUAGE_OPTIONS.filter((language) => normalizeChoiceToken(language) !== "thievescant");
+    const count = 1;
+    const selected = getSelectedChoiceValues(character, sourceKey, choiceId, pool, count);
+    return `
+      <div class="auto-choice-card">
+        ${renderAutoChoiceCardHeading("Rogue language choice", count)}
+        ${renderChoiceCheckboxes(sourceKey, choiceId, count, pool, selected, (language) => language)}
+      </div>
+    `;
   }
 
   function findCatalogEntryByNameWithSourcePreference(entries, selectedName, preferredSources = []) {
@@ -1073,6 +1159,7 @@ export function createRenderers(deps) {
     if (normalized === "background") return "Background";
     if (normalized.startsWith("class:")) return "Class";
     if (normalized.startsWith("multiclass:")) return "Multiclass";
+    if (normalized.startsWith("feature:")) return "Class Feature";
     if (normalized.startsWith("feat:")) return "Feat";
     if (normalized.startsWith("optionalfeature:")) return "Optional feature";
     return "Source";
@@ -1243,6 +1330,66 @@ export function createRenderers(deps) {
         }
       }
     }
+
+    const languageOptions = Array.isArray(entry?.languageProficiencies) ? entry.languageProficiencies : [];
+    languageOptions.forEach((languageOption, optionIndex) => {
+      if (!languageOption || typeof languageOption !== "object" || Array.isArray(languageOption)) return;
+      const addLanguageChoiceCard = (choiceId, fromPool, count, titleSuffix = "") => {
+        const uniqueFrom = fromPool.filter(
+          (value, index, list) => list.findIndex((entryValue) => normalizeChoiceToken(entryValue) === normalizeChoiceToken(value)) === index
+        );
+        const normalizedCount = Math.max(1, Math.min(uniqueFrom.length, toNumber(count, 1)));
+        if (!uniqueFrom.length || normalizedCount < 1) return;
+        const selected = getSelectedChoiceValues(character, sourceKey, choiceId, uniqueFrom, normalizedCount);
+        blocks.push(`
+          <div class="auto-choice-card">
+            ${renderAutoChoiceCardHeading(`${sourceLabel} language choice${titleSuffix ? ` - ${titleSuffix}` : ""}`, normalizedCount)}
+            ${renderChoiceCheckboxes(sourceKey, choiceId, normalizedCount, uniqueFrom, selected, (language) => language)}
+          </div>
+        `);
+      };
+      const choose = languageOption.choose && typeof languageOption.choose === "object" ? languageOption.choose : null;
+      if (choose) {
+        const fromRaw = Array.isArray(choose.from) ? choose.from : [];
+        const from = [];
+        fromRaw.forEach((entryValue) => {
+          const raw = String(entryValue ?? "").trim();
+          if (!raw) return;
+          const token = normalizeChoiceToken(raw);
+          if (token === "any" || token === "anylanguage" || token === "other") {
+            CHOICE_LANGUAGE_OPTIONS.forEach((language) => from.push(language));
+            return;
+          }
+          if (token === "anystandard" || token === "anystandardlanguage") {
+            CHOICE_LANGUAGE_OPTIONS.forEach((language) => from.push(language));
+            return;
+          }
+          if (token === "anyexotic" || token === "anyexoticlanguage") {
+            CHOICE_LANGUAGE_OPTIONS.forEach((language) => from.push(language));
+            return;
+          }
+          from.push(raw);
+        });
+        addLanguageChoiceCard(`l:${optionIndex}:choose`, from, toNumber(choose.count, 1));
+      }
+      Object.entries(languageOption).forEach(([key, value]) => {
+        if (key === "choose") return;
+        const token = normalizeChoiceToken(key);
+        const count = Math.max(0, toNumber(value, 0));
+        if (count < 1) return;
+        if (token === "any" || token === "anylanguage" || token === "other") {
+          addLanguageChoiceCard(`l:${optionIndex}:${token}`, CHOICE_LANGUAGE_OPTIONS, count, "Any language");
+          return;
+        }
+        if (token === "anystandard" || token === "anystandardlanguage") {
+          addLanguageChoiceCard(`l:${optionIndex}:${token}`, CHOICE_LANGUAGE_OPTIONS, count, "Any language");
+          return;
+        }
+        if (token === "anyexotic" || token === "anyexoticlanguage") {
+          addLanguageChoiceCard(`l:${optionIndex}:${token}`, CHOICE_LANGUAGE_OPTIONS, count, "Any language");
+        }
+      });
+    });
 
     const toolOptions = Array.isArray(entry?.toolProficiencies) ? entry.toolProficiencies : [];
     const toolPools = getToolPools(catalogs);
@@ -2130,6 +2277,20 @@ export function createRenderers(deps) {
         </div>
       `;
     };
+    const moneyTrackerRaw = play.moneyTracker && typeof play.moneyTracker === "object" && !Array.isArray(play.moneyTracker)
+      ? play.moneyTracker
+      : {};
+    const cp = Math.max(0, Math.floor(toNumber(moneyTrackerRaw.cp, 0)));
+    const sp = Math.max(0, Math.floor(toNumber(moneyTrackerRaw.sp, 0)));
+    const ep = Math.max(0, Math.floor(toNumber(moneyTrackerRaw.ep, 0)));
+    const gp = Math.max(0, Math.floor(toNumber(moneyTrackerRaw.gp, 0)));
+    const pp = Math.max(0, Math.floor(toNumber(moneyTrackerRaw.pp, 0)));
+    const totalCp = cp + (sp * 10) + (ep * 50) + (gp * 100) + (pp * 1000);
+    const totalGp = totalCp / 100;
+    const totalGpLabel = totalCp % 100 === 0
+      ? String(totalGp)
+      : totalGp.toFixed(2).replace(/\.?0+$/, "");
+
     const saveAdvantageEntries = [
       ...new Set(
         speciesTraits
@@ -3101,6 +3262,59 @@ export function createRenderers(deps) {
           <label>Combat Notes
             <textarea id="play-notes" class="play-notes-textarea" rows="3">${esc(play.notes ?? "")}</textarea>
           </label>
+          <div class="play-money-tracker">
+            <div class="play-money-head">
+              <strong>Money</strong>
+              <span class="play-money-total">${esc(totalGpLabel)} gp</span>
+            </div>
+            <div class="play-money-grid">
+              <label class="play-money-field">PP
+                <div class="num-input-wrap num-input-wrap-inline play-money-input-wrap">
+                  <input type="number" min="0" step="1" inputmode="numeric" value="${esc(pp)}" data-play-money-coin="pp" aria-label="Platinum pieces">
+                  <div class="num-stepper num-stepper-inline">
+                    <button type="button" class="num-step-btn" data-play-money-step-coin="pp" data-play-money-step-delta="-1" aria-label="Decrease platinum pieces">-</button>
+                    <button type="button" class="num-step-btn" data-play-money-step-coin="pp" data-play-money-step-delta="1" aria-label="Increase platinum pieces">+</button>
+                  </div>
+                </div>
+              </label>
+              <label class="play-money-field">GP
+                <div class="num-input-wrap num-input-wrap-inline play-money-input-wrap">
+                  <input type="number" min="0" step="1" inputmode="numeric" value="${esc(gp)}" data-play-money-coin="gp" aria-label="Gold pieces">
+                  <div class="num-stepper num-stepper-inline">
+                    <button type="button" class="num-step-btn" data-play-money-step-coin="gp" data-play-money-step-delta="-1" aria-label="Decrease gold pieces">-</button>
+                    <button type="button" class="num-step-btn" data-play-money-step-coin="gp" data-play-money-step-delta="1" aria-label="Increase gold pieces">+</button>
+                  </div>
+                </div>
+              </label>
+              <label class="play-money-field">EP
+                <div class="num-input-wrap num-input-wrap-inline play-money-input-wrap">
+                  <input type="number" min="0" step="1" inputmode="numeric" value="${esc(ep)}" data-play-money-coin="ep" aria-label="Electrum pieces">
+                  <div class="num-stepper num-stepper-inline">
+                    <button type="button" class="num-step-btn" data-play-money-step-coin="ep" data-play-money-step-delta="-1" aria-label="Decrease electrum pieces">-</button>
+                    <button type="button" class="num-step-btn" data-play-money-step-coin="ep" data-play-money-step-delta="1" aria-label="Increase electrum pieces">+</button>
+                  </div>
+                </div>
+              </label>
+              <label class="play-money-field">SP
+                <div class="num-input-wrap num-input-wrap-inline play-money-input-wrap">
+                  <input type="number" min="0" step="1" inputmode="numeric" value="${esc(sp)}" data-play-money-coin="sp" aria-label="Silver pieces">
+                  <div class="num-stepper num-stepper-inline">
+                    <button type="button" class="num-step-btn" data-play-money-step-coin="sp" data-play-money-step-delta="-1" aria-label="Decrease silver pieces">-</button>
+                    <button type="button" class="num-step-btn" data-play-money-step-coin="sp" data-play-money-step-delta="1" aria-label="Increase silver pieces">+</button>
+                  </div>
+                </div>
+              </label>
+              <label class="play-money-field">CP
+                <div class="num-input-wrap num-input-wrap-inline play-money-input-wrap">
+                  <input type="number" min="0" step="1" inputmode="numeric" value="${esc(cp)}" data-play-money-coin="cp" aria-label="Copper pieces">
+                  <div class="num-stepper num-stepper-inline">
+                    <button type="button" class="num-step-btn" data-play-money-step-coin="cp" data-play-money-step-delta="-1" aria-label="Decrease copper pieces">-</button>
+                    <button type="button" class="num-step-btn" data-play-money-step-coin="cp" data-play-money-step-delta="1" aria-label="Increase copper pieces">+</button>
+                  </div>
+                </div>
+              </label>
+            </div>
+          </div>
         </article>
 
         <article class="card">
@@ -3223,6 +3437,7 @@ export function createRenderers(deps) {
       const raceSkillSummary = getSkillProficiencySummary(selectedRace, "race", character);
       const backgroundAbilitySummary = getAbilityBonusesSummary(selectedBackground, "background", character);
       const backgroundSkillSummary = getSkillProficiencySummary(selectedBackground, "background", character);
+      const traitSummary = getCharacterToolAndDefenseSummary(catalogs, character);
       const raceAbilityMap = getAbilityBonusesMap(selectedRace, "race", character);
       const backgroundAbilityMap = getAbilityBonusesMap(selectedBackground, "background", character);
       const raceAbilityTotal = getAbilityBonusTotal(raceAbilityMap);
@@ -3237,10 +3452,150 @@ export function createRenderers(deps) {
             ? "<strong>2024-style active:</strong> background is currently providing ability bonuses."
             : "No automatic ability score bonuses detected from race/background.";
       const raceBackgroundSkillMap = getBackgroundGrantedSkillSourceMap(catalogs, character);
-      const raceChoiceEditors = renderAutoChoiceEditorsForEntity(selectedRace, "race", character, catalogs, {
+      const raceChoiceEditors = renderAutoChoiceEditorsForEntity({
+        ability: selectedRace?.ability,
+        skillProficiencies: selectedRace?.skillProficiencies,
+        toolProficiencies: selectedRace?.toolProficiencies,
+      }, "race", character, catalogs, {
         skillMetaByOption: raceBackgroundSkillMap,
       });
-      const backgroundChoiceEditors = renderAutoChoiceEditorsForEntity(selectedBackground, "background", character, catalogs);
+      const backgroundChoiceEditors = renderAutoChoiceEditorsForEntity({
+        ability: selectedBackground?.ability,
+        skillProficiencies: selectedBackground?.skillProficiencies,
+        toolProficiencies: selectedBackground?.toolProficiencies,
+      }, "background", character, catalogs);
+      const sourceOrder = raceSourceOrder;
+      const classEntry = findCatalogEntryByNameWithSelectedSourcePreference(
+        catalogs.classes,
+        character.class,
+        character.classSource,
+        sourceOrder
+      );
+      const classSourceKey = `class:${String(classEntry?.name ?? character?.class ?? "").trim().toLowerCase() || "primary"}`;
+      const classLanguageChoiceEditors = renderAutoChoiceEditorsForEntity(
+        {
+          languageProficiencies: classEntry?.startingProficiencies?.languageProficiencies,
+        },
+        classSourceKey,
+        character,
+        catalogs
+      );
+      const classTextLanguageChoiceEditors = renderLanguageTextChoiceEditors(classEntry, classSourceKey, character);
+      const multiclassLanguageChoiceEditors = (Array.isArray(character?.multiclass) ? character.multiclass : [])
+        .map((entry) => {
+          const className = String(entry?.class ?? "").trim();
+          if (!className) return "";
+          const classCatalogEntry = findCatalogEntryByNameWithSelectedSourcePreference(catalogs.classes, className, "", sourceOrder);
+          if (!classCatalogEntry) return "";
+          const multiclassSourceKey = `multiclass:${className.toLowerCase() || "class"}`;
+          return renderAutoChoiceEditorsForEntity(
+            {
+              languageProficiencies: classCatalogEntry?.multiclassing?.proficienciesGained?.languageProficiencies,
+            },
+            multiclassSourceKey,
+            character,
+            catalogs
+          );
+        })
+        .filter(Boolean)
+        .join("");
+      const featLanguageChoiceEditors = (Array.isArray(character?.feats) ? character.feats : [])
+        .map((feat) => {
+          const featEntry = findCatalogEntryByNameWithSelectedSourcePreference(catalogs?.feats, feat?.name, feat?.source, sourceOrder);
+          if (!featEntry) return "";
+          const featSourceKey = `feat:${String(feat?.id ?? featEntry?.name ?? "").trim() || String(featEntry?.name ?? "").trim()}`;
+          return renderAutoChoiceEditorsForEntity({ languageProficiencies: featEntry?.languageProficiencies }, featSourceKey, character, catalogs);
+        })
+        .filter(Boolean)
+        .join("");
+      const optionalFeatureLanguageChoiceEditors = (Array.isArray(character?.optionalFeatures) ? character.optionalFeatures : [])
+        .map((feature) => {
+          const featureEntry = findCatalogEntryByNameWithSelectedSourcePreference(
+            catalogs?.optionalFeatures,
+            feature?.name,
+            feature?.source,
+            sourceOrder
+          );
+          if (!featureEntry) return "";
+          const featureSourceKey = `optionalfeature:${String(feature?.id ?? featureEntry?.name ?? "").trim() || String(featureEntry?.name ?? "").trim()}`;
+          return renderAutoChoiceEditorsForEntity(
+            { languageProficiencies: featureEntry?.languageProficiencies },
+            featureSourceKey,
+            character,
+            catalogs
+          );
+        })
+        .filter(Boolean)
+        .join("");
+      const unlockedFeatures = Array.isArray(character?.progression?.unlockedFeatures) ? character.progression.unlockedFeatures : [];
+      const featureLanguageChoiceEditors = unlockedFeatures
+        .map((feature, featureIndex) => {
+          if (typeof resolveFeatureEntryFromCatalogs !== "function") return "";
+          const detail = resolveFeatureEntryFromCatalogs(catalogs, feature);
+          if (!detail || typeof detail !== "object") return "";
+          const entryData = detail?.entryData && typeof detail.entryData === "object" && !Array.isArray(detail.entryData) ? detail.entryData : {};
+          const featureSourceKey =
+            `feature:${String(feature?.id ?? "").trim() || `name:${String(feature?.name ?? "").trim().toLowerCase()}|class:${String(feature?.className ?? "")
+              .trim()
+              .toLowerCase()}|subclass:${String(feature?.subclassName ?? "").trim().toLowerCase()}|source:${String(feature?.source ?? "")
+              .trim()
+              .toLowerCase()}|level:${toNumber(feature?.level, 0)}|index:${featureIndex}`}`;
+          const isRogue2024ThievesCantFeature =
+            String(character?.sourcePreset ?? "").trim() === "set2024"
+            && String(character?.class ?? "").trim().toLowerCase() === "rogue"
+            && String(detail?.name ?? "").trim().toLowerCase() === "thieves' cant";
+          return renderAutoChoiceEditorsForEntity(
+            {
+              languageProficiencies: Array.isArray(detail?.languageProficiencies) ? detail.languageProficiencies : entryData?.languageProficiencies,
+            },
+            featureSourceKey,
+            character,
+            catalogs
+          ) + (isRogue2024ThievesCantFeature ? "" : renderLanguageTextChoiceEditors(detail, featureSourceKey, character));
+        })
+        .filter(Boolean)
+        .join("");
+      const ancestryLanguageChoiceEditors = renderAutoChoiceEditorsForEntity(
+        { languageProficiencies: selectedRace?.languageProficiencies },
+        "race",
+        character,
+        catalogs
+      );
+      const ancestryTextLanguageChoiceEditors = renderLanguageTextChoiceEditors(selectedRace, "race", character);
+      const baseline2024LanguageChoiceEditors = renderSet2024BaselineLanguageEditors(character);
+      const rogue2024LanguageChoiceEditors = renderSet2024RogueLanguageEditors(character);
+      const backgroundLanguageChoiceEditors = renderAutoChoiceEditorsForEntity(
+        { languageProficiencies: selectedBackground?.languageProficiencies },
+        "background",
+        character,
+        catalogs
+      );
+      const backgroundTextLanguageChoiceEditors = renderLanguageTextChoiceEditors(selectedBackground, "background", character);
+      const languageChoiceEditors = [
+        ancestryLanguageChoiceEditors,
+        ancestryTextLanguageChoiceEditors,
+        baseline2024LanguageChoiceEditors,
+        rogue2024LanguageChoiceEditors,
+        backgroundLanguageChoiceEditors,
+        backgroundTextLanguageChoiceEditors,
+        classLanguageChoiceEditors,
+        classTextLanguageChoiceEditors,
+        multiclassLanguageChoiceEditors,
+        featLanguageChoiceEditors,
+        optionalFeatureLanguageChoiceEditors,
+        featureLanguageChoiceEditors,
+      ]
+        .filter(Boolean)
+        .join("");
+      const languageChoiceCardCount = (languageChoiceEditors.match(/class="auto-choice-card"/g) ?? []).length;
+      const grantedLanguages = [...new Set(
+        (Array.isArray(traitSummary?.languages) ? traitSummary.languages : [])
+          .map((entry) => String(entry?.label ?? "").trim())
+          .filter(Boolean)
+          .filter((label) => !/^choose\s+\d+.*language/i.test(label))
+          .filter((label) => !/^any\s+language/i.test(label))
+      )]
+        .sort((left, right) => left.localeCompare(right));
       const additionalLanguages = Array.isArray(character?.languages)
         ? character.languages.map((entry) => String(entry ?? "").trim()).filter(Boolean)
         : [];
@@ -3278,7 +3633,10 @@ export function createRenderers(deps) {
           <strong>Race bonuses:</strong>
           ${
             raceAbilitySummary || raceSkillSummary
-              ? [raceAbilitySummary ? `Abilities ${raceAbilitySummary}` : "", raceSkillSummary ? `Skills ${raceSkillSummary}` : ""]
+              ? [
+                  raceAbilitySummary ? `Abilities ${raceAbilitySummary}` : "",
+                  raceSkillSummary ? `Skills ${raceSkillSummary}` : "",
+                ]
                   .filter(Boolean)
                   .join(" - ")
               : "No automatic ability or skill bonuses."
@@ -3289,47 +3647,80 @@ export function createRenderers(deps) {
           <strong>Background bonuses:</strong>
           ${
             backgroundAbilitySummary || backgroundSkillSummary
-              ? [backgroundAbilitySummary ? `Abilities ${backgroundAbilitySummary}` : "", backgroundSkillSummary ? `Skills ${backgroundSkillSummary}` : ""]
+              ? [
+                  backgroundAbilitySummary ? `Abilities ${backgroundAbilitySummary}` : "",
+                  backgroundSkillSummary ? `Skills ${backgroundSkillSummary}` : "",
+                ]
                   .filter(Boolean)
                   .join(" - ")
               : "No automatic ability or skill bonuses."
           }
         </p>
         ${backgroundChoiceEditors ? `<div class="auto-choice-shell">${backgroundChoiceEditors}</div>` : ""}
-        <h3 class="title">Additional Languages</h3>
-        <p class="muted">Add extra languages from the standard lists.</p>
-        <div class="inline-language-editor">
-          <div class="inline-language-add">
-            <select id="additional-language-select" aria-label="Select additional language">
-              <option value="">Select language</option>
-              ${additionalLanguageSelectOptions
-                .map((language) => `<option value="${esc(language)}">${esc(language)}</option>`)
-                .join("")}
-            </select>
-            <button type="button" class="btn secondary" id="add-additional-language">Add</button>
+        <section class="language-panel">
+          <div class="language-panel-header">
+            <h3 class="title">Languages</h3>
+            <div class="language-panel-badges">
+              <span class="pill">Granted: ${esc(grantedLanguages.length)}</span>
+              <span class="pill">Choice groups: ${esc(languageChoiceCardCount)}</span>
+              <span class="pill">Manual: ${esc(additionalLanguages.length)}</span>
+            </div>
           </div>
-          ${
-            additionalLanguages.length
-              ? `<div class="inline-language-list">
-                  ${additionalLanguages
-                    .map(
-                      (language) => `
-                        <span class="pill inline-language-pill">
-                          <span>${esc(language)}</span>
-                          <button
-                            type="button"
-                            class="pill-btn inline-language-remove"
-                            data-remove-additional-language="${esc(language)}"
-                            aria-label="Remove ${esc(language)}"
-                          >x</button>
-                        </span>
-                      `
-                    )
-                    .join("")}
-                </div>`
-              : `<p class="muted">No additional languages selected.</p>`
-          }
-        </div>
+          <div class="language-panel-grid">
+            <article class="language-panel-card">
+              <h4 class="language-panel-card-title">Granted Languages</h4>
+              <p class="muted language-panel-card-text">From ancestry, class, and active features.</p>
+              ${
+                grantedLanguages.length
+                  ? `<div class="inline-language-list">
+                      ${grantedLanguages.map((language) => `<span class="pill inline-language-pill"><span>${esc(language)}</span></span>`).join("")}
+                    </div>`
+                  : `<p class="muted">No granted languages detected yet.</p>`
+              }
+            </article>
+            <article class="language-panel-card">
+              <h4 class="language-panel-card-title">Additional Language Choices</h4>
+              <p class="muted language-panel-card-text">Pick from rule-driven choices. Each card shows its pick count.</p>
+              ${languageChoiceEditors ? `<div class="auto-choice-shell">${languageChoiceEditors}</div>` : `<p class="muted">No additional language choices available.</p>`}
+            </article>
+            <article class="language-panel-card">
+              <h4 class="language-panel-card-title">Manual Language Additions</h4>
+              <p class="muted language-panel-card-text">Optional manual entries from the language lists.</p>
+              <div class="inline-language-editor">
+                <div class="inline-language-add">
+                  <select id="additional-language-select" aria-label="Select additional language">
+                    <option value="">Select language</option>
+                    ${additionalLanguageSelectOptions
+                      .map((language) => `<option value="${esc(language)}">${esc(language)}</option>`)
+                      .join("")}
+                  </select>
+                  <button type="button" class="btn secondary" id="add-additional-language">Add</button>
+                </div>
+                ${
+                  additionalLanguages.length
+                    ? `<div class="inline-language-list">
+                        ${additionalLanguages
+                          .map(
+                            (language) => `
+                              <span class="pill inline-language-pill">
+                                <span>${esc(language)}</span>
+                                <button
+                                  type="button"
+                                  class="pill-btn inline-language-remove"
+                                  data-remove-additional-language="${esc(language)}"
+                                  aria-label="Remove ${esc(language)}"
+                                >x</button>
+                              </span>
+                            `
+                          )
+                          .join("")}
+                      </div>`
+                    : `<p class="muted">No manual languages selected.</p>`
+                }
+              </div>
+            </article>
+          </div>
+        </section>
       </div>
     `;
     }

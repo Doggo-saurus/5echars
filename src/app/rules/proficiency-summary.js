@@ -8,7 +8,34 @@ export function createProficiencySummaryRules({
   catalogLookupDomain,
   proficiencyRules,
   inventoryWeapons,
+  resolveFeatureEntryFromCatalogs,
 }) {
+  const STANDARD_LANGUAGE_OPTIONS = [
+    "Common",
+    "Dwarvish",
+    "Elvish",
+    "Giant",
+    "Gnomish",
+    "Goblin",
+    "Halfling",
+    "Orc",
+  ];
+  const EXOTIC_LANGUAGE_OPTIONS = [
+    "Abyssal",
+    "Celestial",
+    "Deep Speech",
+    "Draconic",
+    "Druidic",
+    "Infernal",
+    "Primordial",
+    "Sylvan",
+    "Undercommon",
+    "Thieves' Cant",
+  ];
+  const ALL_LANGUAGE_OPTIONS = [...STANDARD_LANGUAGE_OPTIONS, ...EXOTIC_LANGUAGE_OPTIONS];
+  const CHOICE_LANGUAGE_OPTIONS = ALL_LANGUAGE_OPTIONS.filter(
+    (language) => proficiencyRules.normalizeChoiceToken(language) !== "common"
+  );
   function formatSourceSummaryLabel(value) {
     const token = String(value ?? "").trim();
     if (!token) return "";
@@ -285,7 +312,38 @@ export function createProficiencySummaryRules({
         }
         const count = Math.max(0, toNumber(value, 0));
         if (count > 0) {
-          if (normalizeChoiceToken(key) === "any") collector.add(`Any ${fallbackLabel}${count > 1 ? ` (${count})` : ""}`, sourceLabel);
+          const normalizedKey = proficiencyRules.normalizeChoiceToken(key);
+          const isLanguageSummary = fallbackLabel.toLowerCase() === "language";
+          if (isLanguageSummary && sourceKey && play) {
+            let choicePool = [];
+            if (normalizedKey === "any" || normalizedKey === "anylanguage" || normalizedKey === "other") {
+              choicePool = CHOICE_LANGUAGE_OPTIONS;
+            }
+            else if (
+              normalizedKey === "anystandard" ||
+              normalizedKey === "anystandardlanguage" ||
+              normalizedKey === "anyexotic" ||
+              normalizedKey === "anyexoticlanguage"
+            ) {
+              choicePool = CHOICE_LANGUAGE_OPTIONS;
+            }
+            if (choicePool.length) {
+              const choiceId = `${String(options?.choicePrefix ?? "p")}:${optionIndex}:${normalizedKey}`;
+              const selected = proficiencyRules.getStoredAutoChoiceSelectedValues(play, sourceKey, choiceId, choicePool, count, {
+                allowDuplicates: false,
+                preserveStoredOrder: true,
+              });
+              if (selected.length) {
+                selected.forEach((selectedEntry) => collector.add(selectedEntry, sourceLabel));
+                return;
+              }
+              collector.add(`Choose ${count} ${count > 1 ? fallbackPluralLabel : fallbackLabel}`, sourceLabel);
+              return;
+            }
+          }
+          if (normalizedKey === "any" || normalizedKey === "anylanguage" || normalizedKey === "other") {
+            collector.add(`Any ${fallbackLabel}${count > 1 ? ` (${count})` : ""}`, sourceLabel);
+          }
           else collector.add(`${formatSourceSummaryLabel(key)}${count > 1 ? ` (${count})` : ""}`, sourceLabel);
         }
       });
@@ -319,7 +377,9 @@ export function createProficiencySummaryRules({
             }
             if (raw.startsWith("language:")) {
               const languageValue = raw.slice(9);
-              if (!languageValue || normalizeChoiceToken(languageValue) === "any") languageCollector.add("Any language", sourceLabel);
+              if (!languageValue || proficiencyRules.normalizeChoiceToken(languageValue) === "any") {
+                languageCollector.add("Any language", sourceLabel);
+              }
               else languageCollector.add(languageValue, sourceLabel);
               return;
             }
@@ -376,6 +436,149 @@ export function createProficiencySummaryRules({
     });
   }
 
+  function collectEntryTextLines(entry, out = []) {
+    if (entry == null) return out;
+    if (typeof entry === "string") {
+      const line = cleanSpellInlineTags(entry).trim();
+      if (line) out.push(line);
+      return out;
+    }
+    if (Array.isArray(entry)) {
+      entry.forEach((value) => collectEntryTextLines(value, out));
+      return out;
+    }
+    if (!catalogLookupDomain.isRecordObject(entry)) return out;
+    collectEntryTextLines(entry.entry, out);
+    collectEntryTextLines(entry.text, out);
+    collectEntryTextLines(entry.entries, out);
+    collectEntryTextLines(entry.items, out);
+    return out;
+  }
+
+  function parseLanguageChoiceCountToken(token) {
+    const normalized = String(token ?? "").trim().toLowerCase();
+    if (normalized === "a" || normalized === "an" || normalized === "one") return 1;
+    if (normalized === "two") return 2;
+    if (normalized === "three") return 3;
+    if (normalized === "four") return 4;
+    if (normalized === "five") return 5;
+    return Math.max(0, toNumber(normalized, 0));
+  }
+
+  function addSet2024BaselineLanguages(languageCollector, character) {
+    if (String(character?.sourcePreset ?? "").trim() !== "set2024") return;
+    languageCollector.add("Common", "Rules");
+    if (String(character?.class ?? "").trim().toLowerCase() === "rogue") return;
+    const sourceKey = "rules:2024";
+    const choiceId = "core2024:language:standard:0";
+    const standardPool = CHOICE_LANGUAGE_OPTIONS;
+    const selected = proficiencyRules.getStoredAutoChoiceSelectedValues(character?.play, sourceKey, choiceId, standardPool, 2, {
+      allowDuplicates: false,
+      preserveStoredOrder: true,
+    });
+    if (selected.length) {
+      selected.forEach((language) => languageCollector.add(language, "Rules"));
+    } else languageCollector.add("Choose 2 languages", "Rules");
+  }
+
+  function addSet2024RogueLanguages(languageCollector, character) {
+    if (String(character?.sourcePreset ?? "").trim() !== "set2024") return;
+    if (String(character?.class ?? "").trim().toLowerCase() !== "rogue") return;
+    languageCollector.add("Thieves' Cant", "Class Feature");
+    const sourceKey = "rules:2024:rogue";
+    const choiceId = "rogue2024:language:other:0";
+    const pool = CHOICE_LANGUAGE_OPTIONS.filter((language) => proficiencyRules.normalizeChoiceToken(language) !== "thievescant");
+    const selected = proficiencyRules.getStoredAutoChoiceSelectedValues(character?.play, sourceKey, choiceId, pool, 1, {
+      allowDuplicates: false,
+      preserveStoredOrder: true,
+    });
+    if (selected.length) {
+      selected.forEach((language) => languageCollector.add(language, "Class Feature"));
+    } else languageCollector.add("Choose 1 language", "Class Feature");
+  }
+
+  function addLanguagesFromEntryText(languageCollector, entry, sourceLabel = "", options = {}) {
+    const lines = collectEntryTextLines(entry?.entries ?? []);
+    if (!lines.length) return;
+    const sourceKey = String(options?.sourceKey ?? "").trim();
+    const play = catalogLookupDomain.isRecordObject(options?.play) ? options.play : null;
+    let choiceIndex = 0;
+    const knownLanguages = [...new Set(ALL_LANGUAGE_OPTIONS.map((value) => formatSourceSummaryLabel(value)).filter(Boolean))];
+    lines.forEach((line) => {
+      const normalizedLine = String(line ?? "").replace(/\s+/g, " ").trim();
+      if (!/(you can speak,\s*read,\s*and\s*write|you know)/i.test(normalizedLine)) return;
+      const sentence = normalizedLine.split(/[.?!]/)[0].trim();
+      if (!sentence) return;
+      const explicitLanguages = knownLanguages.filter((language) => {
+        const escaped = language.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        return new RegExp(`\\b${escaped}\\b`, "i").test(sentence);
+      });
+      const choices = [...sentence.matchAll(/\b(one|two|three|four|five|\d+)\s+other\s+languages?\s+of\s+your\s+choice\b/gi)];
+      choices.forEach((match) => {
+        const count = parseLanguageChoiceCountToken(match?.[1]);
+        const sentenceHasThievesCant = /\bthieves'? cant\b/i.test(sentence);
+        const choicePool = CHOICE_LANGUAGE_OPTIONS.filter(
+          (language) => {
+            const token = proficiencyRules.normalizeChoiceToken(language);
+            if (sentenceHasThievesCant && token === "thievescant") return false;
+            return !explicitLanguages.some((fixed) => proficiencyRules.normalizeChoiceToken(fixed) === token);
+          }
+        );
+        if (count > 0 && sourceKey && play) {
+          const selected = proficiencyRules.getStoredAutoChoiceSelectedValues(play, sourceKey, `lt:${choiceIndex}:other`, choicePool, count, {
+            allowDuplicates: false,
+            preserveStoredOrder: true,
+          });
+          if (selected.length) selected.forEach((language) => languageCollector.add(language, sourceLabel));
+          else languageCollector.add(`Choose ${count} language${count > 1 ? "s" : ""}`, sourceLabel);
+        } else if (count > 0) {
+          languageCollector.add(`Choose ${count} language${count > 1 ? "s" : ""}`, sourceLabel);
+        }
+        choiceIndex += 1;
+      });
+      explicitLanguages.forEach((language) => languageCollector.add(language, sourceLabel));
+    });
+  }
+
+  function addUnlockedFeatureLanguages(languageCollector, catalogs, character) {
+    const unlockedFeatures = Array.isArray(character?.progression?.unlockedFeatures) ? character.progression.unlockedFeatures : [];
+    if (typeof resolveFeatureEntryFromCatalogs !== "function" || !unlockedFeatures.length) return;
+    unlockedFeatures.forEach((feature, featureIndex) => {
+      const detail = resolveFeatureEntryFromCatalogs(catalogs, feature);
+      if (!catalogLookupDomain.isRecordObject(detail)) return;
+      const entryData = catalogLookupDomain.isRecordObject(detail?.entryData) ? detail.entryData : {};
+      const sourceKey = `feature:${String(feature?.id ?? "").trim() || String(buildEntityId?.([
+        "feature",
+        feature?.name,
+        feature?.className,
+        feature?.subclassName,
+        feature?.source,
+        feature?.level,
+        featureIndex,
+      ]) ?? "").trim() || `feature-${featureIndex}`}`;
+      addSimpleProficienciesFromStructuredSpec(
+        languageCollector,
+        Array.isArray(detail?.languageProficiencies) ? detail.languageProficiencies : entryData?.languageProficiencies,
+        "Class Feature",
+        {
+          sourceKey,
+          play: character?.play,
+          fallbackLabel: "language",
+          choicePrefix: "l",
+        }
+      );
+      const directLanguages = Array.isArray(detail?.languages) ? detail.languages : Array.isArray(entryData?.languages) ? entryData.languages : [];
+      directLanguages.forEach((language) => languageCollector.add(language, "Class Feature"));
+      const isRogue2024ThievesCantFeature =
+        String(character?.sourcePreset ?? "").trim() === "set2024"
+        && String(character?.class ?? "").trim().toLowerCase() === "rogue"
+        && String(detail?.name ?? "").trim().toLowerCase() === "thieves' cant";
+      if (!isRogue2024ThievesCantFeature) {
+        addLanguagesFromEntryText(languageCollector, detail, "Class Feature", { sourceKey, play: character?.play });
+      }
+    });
+  }
+
   function getCharacterToolAndDefenseSummary(catalogs, character) {
     const sourceOrder = catalogLookupDomain.getPreferredSourceOrder(character);
     const raceEntry = catalogLookupDomain.getEffectiveRaceEntry(catalogs, character, sourceOrder);
@@ -417,9 +620,12 @@ export function createProficiencySummaryRules({
       fallbackLabel: "language",
       choicePrefix: "l",
     });
+    addLanguagesFromEntryText(languageCollector, raceEntry, "Race", { sourceKey: "race", play: character?.play });
     if (Array.isArray(raceEntry?.languages)) {
       raceEntry.languages.forEach((language) => languageCollector.add(language, "Race"));
     }
+    addSet2024BaselineLanguages(languageCollector, character);
+    addSet2024RogueLanguages(languageCollector, character);
     addToolProficienciesFromStructuredSpec(toolCollector, backgroundEntry?.toolProficiencies, "Background", {
       sourceKey: "background",
       play: character?.play,
@@ -431,6 +637,7 @@ export function createProficiencySummaryRules({
       fallbackLabel: "language",
       choicePrefix: "l",
     });
+    addLanguagesFromEntryText(languageCollector, backgroundEntry, "Background", { sourceKey: "background", play: character?.play });
     if (Array.isArray(backgroundEntry?.languages)) {
       backgroundEntry.languages.forEach((language) => languageCollector.add(language, "Background"));
     }
@@ -456,8 +663,13 @@ export function createProficiencySummaryRules({
         choicePrefix: "l",
       }
     );
+    addLanguagesFromEntryText(languageCollector, classEntry, "Class", { sourceKey: classSourceKey, play: character?.play });
     if (Array.isArray(classEntry?.startingProficiencies?.languages)) {
       classEntry.startingProficiencies.languages.forEach((language) => languageCollector.add(language, "Class"));
+    }
+    const normalizedClassName = String(classEntry?.name ?? character?.class ?? "").trim().toLowerCase();
+    if (normalizedClassName === "rogue") {
+      languageCollector.add("Thieves' Cant", "Class Feature");
     }
 
     const multiclassEntries = Array.isArray(character?.multiclass) ? character.multiclass : [];
@@ -492,6 +704,12 @@ export function createProficiencySummaryRules({
           fallbackLabel: "language",
           choicePrefix: "l",
         }
+      );
+      addLanguagesFromEntryText(
+        languageCollector,
+        classCatalogEntry?.multiclassing?.proficienciesGained,
+        "Multiclass",
+        { sourceKey: multiclassSourceKey, play: character?.play }
       );
       if (Array.isArray(classCatalogEntry?.multiclassing?.proficienciesGained?.languages)) {
         classCatalogEntry.multiclassing.proficienciesGained.languages.forEach((language) =>
@@ -650,6 +868,7 @@ export function createProficiencySummaryRules({
         entryKey: "vulnerable",
       });
     });
+    addUnlockedFeatureLanguages(languageCollector, catalogs, character);
 
     addDefenseEntries(resistanceCollector, raceEntry?.resist, "Race", {
       singular: "resistance",

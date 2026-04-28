@@ -78,6 +78,7 @@ function getDefaultPlayState() {
     inspiration: false,
     conditions: [],
     notes: "",
+    moneyTracker: { cp: 0, sp: 0, ep: 0, gp: 0, pp: 0 },
     deathSavesSuccess: 0,
     deathSavesFail: 0,
   };
@@ -351,6 +352,16 @@ function normalizeCharacter(character) {
     inspiration: Boolean(character.play?.inspiration),
     autoChoiceSelections:
       normalizedAutoChoiceSelections,
+    moneyTracker:
+      character.play?.moneyTracker && typeof character.play.moneyTracker === "object" && !Array.isArray(character.play.moneyTracker)
+        ? {
+            cp: Math.max(0, Math.floor(toNumber(character.play.moneyTracker.cp, 0))),
+            sp: Math.max(0, Math.floor(toNumber(character.play.moneyTracker.sp, 0))),
+            ep: Math.max(0, Math.floor(toNumber(character.play.moneyTracker.ep, 0))),
+            gp: Math.max(0, Math.floor(toNumber(character.play.moneyTracker.gp, 0))),
+            pp: Math.max(0, Math.floor(toNumber(character.play.moneyTracker.pp, 0))),
+          }
+        : { cp: 0, sp: 0, ep: 0, gp: 0, pp: 0 },
   };
 
   return {

@@ -365,6 +365,7 @@ const proficiencySummaryRules = createProficiencySummaryRules({
   catalogLookupDomain,
   proficiencyRules,
   inventoryWeapons,
+  resolveFeatureEntryFromCatalogs: characterProgressionDomain.resolveFeatureEntryFromCatalogs,
 });
 const autoAttackRules = createAutoAttackRules({
   toNumber,

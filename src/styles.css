@@ -863,7 +863,7 @@ input, select, textarea {
 .inline-language-editor {
   display: grid;
   gap: 0.45rem;
-  margin-bottom: 0.5rem;
+  margin-bottom: 0;
 }
 
 .inline-language-add {
@@ -891,6 +891,59 @@ input, select, textarea {
   padding: 0;
   min-width: 1rem;
   cursor: pointer;
+}
+
+.language-panel {
+  display: grid;
+  gap: 0.65rem;
+  margin-top: 0.25rem;
+}
+
+.language-panel-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.55rem;
+}
+
+.language-panel-header .title {
+  margin: 0;
+}
+
+.language-panel-badges {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.language-panel-grid {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.language-panel-card {
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.2);
+  padding: 0.62rem 0.68rem;
+  display: grid;
+  gap: 0.38rem;
+}
+
+.language-panel-card-title {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 650;
+}
+
+.language-panel-card-text {
+  margin: 0;
+  font-size: 0.85rem;
+}
+
+.language-panel-card .auto-choice-shell {
+  margin: 0.1rem 0 0;
 }
 
 .party-member-list {
@@ -4569,6 +4622,68 @@ button.skill-btn-clickable-roll[data-skill-roll-row]:focus-visible {
   resize: vertical;
 }
 
+.play-money-tracker {
+  margin-top: 0.7rem;
+  padding-top: 0.6rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.play-money-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.84rem;
+  color: var(--muted);
+}
+
+.play-money-total {
+  font-weight: 700;
+  color: var(--text);
+}
+
+.play-money-grid {
+  margin-top: 0.4rem;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 0.35rem;
+}
+
+.play-money-field {
+  font-size: 0.68rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.play-money-field input {
+  margin-top: 0.2rem;
+  padding: 0.35rem 0.3rem;
+  border-radius: 8px;
+  text-align: center;
+  font-size: 0.8rem;
+}
+
+.play-money-input-wrap {
+  margin-top: 0.2rem;
+}
+
+.play-money-input-wrap input {
+  margin-top: 0;
+  padding-right: 3.2rem;
+}
+
+.play-money-input-wrap .num-stepper-inline {
+  right: 0.2rem;
+  gap: 0.15rem;
+}
+
+.play-money-input-wrap .num-step-btn {
+  width: 1.3rem;
+  height: 1.3rem;
+  font-size: 0.7rem;
+  border-radius: 6px;
+}
+
 @media (max-width: 960px) {
   input,
   select,
@@ -4735,6 +4850,10 @@ button.skill-btn-clickable-roll[data-skill-roll-row]:focus-visible {
   .attack-title-row {
     flex-wrap: wrap;
     align-items: flex-start;
+  }
+
+  .play-money-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .attack-title-heading {

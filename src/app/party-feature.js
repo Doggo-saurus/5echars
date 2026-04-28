@@ -572,8 +572,15 @@ export function createPartyFeature(deps) {
                 </h4>
               </div>
               <div class="party-member-meta party-member-tags">
-                <span class="party-meta-chip">${esc(speciesSummary)}</span>
-                <span class="party-meta-chip">${esc(backgroundSummary)}</span>
+                <span class="party-meta-chip">${esc(`Species: ${speciesSummary}`)}</span>
+                <span class="party-meta-chip">${esc(`Background: ${backgroundSummary}`)}</span>
+                ${languages
+                  .map((entry) => {
+                    const label = String(entry?.label ?? "").trim();
+                    if (!label) return "";
+                    return `<span class="party-meta-chip">${esc(`Language: ${label}`)}</span>`;
+                  })
+                  .join("")}
               </div>
               <div class="party-member-stats-grid">
                 <div class="party-stat">
@@ -607,27 +614,6 @@ export function createPartyFeature(deps) {
                   <span class="party-passive-value">${esc(String(passiveSkills.investigation))}</span>
                 </div>
               </div>
-              ${
-                languages.length
-                  ? `<div class="party-member-languages" aria-label="Languages">
-                       <span class="party-languages-label">Languages</span>
-                       <div class="party-language-list">
-                         ${languages
-                           .map((entry) => {
-                             const label = String(entry?.label ?? "").trim();
-                             if (!label) return "";
-                             const sources = Array.isArray(entry?.sources)
-                               ? entry.sources.map((source) => String(source ?? "").trim()).filter(Boolean)
-                               : [];
-                             return `<span class="party-meta-chip">${esc(label)}${
-                               sources.length ? `<span class="party-chip-meta"> (${esc(sources.join(" / "))})</span>` : ""
-                             }</span>`;
-                           })
-                           .join("")}
-                       </div>
-                     </div>`
-                  : ""
-              }
             </div>
             <div class="party-member-actions">
               <a class="btn secondary" href="${esc(getCharacterUrl(characterId))}" data-party-open-character="${esc(characterId)}">Open</a>

@@ -2687,6 +2687,37 @@ export function createEvents(deps) {
       const value = evt.target.value;
       store.updateCharacter({ notes: value });
     });
+    const applyMoneyTrackerValue = (coin, valueRaw) => {
+      const normalizedCoin = String(coin ?? "").trim().toLowerCase();
+      if (!["cp", "sp", "ep", "gp", "pp"].includes(normalizedCoin)) return;
+      const value = Math.max(0, Math.floor(toNumber(valueRaw, 0)));
+      withUpdatedPlay(state, (play) => {
+        const current = play.moneyTracker && typeof play.moneyTracker === "object" && !Array.isArray(play.moneyTracker)
+          ? { ...play.moneyTracker }
+          : {};
+        current[normalizedCoin] = value;
+        play.moneyTracker = current;
+      });
+    };
+    app.querySelectorAll("[data-play-money-coin]").forEach((input) => {
+      input.addEventListener("change", (evt) => {
+        const target = evt.target;
+        const coin = String(target?.dataset?.playMoneyCoin ?? "").trim().toLowerCase();
+        applyMoneyTrackerValue(coin, target.value);
+      });
+    });
+    app.querySelectorAll("[data-play-money-step-coin]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const coin = String(button.dataset.playMoneyStepCoin ?? "").trim().toLowerCase();
+        if (!["cp", "sp", "ep", "gp", "pp"].includes(coin)) return;
+        const delta = Math.floor(toNumber(button.dataset.playMoneyStepDelta, 0));
+        if (!delta) return;
+        const input = app.querySelector(`[data-play-money-coin="${coin}"]`);
+        const current = Math.max(0, Math.floor(toNumber(input?.value, 0)));
+        const next = Math.max(0, current + delta);
+        applyMoneyTrackerValue(coin, next);
+      });
+    });
 
     app.querySelector("#short-rest")?.addEventListener("click", () => {
       const currentState = store.getState();
