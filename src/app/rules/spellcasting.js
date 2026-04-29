@@ -118,8 +118,9 @@ export function createSpellcastingRules({
     return getClassCasterContribution(catalogs, resolvedClassName, level) > 0;
   }
 
-  function getCharacterSpellSaveSummary(catalogs, character, mods, proficiencyBonus) {
+  function getCharacterSpellSaveSummary(catalogs, character, mods, proficiencyBonus, itemSpellSaveDcBonus = 0) {
     const pb = Math.max(0, toNumber(proficiencyBonus, 0));
+    const itemDcBonus = toNumber(itemSpellSaveDcBonus, 0);
     const { primaryLevel, multiclass } = getCharacterClassLevels(character);
     const rows = [];
     const considerTrack = (className, classSource, level, isPrimary) => {
@@ -133,7 +134,7 @@ export function createSpellcastingRules({
       const modInfo = resolveSpellMods(classEntry, subclassEntry, mods);
       if (!modInfo) return;
       if (!spellcastingTrackIsActive(catalogs, resolvedName, level)) return;
-      const dc = 8 + pb + modInfo.bestMod;
+      const dc = 8 + pb + modInfo.bestMod + itemDcBonus;
       const abilityLabel =
         modInfo.allKeys.length > 1
           ? `max ${modInfo.allKeys.map((k) => abilityLabels?.[k] ?? String(k).toUpperCase()).join("/")}`

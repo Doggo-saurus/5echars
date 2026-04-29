@@ -17,6 +17,13 @@ export function createCharacterProgressionDomain({
   extractSimpleNotation,
   collectSpellEntryLines,
 }) {
+  function isFeatureChoiceOptionsEntry(entry) {
+    return isRecordObject(entry)
+      && entry.type === "options"
+      && Array.isArray(entry.entries)
+      && entry.count != null;
+  }
+
   function getUnlockedFeatures(catalogs, character) {
     const unlocked = [];
     const seen = new Set();
@@ -42,6 +49,10 @@ export function createCharacterProgressionDomain({
       }
       if (!isRecordObject(entry)) return acc;
       if (entry.type === "options" && Array.isArray(entry.entries)) {
+        if (!isFeatureChoiceOptionsEntry(entry)) {
+          entry.entries.forEach((option) => collectReferencedTokens(option, acc, context));
+          return acc;
+        }
         const optionValues = [...new Set(entry.entries.map((option) => getOptionLabel(option)).filter(Boolean))];
         const maxCount = Math.max(1, Math.min(optionValues.length, Math.floor(toNumber(entry.count, 1))));
         const modeId = buildEntityId(["feature-mode", context.featureId, context.entryIndex]);
@@ -131,10 +142,15 @@ export function createCharacterProgressionDomain({
         const token = typeof featureEntry === "string" ? featureEntry : featureEntry?.classFeature;
         const parsed = parseClassFeatureToken(token, classSource, classEntry.name);
         if (!parsed || parsed.level == null || parsed.level > track.level) return;
+        const tableDisplayName =
+          isRecordObject(featureEntry) && typeof featureEntry.tableDisplayName === "string"
+            ? cleanSpellInlineTags(featureEntry.tableDisplayName)
+            : "";
         enqueueFeature(
           {
             ...parsed,
             className: classEntry.name,
+            tableDisplayName,
           },
           track.level,
           classEntry.name,
@@ -546,8 +562,10 @@ export function createCharacterProgressionDomain({
 
     const effects = [];
     const tracks = getClassLevelTracks(character);
+    const sourceOrder = getPreferredSourceOrder(character);
     tracks.forEach((track) => {
-      const classEntry = getClassCatalogEntry(catalogs, track.className);
+      const selectedClassSource = track.isPrimary ? character?.classSource : "";
+      const classEntry = getClassCatalogEntry(catalogs, track.className, selectedClassSource, sourceOrder);
       if (!classEntry) return;
       const groups = Array.isArray(classEntry.classTableGroups) ? classEntry.classTableGroups : [];
       const levelIndex = Math.max(0, Math.min(19, toNumber(track.level, 1) - 1));
@@ -623,7 +641,7 @@ export function createCharacterProgressionDomain({
         return out;
       }
       if (!isRecordObject(entry)) return out;
-      if (entry.type === "options" && Array.isArray(entry.entries)) out.push(entry);
+      if (isFeatureChoiceOptionsEntry(entry)) out.push(entry);
       Object.values(entry).forEach((value) => collectOptionEntries(value, out));
       return out;
     };

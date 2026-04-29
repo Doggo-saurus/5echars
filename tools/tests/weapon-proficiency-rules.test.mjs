@@ -95,6 +95,44 @@ test("firearms and improvised proficiency tokens are recognized", () => {
   assert.equal(inventoryWeapons.isWeaponProficient(improvisedEntry, profTokens), true);
 });
 
+test("weapon proficiency categories normalize to canonical labels", () => {
+  assert.deepEqual(inventoryWeapons.collectWeaponProficiencyStrings(["simple", "martial", "martial weapon"]), [
+    "simple weapons",
+    "martial weapons",
+    "martial weapons",
+  ]);
+});
+
+test("cleric protector adds one martial weapons proficiency token", () => {
+  const clericWeapons = createInventoryWeapons({
+    cleanSpellInlineTags: (value) => String(value ?? ""),
+    extractSimpleNotation: (value) => String(value ?? "").trim(),
+    toNumber,
+    signed,
+    getRuleDescriptionLines: () => [],
+    getClassLevelTracks,
+    getClassCatalogEntry,
+    getUnlockedFeatures: () => [{ className: "Cleric", name: "Protector" }],
+    resolveFeatureEntryFromCatalogs: () => null,
+  });
+
+  const tokens = clericWeapons.getCharacterWeaponProficiencyTokens(
+    {
+      classes: [
+        {
+          name: "Cleric",
+          startingProficiencies: {
+            weapons: ["simple"],
+          },
+        },
+      ],
+    },
+    { class: "Cleric" }
+  );
+
+  assert.deepEqual([...tokens].sort(), ["martial weapons", "simple weapons"]);
+});
+
 test("auto attacks add proficiency bonus only when proficient", () => {
   const baseState = {
     catalogs: {

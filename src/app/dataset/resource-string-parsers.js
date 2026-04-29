@@ -157,7 +157,7 @@ export function inferResourceLabelFromLines(lines, fallback = "") {
 export function parseExplicitResourceCostFromLines(lines) {
   const joined = lines.join(" ");
   const explicitRegex =
-    /(?:expend|spend)(?:ing|ed)?\s+(a|an|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d+)\s+([a-z][a-z\s'-]{1,64}?(?:dice?|die|charges?|points?|tokens?|uses?))/i;
+    /(?:expend|spend)(?:ing|ed)?\s+(a|an|once|one|twice|two|thrice|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d+)\s+([a-z][a-z\s'-]{1,64}?(?:dice?|die|charges?|points?|tokens?|uses?))/i;
   const explicitMatch = joined.match(explicitRegex);
   if (explicitMatch) {
     return {
@@ -182,7 +182,7 @@ export function parseExplicitResourceCostFromLines(lines) {
     };
   }
   const rollThenExpendRegex =
-    /roll\s+(a|an|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d+)\s+([a-z][a-z\s'-]{1,64}?(?:dice?|die|charges?|points?|tokens?|uses?)).{0,800}?expend\s+the\s+(?:same\s+)?(?:die|dice|charge|charges|point|points|token|tokens|use|uses)\b/i;
+    /roll\s+(a|an|once|one|twice|two|thrice|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d+)\s+([a-z][a-z\s'-]{1,64}?(?:dice?|die|charges?|points?|tokens?|uses?)).{0,800}?expend\s+the\s+(?:same\s+)?(?:die|dice|charge|charges|point|points|token|tokens|use|uses)\b/i;
   const rollThenExpendMatch = joined.match(rollThenExpendRegex);
   if (rollThenExpendMatch) {
     return {
@@ -191,7 +191,7 @@ export function parseExplicitResourceCostFromLines(lines) {
     };
   }
   const rollThenPassiveRegex =
-    /roll\s+(a|an|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d+)\s+([a-z][a-z\s'-]{1,64}?(?:dice?|die|charges?|points?|tokens?|uses?)).{0,800}?the\s+(?:same\s+)?(?:die|dice|charge|charges|point|points|token|tokens|use|uses)\s+is expended\b/i;
+    /roll\s+(a|an|once|one|twice|two|thrice|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d+)\s+([a-z][a-z\s'-]{1,64}?(?:dice?|die|charges?|points?|tokens?|uses?)).{0,800}?the\s+(?:same\s+)?(?:die|dice|charge|charges|point|points|token|tokens|use|uses)\s+is expended\b/i;
   const rollThenPassiveMatch = joined.match(rollThenPassiveRegex);
   if (rollThenPassiveMatch) {
     return {

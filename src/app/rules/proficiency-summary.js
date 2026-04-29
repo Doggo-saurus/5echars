@@ -9,6 +9,7 @@ export function createProficiencySummaryRules({
   proficiencyRules,
   inventoryWeapons,
   resolveFeatureEntryFromCatalogs,
+  getUnlockedFeatures,
 }) {
   const STANDARD_LANGUAGE_OPTIONS = [
     "Common",
@@ -350,6 +351,68 @@ export function createProficiencySummaryRules({
     });
   }
 
+  function formatArmorProficiencyLabel(value) {
+    const raw = cleanSpellInlineTags(String(value ?? "").split("|")[0]).trim();
+    const normalized = raw.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+    if (!normalized) return "";
+    if (normalized === "light" || normalized === "light armor" || normalized.includes("light armor")) return "Light Armor";
+    if (normalized === "medium" || normalized === "medium armor" || normalized.includes("medium armor")) return "Medium Armor";
+    if (normalized === "heavy" || normalized === "heavy armor" || normalized.includes("heavy armor")) return "Heavy Armor";
+    if (normalized === "shield" || normalized === "shields" || normalized.includes("shield")) return "Shields";
+    if (normalized === "all" || normalized === "all armor") return "All Armor";
+    return formatSourceSummaryLabel(raw);
+  }
+
+  function addArmorProficienciesFromStructuredSpec(collector, spec, sourceLabel = "", options = {}) {
+    if (!Array.isArray(spec)) return;
+    const sourceKey = String(options?.sourceKey ?? "").trim();
+    const play = catalogLookupDomain.isRecordObject(options?.play) ? options.play : null;
+    spec.forEach((entry, optionIndex) => {
+      if (typeof entry === "string") {
+        const label = formatArmorProficiencyLabel(entry);
+        if (label) collector.add(label, sourceLabel);
+        return;
+      }
+      if (!catalogLookupDomain.isRecordObject(entry)) return;
+      Object.entries(entry).forEach(([key, value]) => {
+        if (key === "choose" && catalogLookupDomain.isRecordObject(value)) {
+          const from = (Array.isArray(value.from) ? value.from : [])
+            .map((item) => formatArmorProficiencyLabel(item))
+            .filter(Boolean);
+          const count = Math.max(1, toNumber(value.count, 1));
+          if (sourceKey && play && from.length) {
+            const choiceId = `a:${optionIndex}:choose`;
+            const selected = proficiencyRules.getStoredAutoChoiceSelectedValues(play, sourceKey, choiceId, from, count, {
+              allowDuplicates: false,
+              preserveStoredOrder: true,
+            });
+            if (selected.length) {
+              selected.forEach((selectedEntry) => collector.add(selectedEntry, sourceLabel));
+              return;
+            }
+          }
+          collector.add(`Choose ${count} armor proficienc${count > 1 ? "ies" : "y"}`, sourceLabel);
+          return;
+        }
+        if (value === true) {
+          const label = formatArmorProficiencyLabel(key);
+          if (label) collector.add(label, sourceLabel);
+          return;
+        }
+        const count = Math.max(0, toNumber(value, 0));
+        if (count > 0) {
+          const normalizedKey = proficiencyRules.normalizeChoiceToken(key);
+          if (normalizedKey === "any" || normalizedKey === "anyarmor" || normalizedKey === "other") {
+            collector.add(`Any armor proficiency${count > 1 ? ` (${count})` : ""}`, sourceLabel);
+            return;
+          }
+          const label = formatArmorProficiencyLabel(key);
+          if (label) collector.add(`${label}${count > 1 ? ` (${count})` : ""}`, sourceLabel);
+        }
+      });
+    });
+  }
+
   function addSkillToolLanguageEntries(toolCollector, languageCollector, spec, sourceLabel = "", options = {}) {
     if (!Array.isArray(spec)) return;
     const sourceKey = String(options?.sourceKey ?? "").trim();
@@ -538,10 +601,25 @@ export function createProficiencySummaryRules({
       });
       explicitLanguages.forEach((language) => languageCollector.add(language, sourceLabel));
     });
+    const hasTelepathicCommunication = lines.some((line) => {
+      const normalizedLine = String(line ?? "").replace(/\s+/g, " ").trim();
+      if (!normalizedLine) return false;
+      return /\byou\b[^.]{0,220}\btelepath(?:ic|ically|y)\b[^.]{0,220}\b(?:communicat(?:e|es|ing|ion)|speak|understand|convey)\b/i.test(normalizedLine)
+        || /\byou\b[^.]{0,220}\b(?:communicat(?:e|es|ing|ion)|speak|understand|convey)\b[^.]{0,220}\btelepath(?:ic|ically|y)\b/i.test(normalizedLine);
+    });
+    if (hasTelepathicCommunication) languageCollector.add("Telepathy", sourceLabel);
+  }
+
+  function getSummaryUnlockedFeatures(catalogs, character) {
+    if (typeof getUnlockedFeatures === "function") {
+      const unlocked = getUnlockedFeatures(catalogs, character);
+      if (Array.isArray(unlocked)) return unlocked;
+    }
+    return Array.isArray(character?.progression?.unlockedFeatures) ? character.progression.unlockedFeatures : [];
   }
 
   function addUnlockedFeatureLanguages(languageCollector, catalogs, character) {
-    const unlockedFeatures = Array.isArray(character?.progression?.unlockedFeatures) ? character.progression.unlockedFeatures : [];
+    const unlockedFeatures = getSummaryUnlockedFeatures(catalogs, character);
     if (typeof resolveFeatureEntryFromCatalogs !== "function" || !unlockedFeatures.length) return;
     unlockedFeatures.forEach((feature, featureIndex) => {
       const detail = resolveFeatureEntryFromCatalogs(catalogs, feature);
@@ -579,6 +657,64 @@ export function createProficiencySummaryRules({
     });
   }
 
+  function addArmorProficienciesFromEntryText(armorCollector, entry, sourceLabel = "") {
+    const lines = collectEntryTextLines(entry);
+    if (!lines.length) return;
+    lines.forEach((line) => {
+      const normalizedLine = String(line ?? "").replace(/\s+/g, " ").trim();
+      if (!normalizedLine) return;
+      if (!/\bproficien(?:cy|cies|t)\b/i.test(normalizedLine)) return;
+      if (!/\b(?:armor|shield)s?\b/i.test(normalizedLine)) return;
+      if (/\ball armor\b/i.test(normalizedLine)) {
+        armorCollector.add("Light Armor", sourceLabel);
+        armorCollector.add("Medium Armor", sourceLabel);
+        armorCollector.add("Heavy Armor", sourceLabel);
+      }
+      if (/\blight armor\b/i.test(normalizedLine)) armorCollector.add("Light Armor", sourceLabel);
+      if (/\bmedium armor\b/i.test(normalizedLine)) armorCollector.add("Medium Armor", sourceLabel);
+      if (/\bheavy armor\b/i.test(normalizedLine)) armorCollector.add("Heavy Armor", sourceLabel);
+      if (/\bshields?\b/i.test(normalizedLine)) armorCollector.add("Shields", sourceLabel);
+    });
+  }
+
+  function addUnlockedFeatureArmorProficiencies(armorCollector, catalogs, character) {
+    const unlockedFeatures = getSummaryUnlockedFeatures(catalogs, character);
+    if (typeof resolveFeatureEntryFromCatalogs !== "function" || !unlockedFeatures.length) return;
+    unlockedFeatures.forEach((feature, featureIndex) => {
+      const detail = resolveFeatureEntryFromCatalogs(catalogs, feature);
+      if (!catalogLookupDomain.isRecordObject(detail)) return;
+      const entryData = catalogLookupDomain.isRecordObject(detail?.entryData) ? detail.entryData : {};
+      const sourceKey = `feature:${String(feature?.id ?? "").trim() || String(buildEntityId?.([
+        "feature",
+        feature?.name,
+        feature?.className,
+        feature?.subclassName,
+        feature?.source,
+        feature?.level,
+        featureIndex,
+      ]) ?? "").trim() || `feature-${featureIndex}`}`;
+      addArmorProficienciesFromStructuredSpec(
+        armorCollector,
+        Array.isArray(detail?.armorProficiencies) ? detail.armorProficiencies : entryData?.armorProficiencies,
+        "Class Feature",
+        {
+          sourceKey,
+          play: character?.play,
+        }
+      );
+      const startingArmor = Array.isArray(detail?.startingProficiencies?.armor)
+        ? detail.startingProficiencies.armor
+        : Array.isArray(entryData?.startingProficiencies?.armor)
+          ? entryData.startingProficiencies.armor
+          : [];
+      addArmorProficienciesFromStructuredSpec(armorCollector, startingArmor, "Class Feature", {
+        sourceKey,
+        play: character?.play,
+      });
+      addArmorProficienciesFromEntryText(armorCollector, detail, "Class Feature");
+    });
+  }
+
   function getCharacterToolAndDefenseSummary(catalogs, character) {
     const sourceOrder = catalogLookupDomain.getPreferredSourceOrder(character);
     const raceEntry = catalogLookupDomain.getEffectiveRaceEntry(catalogs, character, sourceOrder);
@@ -613,6 +749,10 @@ export function createProficiencySummaryRules({
       sourceKey: "race",
       play: character?.play,
       pools: toolPools,
+    });
+    addArmorProficienciesFromStructuredSpec(armorCollector, raceEntry?.armorProficiencies, "Race", {
+      sourceKey: "race",
+      play: character?.play,
     });
     addSimpleProficienciesFromStructuredSpec(languageCollector, raceEntry?.languageProficiencies, "Race", {
       sourceKey: "race",
@@ -652,6 +792,24 @@ export function createProficiencySummaryRules({
     if (!classHasStructuredTools && Array.isArray(classEntry?.startingProficiencies?.tools)) {
       classEntry.startingProficiencies.tools.forEach((tool) => toolCollector.add(tool, "Class"));
     }
+    addArmorProficienciesFromStructuredSpec(
+      armorCollector,
+      classEntry?.startingProficiencies?.armorProficiencies,
+      "Class",
+      {
+        sourceKey: classSourceKey,
+        play: character?.play,
+      }
+    );
+    addArmorProficienciesFromStructuredSpec(
+      armorCollector,
+      classEntry?.startingProficiencies?.armor,
+      "Class",
+      {
+        sourceKey: classSourceKey,
+        play: character?.play,
+      }
+    );
     addSimpleProficienciesFromStructuredSpec(
       languageCollector,
       classEntry?.startingProficiencies?.languageProficiencies,
@@ -692,6 +850,24 @@ export function createProficiencySummaryRules({
           sourceKey: multiclassSourceKey,
           play: character?.play,
           pools: toolPools,
+        }
+      );
+      addArmorProficienciesFromStructuredSpec(
+        armorCollector,
+        classCatalogEntry?.multiclassing?.proficienciesGained?.armorProficiencies,
+        "Multiclass",
+        {
+          sourceKey: multiclassSourceKey,
+          play: character?.play,
+        }
+      );
+      addArmorProficienciesFromStructuredSpec(
+        armorCollector,
+        classCatalogEntry?.multiclassing?.proficienciesGained?.armor,
+        "Multiclass",
+        {
+          sourceKey: multiclassSourceKey,
+          play: character?.play,
         }
       );
       addSimpleProficienciesFromStructuredSpec(
@@ -735,12 +911,9 @@ export function createProficiencySummaryRules({
         fallbackPluralLabel: "weapon proficiencies",
         choicePrefix: "w",
       });
-      addSimpleProficienciesFromStructuredSpec(armorCollector, featEntry?.armorProficiencies, "Feat", {
+      addArmorProficienciesFromStructuredSpec(armorCollector, featEntry?.armorProficiencies, "Feat", {
         sourceKey: featSourceKey,
         play: character?.play,
-        fallbackLabel: "armor proficiency",
-        fallbackPluralLabel: "armor proficiencies",
-        choicePrefix: "a",
       });
       addSimpleProficienciesFromStructuredSpec(languageCollector, featEntry?.languageProficiencies, "Feat", {
         sourceKey: featSourceKey,
@@ -783,12 +956,9 @@ export function createProficiencySummaryRules({
         fallbackPluralLabel: "weapon proficiencies",
         choicePrefix: "w",
       });
-      addSimpleProficienciesFromStructuredSpec(armorCollector, entry?.armorProficiencies, "Optional Feature", {
+      addArmorProficienciesFromStructuredSpec(armorCollector, entry?.armorProficiencies, "Optional Feature", {
         sourceKey,
         play: character?.play,
-        fallbackLabel: "armor proficiency",
-        fallbackPluralLabel: "armor proficiencies",
-        choicePrefix: "a",
       });
       addSimpleProficienciesFromStructuredSpec(languageCollector, entry?.languageProficiencies, "Optional Feature", {
         sourceKey,
@@ -823,12 +993,9 @@ export function createProficiencySummaryRules({
         fallbackPluralLabel: "weapon proficiencies",
         choicePrefix: "w",
       });
-      addSimpleProficienciesFromStructuredSpec(armorCollector, catalogItem?.armorProficiencies, sourceLabel, {
+      addArmorProficienciesFromStructuredSpec(armorCollector, catalogItem?.armorProficiencies, sourceLabel, {
         sourceKey,
         play: character?.play,
-        fallbackLabel: "armor proficiency",
-        fallbackPluralLabel: "armor proficiencies",
-        choicePrefix: "a",
       });
       addSimpleProficienciesFromStructuredSpec(languageCollector, catalogItem?.languageProficiencies, sourceLabel, {
         sourceKey,
@@ -869,6 +1036,7 @@ export function createProficiencySummaryRules({
       });
     });
     addUnlockedFeatureLanguages(languageCollector, catalogs, character);
+    addUnlockedFeatureArmorProficiencies(armorCollector, catalogs, character);
 
     addDefenseEntries(resistanceCollector, raceEntry?.resist, "Race", {
       singular: "resistance",

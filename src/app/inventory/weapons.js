@@ -21,8 +21,8 @@ export function createInventoryWeapons({
   function normalizeWeaponProficiencyToken(value) {
     const cleanedValue = cleanSpellInlineTags(String(value ?? ""));
     const normalized = cleanedValue.trim().toLowerCase().replace(/\./g, "").replace(/\s+/g, " ");
-    if (normalized.includes("martial weapon")) return "martial weapons";
-    if (normalized.includes("simple weapon")) return "simple weapons";
+    if (normalized === "martial" || /\bmartial weapons?\b/.test(normalized)) return "martial weapons";
+    if (normalized === "simple" || /\bsimple weapons?\b/.test(normalized)) return "simple weapons";
     if (normalized.includes("firearm")) return "firearms";
     if (normalized.includes("improvised")) return "improvised";
     return normalized;
@@ -73,8 +73,6 @@ export function createInventoryWeapons({
       const className = String(feature?.className ?? "").trim().toLowerCase();
       if (className === "cleric" && featureName === "protector") {
         tokens.add("martial weapons");
-        tokens.add("martial weapon");
-        tokens.add("martial");
       }
     });
     const selectedFeats = Array.isArray(character?.feats) ? character.feats : [];

@@ -1,0 +1,5 @@
+public/dist/
+server/node_modules/
+.env
+data/redis/
+data/character-fallback/

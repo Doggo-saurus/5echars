@@ -144,11 +144,16 @@ export function createCharacterUpdater({
       acc[ability] = Math.max(1, Math.min(30, toNumber(baseAbilities?.[ability], 10) + toNumber(autoAbilityBonuses?.[ability], 0)));
       return acc;
     }, {});
+    const nextCharacterWithAbilities = {
+      ...nextCharacter,
+      abilities: nextAbilities,
+      abilityBase: baseAbilities,
+    };
 
-    const autoSaveProficiencies = getAutomaticSaveProficiencies(state.catalogs, nextCharacter);
+    const autoSaveProficiencies = getAutomaticSaveProficiencies(state.catalogs, nextCharacterWithAbilities);
     const autoSkillProficiencyModes = getAutomaticSkillProficiencyModes(state.catalogs, nextCharacter, nextPlay);
     const autoSkillProficiencies = mapSkillModesToProficiencyMap(autoSkillProficiencyModes, skills.map((skill) => skill.key));
-    const nextProgression = recomputeCharacterProgression(state.catalogs, nextCharacter);
+    const nextProgression = recomputeCharacterProgression(state.catalogs, nextCharacterWithAbilities);
     const nextFeatSlotIds = new Set(
       (Array.isArray(nextProgression?.featSlots) ? nextProgression.featSlots : [])
         .map((slot) => String(slot?.id ?? "").trim())
@@ -286,14 +291,14 @@ export function createCharacterUpdater({
     const autoTrackers = [
       ...getAutoResourcesFromRules(
         state.catalogs,
-        nextCharacter,
+        nextCharacterWithAbilities,
         nextProgression.unlockedFeatures,
         nextCharacter.feats,
         nextCharacter.optionalFeatures
       ),
       ...getAutoResourcesFromClassTableEffects(
         state.catalogs,
-        nextCharacter,
+        nextCharacterWithAbilities,
         nextProgression.unlockedFeatures,
         nextProgression.classTableEffects
       ),

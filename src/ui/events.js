@@ -1026,18 +1026,11 @@ export function createEvents(deps) {
     app.querySelectorAll("[data-spell-list-visibility]").forEach((button) => {
       button.addEventListener("click", () => {
         const mode = String(button.dataset.spellListVisibility ?? "").trim().toLowerCase();
-        const levelKey = String(button.dataset.spellListLevel ?? "").trim();
+        if (mode !== "prepared" && mode !== "all") return;
         if (!doesClassUsePreparedSpells(state.catalogs, state.character)) return;
         withUpdatedPlay(state, (play) => {
-          const nextByLevel =
-            play.showAllPreparedCasterSpellsByLevel
-            && typeof play.showAllPreparedCasterSpellsByLevel === "object"
-            && !Array.isArray(play.showAllPreparedCasterSpellsByLevel)
-              ? { ...play.showAllPreparedCasterSpellsByLevel }
-              : {};
-          if (levelKey) nextByLevel[levelKey] = mode === "all";
-          play.showAllPreparedCasterSpellsByLevel = nextByLevel;
-          play.showAllPreparedCasterSpells = false;
+          play.showAllPreparedCasterSpells = mode === "all";
+          play.showAllPreparedCasterSpellsByLevel = {};
         });
       });
     });
@@ -2254,21 +2247,34 @@ export function createEvents(deps) {
       });
     });
 
+    app.querySelectorAll("[data-ability-feature-view]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const mode = String(button.dataset.abilityFeatureView ?? "").trim().toLowerCase();
+        if (mode !== "usable" && mode !== "all") return;
+        withUpdatedPlay(state, (play) => {
+          play.abilityFeatureView = mode;
+        });
+      });
+    });
+
+    app.querySelectorAll("[data-spell-slot-view]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const mode = String(button.dataset.spellSlotView ?? "").trim().toLowerCase();
+        if (mode !== "full" && mode !== "compact") return;
+        withUpdatedPlay(state, (play) => {
+          play.spellSlotViewMode = mode;
+        });
+      });
+    });
+
     app.querySelectorAll("[data-spell-list-visibility]").forEach((button) => {
       button.addEventListener("click", () => {
         const mode = String(button.dataset.spellListVisibility ?? "").trim().toLowerCase();
-        const levelKey = String(button.dataset.spellListLevel ?? "").trim();
+        if (mode !== "prepared" && mode !== "all") return;
         if (!doesClassUsePreparedSpells(state.catalogs, state.character)) return;
         withUpdatedPlay(state, (play) => {
-          const nextByLevel =
-            play.showAllPreparedCasterSpellsByLevel
-            && typeof play.showAllPreparedCasterSpellsByLevel === "object"
-            && !Array.isArray(play.showAllPreparedCasterSpellsByLevel)
-              ? { ...play.showAllPreparedCasterSpellsByLevel }
-              : {};
-          if (levelKey) nextByLevel[levelKey] = mode === "all";
-          play.showAllPreparedCasterSpellsByLevel = nextByLevel;
-          play.showAllPreparedCasterSpells = false;
+          play.showAllPreparedCasterSpells = mode === "all";
+          play.showAllPreparedCasterSpellsByLevel = {};
         });
       });
     });
@@ -2639,6 +2645,98 @@ export function createEvents(deps) {
     });
 
     const normalizeConditionName = (value) => String(value ?? "").trim().toLowerCase();
+    app.querySelectorAll("[data-condition-info-name]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const fallbackName = String(button.dataset.conditionInfoName ?? "Condition").trim() || "Condition";
+        const payloadRaw = String(button.dataset.conditionInfoPayload ?? "").trim();
+        let payload = {
+          name: fallbackName,
+          sourceLabel: "",
+          descriptionLines: [],
+        };
+        if (payloadRaw) {
+          try {
+            const parsed = JSON.parse(decodeURIComponent(payloadRaw));
+            if (parsed && typeof parsed === "object") {
+              payload = {
+                name: String(parsed?.name ?? fallbackName).trim() || fallbackName,
+                sourceLabel: String(parsed?.sourceLabel ?? "").trim(),
+                descriptionLines: Array.isArray(parsed?.descriptionLines)
+                  ? parsed.descriptionLines.map((line) => String(line ?? "").trim()).filter(Boolean)
+                  : [],
+              };
+            }
+          } catch {
+            payload = {
+              name: fallbackName,
+              sourceLabel: "",
+              descriptionLines: [],
+            };
+          }
+        }
+        const introLines = [];
+        const sections = [];
+        payload.descriptionLines.forEach((line) => {
+          const text = String(line ?? "").trim();
+          if (!text) return;
+          const headingMatch = text.match(/^-+\s*([^:]+):\s*(.*)$/);
+          if (headingMatch) {
+            const sectionTitle = String(headingMatch[1] ?? "").trim();
+            if (!sectionTitle) {
+              if (sections.length) sections[sections.length - 1].lines.push(text);
+              else introLines.push(text);
+              return;
+            }
+            const firstLine = String(headingMatch[2] ?? "").trim();
+            sections.push({
+              title: sectionTitle,
+              lines: firstLine ? [firstLine] : [],
+            });
+            return;
+          }
+          if (sections.length) {
+            sections[sections.length - 1].lines.push(text);
+            return;
+          }
+          introLines.push(text);
+        });
+        const hasStructuredSections = sections.length > 0;
+        const descriptionHtml = payload.descriptionLines.length
+          ? hasStructuredSections
+            ? `
+              <div class="condition-description">
+                ${introLines.length ? `<div class="condition-description-intro">${introLines.map((line) => `<p>${esc(line)}</p>`).join("")}</div>` : ""}
+                <div class="condition-description-sections">
+                  ${sections
+                    .map((section) => `
+                      <section class="condition-description-section">
+                        <h4>${esc(section.title)}</h4>
+                        <div class="condition-description-section-body">
+                          ${section.lines.length ? section.lines.map((bodyLine) => `<p>${esc(bodyLine)}</p>`).join("") : "<p class='muted'>No details provided.</p>"}
+                        </div>
+                      </section>
+                    `)
+                    .join("")}
+                </div>
+              </div>
+            `
+            : payload.descriptionLines.map((line) => `<p>${esc(line)}</p>`).join("")
+          : "<p class='muted'>No condition description available.</p>";
+        const metaRows = [
+          { label: "Source", value: payload.sourceLabel },
+        ].filter((row) => String(row.value ?? "").trim());
+        openModal({
+          title: payload.name,
+          bodyHtml: `
+            <div class="spell-meta-grid">
+              ${metaRows.map((row) => `<div><strong>${esc(row.label)}:</strong> ${esc(row.value)}</div>`).join("")}
+            </div>
+            <div class="spell-description">${descriptionHtml}</div>
+          `,
+          actions: [{ label: "Close", secondary: true, onClick: (close) => close() }],
+        });
+      });
+    });
     app.querySelectorAll("[data-toggle-condition-name]").forEach((button) => {
       button.addEventListener("click", () => {
         const conditionName = String(button.dataset.toggleConditionName ?? "").trim();

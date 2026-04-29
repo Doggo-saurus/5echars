@@ -104,7 +104,21 @@ import {
 const app = document.getElementById("app");
 const persistentBrandLogo = createPersistentBrandLogo({ app });
 const MANUAL_BASE_URL = String(window.__MANUAL_BASE_URL__ ?? "").trim().replace(/\/+$/g, "");
-const persistedState = loadAppState();
+function resetTransientPlayDisplayState(character) {
+  if (!character?.play || typeof character.play !== "object" || Array.isArray(character.play)) return character;
+  if (!Object.hasOwn(character.play, "attackMode")) return character;
+  const play = { ...character.play };
+  delete play.attackMode;
+  return { ...character, play };
+}
+
+function resetPersistedDisplayState(state) {
+  if (!state?.character) return state;
+  const character = resetTransientPlayDisplayState(state.character);
+  return character === state.character ? state : { ...state, character };
+}
+
+const persistedState = resetPersistedDisplayState(loadAppState());
 const store = createStore(persistedState?.character ?? createInitialCharacter());
 let currentUrlCharacterId = null;
 let lastPersistedCharacterFingerprint = "";
@@ -370,6 +384,7 @@ const proficiencySummaryRules = createProficiencySummaryRules({
   proficiencyRules,
   inventoryWeapons,
   resolveFeatureEntryFromCatalogs: characterProgressionDomain.resolveFeatureEntryFromCatalogs,
+  getUnlockedFeatures: characterProgressionDomain.getUnlockedFeatures,
 });
 const autoAttackRules = createAutoAttackRules({
   toNumber,
@@ -589,10 +604,11 @@ async function applyRemoteCharacterPayload(payload, fallbackId = null, defaultMo
   appState.isRemoteSaveSuppressed = true;
   try {
     await runtimeSourcePresetsState.ensureRuntimeSourcePresets();
-    const resolvedPreset = runtimeSourcePresetsState.resolveRuntimeSourcePreset(parsed.character?.sourcePreset ?? DEFAULT_SOURCE_PRESET);
-    const nextCharacter = parsed.character?.sourcePreset === resolvedPreset
-      ? parsed.character
-      : { ...parsed.character, sourcePreset: resolvedPreset };
+    const parsedCharacter = resetTransientPlayDisplayState(parsed.character);
+    const resolvedPreset = runtimeSourcePresetsState.resolveRuntimeSourcePreset(parsedCharacter?.sourcePreset ?? DEFAULT_SOURCE_PRESET);
+    const nextCharacter = parsedCharacter?.sourcePreset === resolvedPreset
+      ? parsedCharacter
+      : { ...parsedCharacter, sourcePreset: resolvedPreset };
     const catalogs = await loadCatalogs(getCharacterAllowedSources(nextCharacter));
     // Apply catalogs before hydration so derived HP uses the correct source data
     // on the first render of the loaded character.

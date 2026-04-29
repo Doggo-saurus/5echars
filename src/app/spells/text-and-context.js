@@ -159,9 +159,11 @@ export function createSpellTextAndContext({
     const spellcastingAbility = getClassSpellcastingAbility(state?.catalogs, state?.character);
     const spellcastingMod = spellcastingAbility ? toNumber(state?.derived?.mods?.[spellcastingAbility], 0) : 0;
     const proficiencyBonus = toNumber(state?.derived?.proficiencyBonus, 0);
+    const itemSpellAttackBonus = toNumber(state?.derived?.itemSpellAttackBonus, 0);
+    const itemSpellSaveDcBonus = toNumber(state?.derived?.itemSpellSaveDcBonus, 0);
     const hasSpellcastingAbility = Boolean(spellcastingAbility);
-    const attackBonus = hasSpellAttack && hasSpellcastingAbility ? spellcastingMod + proficiencyBonus : null;
-    const saveDc = hasSave && hasSpellcastingAbility ? 8 + proficiencyBonus + spellcastingMod : null;
+    const attackBonus = hasSpellAttack && hasSpellcastingAbility ? spellcastingMod + proficiencyBonus + itemSpellAttackBonus : null;
+    const saveDc = hasSave && hasSpellcastingAbility ? 8 + proficiencyBonus + spellcastingMod + itemSpellSaveDcBonus : null;
     const saveText = saveAbilityKeys.length
       ? `${saveAbilityKeys.map((key) => abilityLabels[key] ?? key.toUpperCase()).join("/")} save`
       : hasSave

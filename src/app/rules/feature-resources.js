@@ -1,3 +1,5 @@
+import { getActiveInventoryCatalogItems } from "../catalog/inventory-item-rules.js";
+
 export function createFeatureResourceRules({
   toNumber,
   toTitleCase,
@@ -34,6 +36,135 @@ export function createFeatureResourceRules({
     return Math.max(2, Math.floor((normalizedLevel - 1) / 4) + 2);
   }
 
+  function getClassResourceAutoId(feature, resourceName) {
+    const className = String(feature?.className ?? "").trim();
+    const name = cleanSpellInlineTags(resourceName);
+    if (!className || !name) return "";
+    return `${autoResourceIdPrefix}${buildEntityId(["resource", className, name])}`;
+  }
+
+  function stripUseCountSuffix(value) {
+    return cleanSpellInlineTags(value)
+      .replace(/\s*\(\s*\d+\s*\/\s*(?:rest|short rest|long rest|day|sr|lr|sr\/lr)\s*\)\s*$/i, "")
+      .trim();
+  }
+
+  function getFeatureResourceIdentity(feature) {
+    const type = String(feature?.type ?? "class").trim().toLowerCase();
+    const className = String(feature?.className ?? "").trim().toLowerCase();
+    const subclassName = String(feature?.subclassName ?? "").trim().toLowerCase();
+    const name = stripUseCountSuffix(feature?.tableDisplayName || feature?.name).toLowerCase();
+    if (!className || !name) return "";
+    return [type, className, subclassName, name].join("|");
+  }
+
+  function getRepeatedFeatureResourceIdentities(features) {
+    const counts = new Map();
+    (Array.isArray(features) ? features : []).forEach((feature) => {
+      const identity = getFeatureResourceIdentity(feature);
+      if (!identity) return;
+      counts.set(identity, toNumber(counts.get(identity), 0) + 1);
+    });
+    return new Set([...counts.entries()].filter(([, count]) => count > 1).map(([identity]) => identity));
+  }
+
+  function setBestTracker(byId, tracker) {
+    const autoId = String(tracker?.autoId ?? "").trim();
+    if (!autoId) return;
+    const existing = byId.get(autoId);
+    if (!existing || toNumber(tracker?.max, 0) >= toNumber(existing?.max, 0)) {
+      byId.set(autoId, tracker);
+    }
+  }
+
+  function getAbilityModifierByName(character, abilityName) {
+    const keyByName = {
+      strength: "str",
+      dexterity: "dex",
+      constitution: "con",
+      intelligence: "int",
+      wisdom: "wis",
+      charisma: "cha",
+    };
+    const key = keyByName[String(abilityName ?? "").trim().toLowerCase()] ?? "";
+    if (!key) return 0;
+    const readScore = (container) => {
+      if (!container || typeof container !== "object" || Array.isArray(container)) return Number.NaN;
+      const fullName = String(abilityName ?? "").trim().toLowerCase();
+      const candidates = [
+        container[key],
+        container[fullName],
+        container[key]?.score,
+        container[fullName]?.score,
+        container[key]?.value,
+        container[fullName]?.value,
+      ];
+      for (const candidate of candidates) {
+        if (typeof candidate === "string" && !candidate.trim()) continue;
+        const score = toNumber(candidate, Number.NaN);
+        if (Number.isFinite(score) && score > 0) return score;
+      }
+      return Number.NaN;
+    };
+    const scoreCandidates = [
+      readScore(character?.abilities),
+      readScore(character?.abilityBase),
+      readScore(character?.baseAbilities),
+    ];
+    const score = scoreCandidates.find((candidate) => Number.isFinite(candidate)) ?? 10;
+    return Math.floor((score - 10) / 2);
+  }
+
+  function parseResourceCountFromAbilityModifier(lines, character) {
+    const joined = lines.join(" ");
+    const abilityPattern = "(strength|dexterity|constitution|intelligence|wisdom|charisma)";
+    const minimumPattern = "(?:\\s*\\(\\s*(?:a\\s+)?(?:minimum of|minimum|min(?:imum)?\\.?)\\s*(once|one|twice|two|thrice|three|\\d+)(?:\\s+[a-z]+)?\\s*\\))?";
+    const patterns = [
+      new RegExp(`you can (?:use (?:this|it|this feature|this trait|this action|this benefit|this ability|this option|this invocation)|do so).{0,240}?\\ba number of times equal to your\\s+${abilityPattern}\\s+modifier${minimumPattern}`, "i"),
+      new RegExp(`\\b(?:a\\s+)?number of times equal to your\\s+${abilityPattern}\\s+modifier${minimumPattern}`, "i"),
+      new RegExp(`\\buses? equal to your\\s+${abilityPattern}\\s+modifier${minimumPattern}`, "i"),
+    ];
+    let match = null;
+    for (const pattern of patterns) {
+      match = joined.match(pattern);
+      if (match) break;
+    }
+    if (!match?.[1]) return null;
+    const abilityMod = getAbilityModifierByName(character, match[1]);
+    const minimum = Math.max(0, parseCountToken(match?.[2] ?? "0", 0));
+    const max = Math.max(minimum, abilityMod);
+    if (max <= 0) return null;
+    const nounMatch = joined.match(/number of ([a-z][a-z\s'-]{1,48}?)(?:\s+equal to your\s+(?:strength|dexterity|constitution|intelligence|wisdom|charisma)\s+modifier|\s+you have|\s+that|\s+which|[,.])/i);
+    const noun = String(nounMatch?.[1] ?? "").trim();
+    const resourceName = noun && !/^times?$/i.test(noun) ? toTitleCase(noun) : "Uses";
+    return {
+      max,
+      resourceName,
+    };
+  }
+
+  function parseResourceCountFromDisplayName(displayName) {
+    const label = cleanSpellInlineTags(displayName);
+    const match = label.match(/^(.+?)\s*\((\d+)\s*\/\s*(rest|short rest|long rest|day|sr|lr|sr\/lr)\)$/i);
+    if (!match?.[1] || !match?.[2]) return null;
+    const max = Math.max(0, Math.floor(toNumber(match[2], 0)));
+    if (max <= 0) return null;
+    const rechargeToken = String(match[3] ?? "").trim().toLowerCase();
+    let recharge = "";
+    if (rechargeToken === "rest" || rechargeToken === "short rest" || rechargeToken === "sr" || rechargeToken === "sr/lr") {
+      recharge = "shortOrLong";
+    } else if (rechargeToken === "long rest" || rechargeToken === "lr") {
+      recharge = "long";
+    } else if (rechargeToken === "day") {
+      recharge = "day";
+    }
+    return {
+      max,
+      resourceName: cleanSpellInlineTags(match[1]).trim(),
+      recharge,
+    };
+  }
+
   function findBestFeatureUseTrackerKey(featureUses, resourceLabel, preferredKey = "") {
     const trackers =
       featureUses && typeof featureUses === "object" && !Array.isArray(featureUses)
@@ -56,6 +187,8 @@ export function createFeatureResourceRules({
         const isCurrentTable = /table-effect/i.test(bestKey);
         const isNextTable = /table-effect/i.test(key);
         if (isCurrentTable && !isNextTable) bestKey = key;
+        const bestTracker = featureUses?.[bestKey];
+        if (!isCurrentTable && !isNextTable && toNumber(tracker?.max, 0) > toNumber(bestTracker?.max, 0)) bestKey = key;
       }
     });
     if (bestScore < 1) return "";
@@ -80,7 +213,7 @@ export function createFeatureResourceRules({
       const detail = characterProgressionDomain.resolveFeatureEntryFromCatalogs(catalogs, feature);
       const lines = characterProgressionDomain.getRuleDescriptionLinesForParsing(detail);
       const classLevel = getClassLevelForFeature(character, feature) || fallbackClassLevel;
-      const descriptor = getResourceDescriptorFromEntry(detail, feature?.name, classLevel);
+      const descriptor = getResourceDescriptorFromEntry(detail, feature?.name, classLevel, character, feature?.tableDisplayName);
       if (!descriptor || scoreResourceLabelMatch(descriptor.name, resourceLabel) < 1) return;
       const faces = parseDieFacesByClassLevel(lines, classLevel);
       if (faces > bestFaces) bestFaces = faces;
@@ -131,17 +264,25 @@ export function createFeatureResourceRules({
       const detail = characterProgressionDomain.resolveFeatureEntryFromCatalogs(catalogs, entry);
       const lines = characterProgressionDomain.getRuleDescriptionLinesForParsing(detail);
       if (!hasFirstUseFreeAfterLongRestRule(lines)) return false;
-      const descriptor = getResourceDescriptorFromEntry(detail, entry?.name, classLevel);
+      const descriptor = getResourceDescriptorFromEntry(detail, entry?.name, classLevel, character, entry?.tableDisplayName);
       if (!descriptor) return false;
       return scoreResourceLabelMatch(descriptor.name, resourceLabel) > 0;
     });
   }
 
-  function getResourceDescriptorFromEntry(detail, fallbackName, classLevel = 0) {
+  function getResourceDescriptorFromEntry(detail, fallbackName, classLevel = 0, character = null, displayName = "") {
     const lines = characterProgressionDomain.getRuleDescriptionLinesForParsing(detail);
     const recharge = getResourceRechargeHint(lines);
     let max = 0;
     let resourceName = cleanSpellInlineTags(detail?.consumes?.name ?? "");
+    let displayRecharge = "";
+
+    const displayBased = parseResourceCountFromDisplayName(displayName);
+    if (displayBased) {
+      max = displayBased.max;
+      if (!resourceName && displayBased.resourceName) resourceName = displayBased.resourceName;
+      displayRecharge = displayBased.recharge;
+    }
 
     const usesRaw = detail?.uses;
     if (usesRaw != null) {
@@ -155,6 +296,14 @@ export function createFeatureResourceRules({
       if (pbBased && pbBased.max > 0) {
         max = pbBased.max;
         if (!resourceName && pbBased.resourceName) resourceName = pbBased.resourceName;
+      }
+    }
+
+    if (max <= 0) {
+      const abilityBased = parseResourceCountFromAbilityModifier(lines, character);
+      if (abilityBased && abilityBased.max > 0) {
+        max = abilityBased.max;
+        if (!resourceName && abilityBased.resourceName) resourceName = abilityBased.resourceName;
       }
     }
 
@@ -213,7 +362,7 @@ export function createFeatureResourceRules({
     return {
       name: nextResourceName || cleanSpellInlineTags(fallbackName || "Feature Uses"),
       max,
-      recharge,
+      recharge: recharge || displayRecharge,
     };
   }
 
@@ -254,7 +403,7 @@ export function createFeatureResourceRules({
       if (!catalogLookupDomain.isRecordObject(entry)) return;
       const name = String(entry?.name ?? "").trim();
       if (!name || ignoredTraitNames.has(name.toLowerCase())) return;
-      const descriptor = getResourceDescriptorFromEntry(entry, name, Math.max(1, toNumber(character?.level, 1)));
+      const descriptor = getResourceDescriptorFromEntry(entry, name, Math.max(1, toNumber(character?.level, 1)), character);
       if (!descriptor || descriptor.max <= 0) return;
       const id = getSpeciesTraitId(raceEntry, name);
       byId.set(`${autoResourceIdPrefix}${id}`, {
@@ -268,17 +417,70 @@ export function createFeatureResourceRules({
     return [...byId.values()];
   }
 
+  function getItemResourceBonusDescriptors(catalogs, character) {
+    return getActiveInventoryCatalogItems(catalogs, character)
+      .flatMap(({ inventoryEntry, catalogItem }) => {
+        const label = String(inventoryEntry?.name ?? catalogItem?.name ?? "Item").trim() || "Item";
+        const lines = characterProgressionDomain.getRuleDescriptionLinesForParsing(catalogItem);
+        const text = lines.join(" ").toLowerCase();
+        const bonuses = [];
+        if (
+          /channel divinity/.test(text)
+          && /without expending (?:one of )?(?:the feature's |your )?uses?/.test(text)
+          && /\bonce\b/.test(text)
+        ) {
+          bonuses.push({
+            label,
+            resourceLabel: "Channel Divinity",
+            value: 1,
+          });
+        }
+        return bonuses;
+      });
+  }
+
+  function applyItemResourceBonuses(byId, catalogs, character) {
+    getItemResourceBonusDescriptors(catalogs, character).forEach((bonus) => {
+      const amount = Math.max(0, Math.floor(toNumber(bonus?.value, 0)));
+      const resourceLabel = String(bonus?.resourceLabel ?? "").trim();
+      if (amount <= 0 || !resourceLabel) return;
+      let bestKey = "";
+      let bestScore = 0;
+      byId.forEach((tracker, key) => {
+        const score = scoreResourceLabelMatch(resourceLabel, tracker?.name);
+        if (score > bestScore) {
+          bestKey = key;
+          bestScore = score;
+        }
+      });
+      if (!bestKey || bestScore < 1) return;
+      const tracker = byId.get(bestKey);
+      const nextMax = Math.max(0, toNumber(tracker?.max, 0)) + amount;
+      byId.set(bestKey, {
+        ...tracker,
+        current: nextMax,
+        max: nextMax,
+      });
+    });
+  }
+
   function getAutoResourcesFromRules(catalogs, character, features, feats, optionalFeatures) {
     const classLevelMap = getClassLevelMap(character);
     const byId = new Map();
+    const repeatedResourceIdentities = getRepeatedFeatureResourceIdentities(features);
 
     features.forEach((feature) => {
       const detail = characterProgressionDomain.resolveFeatureEntryFromCatalogs(catalogs, feature);
       const classLevel = toNumber(classLevelMap.get(String(feature.className ?? "").trim().toLowerCase()), 0);
-      const descriptor = getResourceDescriptorFromEntry(detail, feature.name, classLevel);
+      const descriptor = getResourceDescriptorFromEntry(detail, feature.name, classLevel, character, feature?.tableDisplayName);
       if (descriptor) {
-        byId.set(`${autoResourceIdPrefix}${feature.id}`, {
-          autoId: `${autoResourceIdPrefix}${feature.id}`,
+        const useSharedClassResource = feature?.tableDisplayName || repeatedResourceIdentities.has(getFeatureResourceIdentity(feature));
+        const autoId = useSharedClassResource
+          ? getClassResourceAutoId(feature, descriptor.name)
+          : `${autoResourceIdPrefix}${feature.id}`;
+        if (!autoId) return;
+        setBestTracker(byId, {
+          autoId,
           name: descriptor.name,
           current: descriptor.max,
           max: descriptor.max,
@@ -289,9 +491,14 @@ export function createFeatureResourceRules({
 
       const fallbackMax = getAutoResourceMaxFromFeatureName(feature?.name);
       if (fallbackMax <= 0) return;
-      byId.set(`${autoResourceIdPrefix}${feature.id}`, {
-        autoId: `${autoResourceIdPrefix}${feature.id}`,
-        name: cleanSpellInlineTags(feature.name),
+      const useSharedClassResource = repeatedResourceIdentities.has(getFeatureResourceIdentity(feature));
+      const fallbackName = stripUseCountSuffix(feature?.name);
+      const autoId = useSharedClassResource
+        ? getClassResourceAutoId(feature, fallbackName)
+        : `${autoResourceIdPrefix}${feature.id}`;
+      setBestTracker(byId, {
+        autoId,
+        name: fallbackName || cleanSpellInlineTags(feature.name),
         current: fallbackMax,
         max: fallbackMax,
         recharge: "",
@@ -300,7 +507,7 @@ export function createFeatureResourceRules({
 
     (Array.isArray(feats) ? feats : []).forEach((feat) => {
       const featDetail = (catalogs?.feats ?? []).find((entry) => buildEntityId(["feat", entry?.name, entry?.source]) === feat.id);
-      const descriptor = getResourceDescriptorFromEntry(featDetail, feat.name, progressionCore.getCharacterHighestClassLevel(character));
+      const descriptor = getResourceDescriptorFromEntry(featDetail, feat.name, progressionCore.getCharacterHighestClassLevel(character), character);
       if (!descriptor) return;
       byId.set(`${autoResourceIdPrefix}${feat.id}`, {
         autoId: `${autoResourceIdPrefix}${feat.id}`,
@@ -318,7 +525,8 @@ export function createFeatureResourceRules({
       const descriptor = getResourceDescriptorFromEntry(
         optionalFeatureDetail,
         feature.name,
-        progressionCore.getCharacterHighestClassLevel(character)
+        progressionCore.getCharacterHighestClassLevel(character),
+        character
       );
       if (!descriptor) return;
       byId.set(`${autoResourceIdPrefix}${feature.id}`, {
@@ -334,6 +542,8 @@ export function createFeatureResourceRules({
       byId.set(String(tracker?.autoId ?? ""), tracker);
     });
 
+    applyItemResourceBonuses(byId, catalogs, character);
+
     return [...byId.values()];
   }
 
@@ -346,7 +556,7 @@ export function createFeatureResourceRules({
       const classKey = className.toLowerCase();
       const detail = characterProgressionDomain.resolveFeatureEntryFromCatalogs(catalogs, feature);
       const classLevel = toNumber(classLevelMap.get(classKey), 0);
-      const descriptor = getResourceDescriptorFromEntry(detail, feature?.name, classLevel);
+      const descriptor = getResourceDescriptorFromEntry(detail, feature?.name, classLevel, character, feature?.tableDisplayName);
       const rechargeHint = getResourceRechargeHint(characterProgressionDomain.getRuleDescriptionLinesForParsing(detail));
       const list = candidatesByClass.get(classKey) ?? [];
       if (descriptor) {
@@ -387,8 +597,12 @@ export function createFeatureResourceRules({
         });
         if (!best || bestScore < 1) return null;
         if (best.source !== "descriptor" && !String(best?.recharge ?? "").trim()) return null;
+        const autoId =
+          best.source === "descriptor"
+            ? getClassResourceAutoId({ className: effect?.className }, label) || `${autoResourceIdPrefix}${id}`
+            : `${autoResourceIdPrefix}${id}`;
         return {
-          autoId: `${autoResourceIdPrefix}${id}`,
+          autoId,
           name: label,
           current: max,
           max,
@@ -412,7 +626,10 @@ export function createFeatureResourceRules({
     }
     if (!detail) return null;
     const lines = characterProgressionDomain.getRuleDescriptionLinesForParsing(detail);
-    const cost = parseExplicitResourceCostFromLines(lines);
+    const consumedResourceName = cleanSpellInlineTags(detail?.consumes?.name ?? "").trim();
+    const consumedResourceAmount = Math.max(1, Math.floor(toNumber(detail?.consumes?.amount, 1)));
+    const cost = parseExplicitResourceCostFromLines(lines)
+      || (consumedResourceName ? { amount: consumedResourceAmount, resourceLabel: consumedResourceName } : null);
     if (!cost || cost.amount < 1 || !cost.resourceLabel) return null;
     const preferredKey = `${autoResourceIdPrefix}${featureId}`;
     const trackerKey = findBestFeatureUseTrackerKey(featureUses, cost.resourceLabel, preferredKey);
@@ -526,17 +743,33 @@ export function createFeatureResourceRules({
       play?.featureUses && typeof play.featureUses === "object" && !Array.isArray(play.featureUses)
         ? play.featureUses
         : {};
+    const getPreviousTrackerForAutoResource = (key, tracker) => {
+      const direct = previous[key];
+      if (direct && typeof direct === "object") return direct;
+      if (!key.startsWith(`${autoResourceIdPrefix}resource__`)) return null;
+      const name = String(tracker?.name ?? "").trim().toLowerCase();
+      if (!name) return null;
+      let best = null;
+      Object.values(previous).forEach((candidate) => {
+        if (!candidate || typeof candidate !== "object") return;
+        if (String(candidate?.name ?? "").trim().toLowerCase() !== name) return;
+        if (!best || toNumber(candidate?.max, 0) > toNumber(best?.max, 0)) best = candidate;
+      });
+      return best;
+    };
     const next = {};
     trackers.forEach((tracker) => {
       const key = String(tracker?.autoId ?? "").trim();
       if (!key) return;
-      const prev = previous[key];
-      const prevCurrent = prev && typeof prev === "object" ? toNumber(prev.current, tracker.max) : tracker.max;
+      const prev = getPreviousTrackerForAutoResource(key, tracker);
       const max = Math.max(0, toNumber(tracker.max, 0));
+      const prevMax = prev && typeof prev === "object" ? Math.max(0, toNumber(prev.max, max)) : max;
+      const prevCurrent = prev && typeof prev === "object" ? Math.max(0, Math.min(prevMax, toNumber(prev.current, prevMax))) : max;
+      const spent = prev && typeof prev === "object" ? Math.max(0, prevMax - prevCurrent) : 0;
       next[key] = {
         name: String(tracker.name ?? ""),
         max,
-        current: Math.max(0, Math.min(max, prevCurrent)),
+        current: Math.max(0, Math.min(max, max - spent)),
         recharge: String(tracker.recharge ?? ""),
       };
     });

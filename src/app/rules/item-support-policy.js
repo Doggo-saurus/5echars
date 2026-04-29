@@ -21,4 +21,6 @@ export const ITEM_KEY_SUPPORT_POLICY = {
   bonusSenses: { status: "supported", owner: "engine.computeDerivedStats + summary" },
   bonusAc: { status: "supported", owner: "engine.getArmorClassBreakdown" },
   bonusSavingThrow: { status: "supported", owner: "engine.computeDerivedStats + save render/roll" },
+  bonusSpellAttack: { status: "supported", owner: "engine.computeDerivedStats + spells.getSpellCombatContext" },
+  bonusSpellSaveDc: { status: "supported", owner: "engine.computeDerivedStats + spellcasting.getCharacterSpellSaveSummary + spells.getSpellCombatContext" },
 };

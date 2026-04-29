@@ -525,6 +525,10 @@ export function computeDerivedStats(character, catalogs = null) {
   const senses = getCharacterSenseSummary(catalogs, character);
   const itemSavingThrowBonus = getActiveItemNumericBonusEntries(catalogs, character, "bonusSavingThrow")
     .reduce((sum, entry) => sum + toNumber(entry?.value, 0), 0);
+  const itemSpellAttackBonus = getActiveItemNumericBonusEntries(catalogs, character, "bonusSpellAttack")
+    .reduce((sum, entry) => sum + toNumber(entry?.value, 0), 0);
+  const itemSpellSaveDcBonus = getActiveItemNumericBonusEntries(catalogs, character, "bonusSpellSaveDc")
+    .reduce((sum, entry) => sum + toNumber(entry?.value, 0), 0);
 
   return {
     mods,
@@ -536,5 +540,7 @@ export function computeDerivedStats(character, catalogs = null) {
     passiveInvestigation,
     senses,
     itemSavingThrowBonus,
+    itemSpellAttackBonus,
+    itemSpellSaveDcBonus,
   };
 }
