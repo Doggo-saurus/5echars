@@ -1,4 +1,8 @@
-import { resolveInventoryCatalogItem } from "../app/catalog/inventory-item-rules.js";
+import {
+  isInventoryEquipableEntry,
+  isInventoryQuantityEntry,
+  resolveInventoryCatalogItem,
+} from "../app/catalog/inventory-item-rules.js";
 
 export function createEvents(deps) {
   const {
@@ -504,6 +508,8 @@ export function createEvents(deps) {
       toggledEntry = entry;
     });
     if (!toggledEntry) return;
+    const toggledCatalogItem = resolveInventoryCatalogItem(currentState.catalogs, toggledEntry);
+    if (!isInventoryEquipableEntry(toggledEntry, toggledCatalogItem)) return;
 
     const nextInventory = currentInventory.map((entry) => {
       if (!entry || typeof entry !== "object" || Array.isArray(entry)) return entry;
@@ -548,27 +554,47 @@ export function createEvents(deps) {
     updateCharacterWithRequiredSettings(store.getState(), {}, { preserveUserOverrides: true });
   }
 
-  function adjustInventoryItemCounter(itemId, deltaRaw) {
-    const id = String(itemId ?? "").trim();
-    if (!id) return;
-    const delta = Math.floor(toNumber(deltaRaw, 0));
-    if (!delta) return;
+  function setInventoryItemQuantity(indexRaw, valueRaw) {
+    const index = toNumber(indexRaw, -1);
+    if (index < 0) return;
+    const nextValue = Math.max(0, Math.floor(toNumber(valueRaw, 0)));
     const currentState = store.getState();
     const currentInventory = Array.isArray(currentState.character?.inventory) ? currentState.character.inventory : [];
+    if (index >= currentInventory.length) return;
+    const targetEntry = currentInventory[index];
+    if (!targetEntry || typeof targetEntry !== "object" || Array.isArray(targetEntry)) return;
+    const matchedItem = resolveInventoryCatalogItem(currentState.catalogs, targetEntry);
+    if (!isInventoryQuantityEntry(targetEntry, matchedItem)) return;
     const nextInventory = currentInventory.map((entry) => {
-      if (!entry || typeof entry !== "object" || Array.isArray(entry)) return entry;
-      if (String(entry.id ?? "").trim() !== id) return entry;
-      const kindRaw = String(entry.counterKind ?? "").trim().toLowerCase();
-      const kind = kindRaw === "charges" || kindRaw === "quantity" ? kindRaw : "";
-      if (!kind) return entry;
-      const currentValue = Math.max(0, Math.floor(toNumber(entry.counter, 0)));
-      const maxValue = Math.max(0, Math.floor(toNumber(entry.counterMax, 0)));
-      let nextValue = Math.max(0, currentValue + delta);
-      if (kind === "charges" && maxValue > 0) nextValue = Math.min(maxValue, nextValue);
+      if (entry !== targetEntry) return entry;
+      const currentValue = Math.max(0, Math.floor(toNumber(entry.counter, 1)));
       if (nextValue === currentValue) return entry;
-      return { ...entry, counter: nextValue };
+      return { ...entry, counterKind: "quantity", counter: nextValue, counterMax: 0 };
     });
     store.updateCharacter({ inventory: nextInventory });
+  }
+
+  function bindInventoryItemQuantityInput(indexRaw) {
+    const modal = document.querySelector(".modal");
+    const input = modal?.querySelector("[data-inventory-item-quantity-index]");
+    if (!(input instanceof HTMLInputElement)) return;
+    const index = toNumber(indexRaw, -1);
+    if (index < 0 || toNumber(input.dataset.inventoryItemQuantityIndex, -1) !== index) return;
+    const updateQuantity = () => {
+      const nextValue = Math.max(0, Math.floor(toNumber(input.value, 0)));
+      input.value = String(nextValue);
+      setInventoryItemQuantity(index, nextValue);
+    };
+    input.addEventListener("change", updateQuantity);
+    modal?.querySelectorAll("[data-inventory-item-quantity-step]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const delta = Math.floor(toNumber(button.dataset.inventoryItemQuantityStep, 0));
+        if (!delta) return;
+        const currentValue = Math.max(0, Math.floor(toNumber(input.value, 0)));
+        input.value = String(Math.max(0, currentValue + delta));
+        updateQuantity();
+      });
+    });
   }
 
   function openInventoryItemDetails(indexRaw) {
@@ -585,13 +611,21 @@ export function createEvents(deps) {
     const entryName = String(entry.name ?? "").trim();
     const entrySource = String(entry.source ?? "").trim();
     const matchedItem = resolveInventoryCatalogItem(currentState.catalogs, entry);
+    const quantityControls = isInventoryQuantityEntry(entry, matchedItem)
+      ? {
+          index,
+          value: Math.max(0, Math.floor(toNumber(entry.counter, 1))),
+        }
+      : null;
     if (matchedItem) {
       openItemDetailsModal({
         ...matchedItem,
         name: entryName || matchedItem.name,
         source: entrySource || matchedItem.source,
         sourceLabel: String(entry.sourceLabel ?? matchedItem.sourceLabel ?? matchedItem.source ?? "").trim(),
+        inventoryQuantityControls: quantityControls,
       });
+      bindInventoryItemQuantityInput(index);
       return;
     }
     openItemDetailsModal({
@@ -599,7 +633,9 @@ export function createEvents(deps) {
       type: entry.itemType ?? entry.type,
       source: String(entry.source ?? "").trim(),
       sourceLabel: String(entry.sourceLabel ?? entry.source ?? "").trim(),
+      inventoryQuantityControls: quantityControls,
     });
+    bindInventoryItemQuantityInput(index);
   }
 
   function bindBuildEvents(state) {
@@ -1055,11 +1091,6 @@ export function createEvents(deps) {
     app.querySelectorAll("[data-remove-item-index]").forEach((button) => {
       button.addEventListener("click", () => {
         removeInventoryItemByIndex(button.dataset.removeItemIndex);
-      });
-    });
-    app.querySelectorAll("[data-item-counter-adjust-id]").forEach((button) => {
-      button.addEventListener("click", () => {
-        adjustInventoryItemCounter(button.dataset.itemCounterAdjustId, button.dataset.itemCounterDelta);
       });
     });
     app.querySelectorAll("[data-open-feat-picker]").forEach((button) => {
@@ -2352,7 +2383,7 @@ export function createEvents(deps) {
           setDiceResult(`Spell damage unavailable: ${spellName}`, true);
           return;
         }
-        const notation = getSpellPrimaryDiceNotation(spell);
+        const notation = getSpellPrimaryDiceNotation(spell, { characterLevel: state.character?.level });
         const simpleNotation = extractSimpleNotation(notation);
         if (!simpleNotation) {
           setDiceResult(`${spell.name}: no primary damage roll found.`, true);
@@ -2414,7 +2445,7 @@ export function createEvents(deps) {
 
         setSpellCastStatus("", false);
 
-        const notation = getSpellPrimaryDiceNotation(spell);
+        const notation = getSpellPrimaryDiceNotation(spell, { characterLevel: state.character?.level });
         const simpleNotation = extractSimpleNotation(notation);
         const spellCombat = getSpellCombatContext(state, spell);
         if (spellCombat.hasSpellAttack && simpleNotation) {
@@ -2638,12 +2669,6 @@ export function createEvents(deps) {
         removeInventoryItemByIndex(button.dataset.removeItemIndex);
       });
     });
-    app.querySelectorAll("[data-item-counter-adjust-id]").forEach((button) => {
-      button.addEventListener("click", () => {
-        adjustInventoryItemCounter(button.dataset.itemCounterAdjustId, button.dataset.itemCounterDelta);
-      });
-    });
-
     const normalizeConditionName = (value) => String(value ?? "").trim().toLowerCase();
     app.querySelectorAll("[data-condition-info-name]").forEach((button) => {
       button.addEventListener("click", () => {

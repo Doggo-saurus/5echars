@@ -1,4 +1,9 @@
-import { itemRequiresAttunement, resolveInventoryCatalogItem } from "../app/catalog/inventory-item-rules.js";
+import {
+  isInventoryEquipableEntry,
+  isInventoryQuantityEntry,
+  itemRequiresAttunement,
+  resolveInventoryCatalogItem,
+} from "../app/catalog/inventory-item-rules.js";
 
 export function createRenderers(deps) {
   const {
@@ -672,6 +677,23 @@ export function createRenderers(deps) {
     return findCatalogEntryByNameWithSourcePreference(matches, selectedName, preferredSources);
   }
 
+  function isFeatureLevelMetadataLine(value) {
+    const text = String(value ?? "")
+      .replace(/\{@([a-zA-Z]+)\s+([^}]+)\}/g, (_, _tag, rawPayload) => String(rawPayload ?? "").split("|")[0])
+      .replace(/[{}]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    return /^(?:-\s*)?\d+(?:st|nd|rd|th)-level\b.{0,140}\bfeatures?\b(?:\s*,.*)?$/i.test(text);
+  }
+
+  function getRuleSummaryTextFromLines(lines) {
+    const descriptionLines = (Array.isArray(lines) ? lines : [])
+      .map((line) => String(line ?? "").replace(/\s+/g, " ").trim())
+      .filter(Boolean)
+      .filter((line) => !isFeatureLevelMetadataLine(line));
+    return String(descriptionLines[0] ?? "").trim();
+  }
+
   function getSpeciesTraitRows(raceEntry) {
     if (!raceEntry || typeof raceEntry !== "object") return [];
     const ignoredTraitNames = new Set(["age", "alignment", "size", "language", "languages", "creature type"]);
@@ -715,6 +737,7 @@ export function createRenderers(deps) {
         const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-");
         const id = `species:${source}:${slug}`;
         const lines = getRuleDescriptionLines(entry);
+        const summaryText = getRuleSummaryTextFromLines(lines);
         const rollNotation = extractSimpleNotation(lines.join(" "));
         return {
           id,
@@ -723,6 +746,7 @@ export function createRenderers(deps) {
           saveAdvantageTags: extractSaveAdvantageTags(entry),
           resourceKey: `${autoResourceIdPrefix}${id}`,
           rollNotation,
+          summaryText,
         };
       })
       .filter(Boolean);
@@ -1749,6 +1773,7 @@ export function createRenderers(deps) {
     const requiresAttunement = Boolean(entry.requiresAttunement);
     const attuned = Boolean(entry.attuned);
     return {
+      ...entry,
       id: String(entry.id ?? "").trim(),
       index,
       name,
@@ -1772,24 +1797,29 @@ export function createRenderers(deps) {
     if (!entries.length) return "<span class='muted'>No items selected.</span>";
     return entries
       .map((entry) => {
-        const hasCounter = showCounters && !entry.isLegacy && Boolean(entry.counterKind) && entry.id;
         const matchedCatalogItem = !entry.isLegacy ? resolveInventoryCatalogItem(catalogs, entry) : null;
+        const isEquipable = !entry.isLegacy && isInventoryEquipableEntry(entry, matchedCatalogItem);
+        const hasQuantity = showCounters && !entry.isLegacy && isInventoryQuantityEntry(entry, matchedCatalogItem);
         const requiresAttunement =
-          !entry.isLegacy && (Boolean(entry.requiresAttunement) || itemRequiresAttunement(matchedCatalogItem));
-        const showAttunementToggle = showAttunement && requiresAttunement;
+          isEquipable && (Boolean(entry.requiresAttunement) || itemRequiresAttunement(matchedCatalogItem));
+        const showAttunementToggle = showAttunement && isEquipable && requiresAttunement;
         const isAttuned = requiresAttunement ? Boolean(entry.attuned) : false;
-        const displayName = hasCounter
+        const displayName = hasQuantity
           ? String(entry.name ?? "").replace(/\s*\(\d+\)\s*$/, "").trim() || entry.name
           : entry.name;
-        const counterValueLabel = entry.counterKind === "charges" && entry.counterMax > 0
-          ? `${entry.counter}/${entry.counterMax}`
-          : `${entry.counter}`;
-        const counterTitle = entry.counterKind === "charges" ? "Track remaining charges" : "Track item quantity";
+        const quantityValueLabel = hasQuantity ? `${Math.max(0, Math.floor(toNumber(entry.counter, 1)))}` : "-";
         return `
-        <div class="inventory-row">
+        <div class="inventory-row ${showCounters ? "inventory-row-with-quantity" : ""}">
           <div class="inventory-row-main">
             <button type="button" class="inventory-item-name spell-picker-name-btn" data-open-item-details-index="${esc(entry.index)}" title="View item details">${esc(displayName)}</button>
           </div>
+          ${
+            showCounters
+              ? `<div class="inventory-item-quantity" title="Item quantity">
+                <span class="inventory-item-counter-value">${esc(quantityValueLabel)}</span>
+              </div>`
+              : ""
+          }
           <div class="inventory-row-actions">
             ${
               showAttunementToggle
@@ -1797,18 +1827,11 @@ export function createRenderers(deps) {
                 : ""
             }
             ${
-              hasCounter
-                ? `<div class="inventory-item-counter" title="${esc(counterTitle)}">
-                  <button type="button" class="btn secondary" data-item-counter-adjust-id="${esc(entry.id)}" data-item-counter-delta="-1" aria-label="Decrease ${esc(entry.name)} ${esc(entry.counterKind)}">-</button>
-                  <span class="inventory-item-counter-value">${esc(counterValueLabel)}</span>
-                  <button type="button" class="btn secondary" data-item-counter-adjust-id="${esc(entry.id)}" data-item-counter-delta="1" aria-label="Increase ${esc(entry.name)} ${esc(entry.counterKind)}">+</button>
-                </div>`
-                : ""
-            }
-            ${
               entry.isLegacy
                 ? `<button type="button" class="btn secondary" disabled title="Legacy entries do not support equip state">Legacy</button>`
-                : `<button type="button" class="btn secondary" data-toggle-item-equipped="${esc(entry.id)}">${entry.equipped ? "Unequip" : "Equip"}</button>`
+                : isEquipable
+                  ? `<button type="button" class="btn secondary" data-toggle-item-equipped="${esc(entry.id)}">${entry.equipped ? "Unequip" : "Equip"}</button>`
+                  : ""
             }
             <button type="button" class="btn secondary" data-remove-item-index="${esc(entry.index)}">Remove</button>
           </div>
@@ -2032,7 +2055,7 @@ export function createRenderers(deps) {
             const prepControlTagHtml = prepControlHtml ? `<span class="spell-known-tag">${prepControlHtml}</span>` : "";
             const compactClass = showPreparedOnly ? "is-prepared-only-view" : "";
             const castDisabled = usesPreparedSpells && toNumber(spell?.level, 0) > 0 && !isPrepared;
-            const spellDamageNotation = extractSimpleNotation(getSpellPrimaryDiceNotation(spell));
+            const spellDamageNotation = extractSimpleNotation(getSpellPrimaryDiceNotation(spell, { characterLevel: state.character?.level }));
             const hasAttackDamageSplit = spellCombat.hasSpellAttack && Boolean(spellDamageNotation);
             const spellAttackButtonHtml =
               spellCombat.hasSpellAttack && spellCombat.attackBonus != null
@@ -2474,6 +2497,7 @@ export function createRenderers(deps) {
         : {};
     const abilityFeatureView = play.abilityFeatureView === "usable" ? "usable" : "all";
     const showOnlyUsableAbilities = abilityFeatureView === "usable";
+    const showAbilityFeatureSummaries = abilityFeatureView === "all";
     const abilityUsableToggleClass = abilityFeatureView === "usable" ? "mode-toggle-btn is-active" : "mode-toggle-btn";
     const abilityAllToggleClass = abilityFeatureView === "all" ? "mode-toggle-btn is-active" : "mode-toggle-btn";
     const buildResourceEntityId = (parts) =>
@@ -2627,13 +2651,20 @@ export function createRenderers(deps) {
               </span>
             `;
     };
-    const getClassFeatureSummaryText = (feature) => {
+    const getRuleSummaryText = (entry) => {
+      if (!entry || typeof entry !== "object") return "";
+      return getRuleSummaryTextFromLines(getRuleDescriptionLines(entry));
+    };
+    const getClassFeatureDetail = (feature) => {
       if (!feature || typeof feature !== "object") return "";
-      const detail = typeof resolveFeatureEntryFromCatalogs === "function"
+      return typeof resolveFeatureEntryFromCatalogs === "function"
         ? resolveFeatureEntryFromCatalogs(state.catalogs, feature)
         : null;
-      const descriptionLines = getRuleDescriptionLines(detail).filter(Boolean);
-      return String(descriptionLines[0] ?? "").trim();
+    };
+    const getClassFeatureSummaryText = (feature) => getRuleSummaryText(getClassFeatureDetail(feature));
+    const getSelectedFeatureSummaryText = (entries, selectedName, selectedSource = "") => {
+      const detail = findCatalogEntryByNameWithSelectedSourcePreference(entries, selectedName, selectedSource, raceSourceOrder);
+      return getRuleSummaryText(detail);
     };
     const getFeatureActivationControlsHtml = (feature, tracker) => {
       const activation = getFeatureActivationDescriptor(state.catalogs, character, feature, featureUses);
@@ -2662,7 +2693,7 @@ export function createRenderers(deps) {
           : "";
       return `${firstUseFreePillHtml}${activationButtonHtml}`;
     };
-    const renderFeatureTile = ({ openAttr = "", title, titleText, actionControlsHtml = "", rowClass = "" }) => {
+    const renderFeatureTile = ({ openAttr = "", title, titleText, actionControlsHtml = "", rowClass = "", summaryText = "" }) => {
       const interactiveAttrs = String(openAttr ?? "").trim()
         ? `
                   role="button"
@@ -2682,6 +2713,7 @@ export function createRenderers(deps) {
                     <strong class="feat-tile-title">${esc(titleText)}</strong>
                     ${actionControlsHtml}
                   </span>
+                  ${showAbilityFeatureSummaries && summaryText ? `<p class="feat-tile-summary ability-feature-summary">${esc(summaryText)}</p>` : ""}
                 </div>
               </div>
             </div>
@@ -2748,6 +2780,17 @@ export function createRenderers(deps) {
         return String(mode?.className ?? "").trim().toLowerCase() === className;
       }) ?? null;
     };
+    const getFeatureForMode = (mode) => {
+      const modeFeatureId = String(mode?.featureId ?? "").trim();
+      const modeFeatureName = String(mode?.featureName ?? "").trim().toLowerCase();
+      const modeClassName = String(mode?.className ?? "").trim().toLowerCase();
+      return unlockedFeatures.find((feature) => {
+        if (modeFeatureId && String(feature?.id ?? "").trim() === modeFeatureId) return true;
+        if (String(feature?.name ?? "").trim().toLowerCase() !== modeFeatureName) return false;
+        if (!modeClassName) return true;
+        return String(feature?.className ?? "").trim().toLowerCase() === modeClassName;
+      }) ?? null;
+    };
     const normalizeFeatureChoiceLabel = (value) =>
       String(value ?? "")
         .toLowerCase()
@@ -2781,9 +2824,15 @@ export function createRenderers(deps) {
       const selectedOptionalFeatureName = String(selectedOptionalFeature?.name ?? "").trim();
       const selectedOptionalFeatureId = String(selectedOptionalFeature?.id ?? "").trim();
       if (selectedOptionalFeatureName) {
+        const optionalFeatureSummaryText = getSelectedFeatureSummaryText(
+          state.catalogs?.optionalFeatures,
+          selectedOptionalFeatureName,
+          selectedOptionalFeature?.source
+        );
         return {
           titleText: `${featureName}: ${selectedOptionalFeatureName}`,
           openAttr: selectedOptionalFeatureId ? `data-open-optional-feature="${esc(selectedOptionalFeatureId)}"` : fallbackOpenAttr,
+          summaryText: optionalFeatureSummaryText || getClassFeatureSummaryText(feature),
         };
       }
 
@@ -2796,6 +2845,7 @@ export function createRenderers(deps) {
         return {
           titleText: fallbackTitle,
           openAttr: fallbackOpenAttr,
+          summaryText: getClassFeatureSummaryText(feature),
         };
       }
       const selectedValues = resolveFeatureModeSelections(featureMode, play);
@@ -2807,11 +2857,13 @@ export function createRenderers(deps) {
         return {
           titleText: fallbackTitle,
           openAttr: fallbackOpenAttr,
+          summaryText: getClassFeatureSummaryText(feature),
         };
       }
       return {
         titleText: `${featureName}: ${visibleSelectedValues.length === 1 ? visibleSelectedValues[0] : visibleSelectedValues.join(", ")}`,
         openAttr: fallbackOpenAttr,
+        summaryText: getClassFeatureSummaryText(feature),
       };
     };
     const renderFeatureRows = (features) =>
@@ -2837,6 +2889,7 @@ export function createRenderers(deps) {
             title: `${metaLabel} - ${feature.className || "class feature"}`,
             titleText: tileDisplay.titleText,
             actionControlsHtml,
+            summaryText: tileDisplay.summaryText || getClassFeatureSummaryText(feature),
           });
         })
         .join("");
@@ -2889,6 +2942,7 @@ export function createRenderers(deps) {
               titleText: String(effect?.label ?? "Class feature"),
               actionControlsHtml,
               rowClass: "feature-row-table-effect",
+              summaryText: String(effect?.summary ?? effect?.description ?? "").trim(),
             });
           })
           .join("")
@@ -2912,6 +2966,7 @@ export function createRenderers(deps) {
               ?? featCatalog.find((entry) => String(entry?.name ?? "").trim().toLowerCase() === normalizedFeatName)
               ?? null;
             const sourceLabel = String((detail?.sourceLabel ?? detail?.source ?? featSource) || "Unknown Source");
+            const summaryText = getRuleSummaryText(detail);
             const prerequisites = Array.isArray(detail?.prerequisite) ? detail.prerequisite : [];
             const featMetaText = `${feat.levelGranted ? `Lv ${feat.levelGranted}` : "Level ?"} - ${feat.via || "feat slot"}${
               prerequisites.length ? ` - Prerequisite (${prerequisites.length})` : ""
@@ -2926,6 +2981,7 @@ export function createRenderers(deps) {
               title: featMetaText,
               titleText: featName,
               actionControlsHtml,
+              summaryText,
             });
           })
           .join("")
@@ -2956,6 +3012,7 @@ export function createRenderers(deps) {
               ?? optionalFeatureCatalog.find((entry) => String(entry?.name ?? "").trim().toLowerCase() === normalizedFeatureName)
               ?? null;
             const sourceLabel = String((detail?.sourceLabel ?? detail?.source ?? featureSource) || "Unknown Source");
+            const summaryText = getRuleSummaryText(detail);
             const prerequisites = Array.isArray(detail?.prerequisite) ? detail.prerequisite : [];
             const featureMetaText = `${feature.levelGranted ? `Lv ${feature.levelGranted}` : "Level ?"} - ${
               feature.slotType || "optional feature"
@@ -2975,6 +3032,7 @@ export function createRenderers(deps) {
               title: featureMetaText,
               titleText: featureName,
               actionControlsHtml,
+              summaryText,
             });
           })
           .join("")
@@ -2993,6 +3051,7 @@ export function createRenderers(deps) {
               title: "Feature choice",
               titleText: mode.featureName,
               actionControlsHtml,
+              summaryText: getClassFeatureSummaryText(getFeatureForMode(mode)),
             });
           })
           .join("")
@@ -3017,6 +3076,7 @@ export function createRenderers(deps) {
                 title: "Species trait",
                 titleText: trait.name,
                 actionControlsHtml,
+                summaryText: trait.summaryText,
               });
             }
           )

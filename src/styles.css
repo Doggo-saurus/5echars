@@ -2196,6 +2196,11 @@ body.play-mode #dice-overlay {
   padding: 0.4rem 0.5rem;
 }
 
+.inventory-row-with-quantity {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 3rem 15.5rem;
+}
+
 .inventory-row-main {
   display: inline-flex;
   align-items: center;
@@ -2218,10 +2223,11 @@ body.play-mode #dice-overlay {
   margin-left: auto;
 }
 
-.inventory-item-counter {
+.inventory-item-quantity {
   display: inline-flex;
   align-items: center;
-  gap: 0.18rem;
+  justify-content: center;
+  min-width: 3.5rem;
 }
 
 .inventory-item-counter-value {
@@ -2233,9 +2239,18 @@ body.play-mode #dice-overlay {
   color: var(--text);
 }
 
-.inventory-item-counter .btn {
-  min-width: 1.7rem;
-  padding: 0.18rem 0.35rem;
+.inventory-modal-controls {
+  margin: 0.8rem 0;
+}
+
+.inventory-modal-controls input {
+  max-width: 8rem;
+}
+
+.inventory-modal-quantity-wrap {
+  margin-top: 0.25rem;
+  width: 8rem;
+  max-width: 100%;
 }
 
 .condition-panel {
@@ -3972,6 +3987,17 @@ body.play-mode #dice-overlay {
   margin-top: 0;
   padding-left: 0;
   list-style: none;
+}
+
+.ability-feature-list .feat-tile-btn {
+  gap: 0.22rem;
+}
+
+.ability-feature-list .ability-feature-summary {
+  font-size: 0.78rem;
+  line-height: 1.28;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
 }
 
 .play-trait-group h4 {

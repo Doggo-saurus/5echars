@@ -160,6 +160,90 @@ export function itemRequiresAttunement(item) {
   return false;
 }
 
+export function normalizeInventoryItemTypeCode(value) {
+  return String(value ?? "").split("|")[0].trim().toUpperCase();
+}
+
+export function isInventoryWeaponEntry(entry) {
+  if (!isRecordObject(entry)) return false;
+  const typeCode = normalizeInventoryItemTypeCode(entry?.itemType ?? entry?.type);
+  return (
+    Boolean(entry?.weapon) ||
+    Boolean(entry?.damageDice) ||
+    Boolean(entry?.dmg1) ||
+    Boolean(entry?.dmg2) ||
+    Boolean(entry?.weaponCategory) ||
+    typeCode === "M" ||
+    typeCode === "R"
+  );
+}
+
+export function isInventoryArmorEntry(entry) {
+  if (!isRecordObject(entry)) return false;
+  const typeCode = normalizeInventoryItemTypeCode(entry?.itemType ?? entry?.type);
+  return Boolean(entry?.armor) || ["LA", "MA", "HA", "S"].includes(typeCode) || Boolean(entry?.isShield);
+}
+
+function hasNonEmptyValue(value) {
+  if (value == null || value === false) return false;
+  if (typeof value === "number") return Number.isFinite(value) && value !== 0;
+  if (typeof value === "string") return Boolean(value.trim());
+  if (Array.isArray(value)) return value.length > 0;
+  if (isRecordObject(value)) return Object.keys(value).length > 0;
+  return Boolean(value);
+}
+
+export function inventoryCatalogItemHasActiveBonuses(item) {
+  if (!isRecordObject(item)) return false;
+  return [
+    "additionalSpells",
+    "armorProficiencies",
+    "bonusAc",
+    "bonusSavingThrow",
+    "bonusSenses",
+    "bonusSpellAttack",
+    "bonusSpellSaveDc",
+    "conditionImmune",
+    "immune",
+    "languageProficiencies",
+    "resist",
+    "senses",
+    "skillToolLanguageProficiencies",
+    "toolProficiencies",
+    "vulnerable",
+    "weaponProficiencies",
+  ].some((fieldKey) => hasNonEmptyValue(item?.[fieldKey]));
+}
+
+export function isInventoryEquipableEntry(inventoryEntry, catalogItem = null) {
+  if (!isRecordObject(inventoryEntry)) return false;
+  if (
+    isInventoryWeaponEntry(inventoryEntry) ||
+    isInventoryArmorEntry(inventoryEntry) ||
+    isInventoryWeaponEntry(catalogItem) ||
+    isInventoryArmorEntry(catalogItem)
+  ) {
+    return true;
+  }
+  if (itemRequiresAttunement(catalogItem) || Boolean(inventoryEntry?.requiresAttunement)) return true;
+  if (inventoryCatalogItemHasActiveBonuses(catalogItem)) return true;
+  const typeCode = normalizeInventoryItemTypeCode(inventoryEntry?.itemType ?? inventoryEntry?.type ?? catalogItem?.type);
+  return ["RG", "RD", "WD", "W", "WAND", "ROD", "STAFF", "WONDROUS"].includes(typeCode);
+}
+
+export function isInventoryQuantityEntry(inventoryEntry, catalogItem = null) {
+  if (!isRecordObject(inventoryEntry)) return false;
+  const counterKind = String(inventoryEntry?.counterKind ?? "").trim().toLowerCase();
+  if (counterKind === "charges") return false;
+  return (
+    !isInventoryWeaponEntry(inventoryEntry) &&
+    !isInventoryArmorEntry(inventoryEntry) &&
+    !isInventoryWeaponEntry(catalogItem) &&
+    !isInventoryArmorEntry(catalogItem) &&
+    !isInventoryEquipableEntry(inventoryEntry, catalogItem)
+  );
+}
+
 export function isInventoryItemActiveForBonuses(inventoryEntry, catalogItem) {
   if (!isRecordObject(inventoryEntry)) return false;
   if (!inventoryEntry.equipped) return false;

@@ -114,7 +114,31 @@ export function createSpellTextAndContext({
     return lines.filter(Boolean);
   }
 
-  function getSpellPrimaryDiceNotation(spell) {
+  function getSpellScalingLevelDiceNotation(spell, characterLevel) {
+    if (toNumber(spell?.level, 0) !== 0) return "";
+    const descriptors = Array.isArray(spell?.scalingLevelDice)
+      ? spell.scalingLevelDice
+      : spell?.scalingLevelDice && typeof spell.scalingLevelDice === "object"
+        ? [spell.scalingLevelDice]
+        : [];
+    const descriptor = descriptors.find((entry) => entry?.scaling && typeof entry.scaling === "object");
+    const scaling = descriptor?.scaling;
+    if (!scaling || typeof scaling !== "object") return "";
+
+    const level = Math.max(1, Math.min(20, toNumber(characterLevel, 1)));
+    const selected = Object.entries(scaling)
+      .map(([levelKey, notation]) => ({
+        level: Math.max(1, Math.min(20, toNumber(levelKey, 1))),
+        notation: String(notation ?? "").replace(/\s+/g, ""),
+      }))
+      .filter((entry) => entry.notation && entry.level <= level)
+      .sort((a, b) => b.level - a.level)[0];
+    return selected?.notation ?? "";
+  }
+
+  function getSpellPrimaryDiceNotation(spell, options = {}) {
+    const scalingNotation = getSpellScalingLevelDiceNotation(spell, options?.characterLevel);
+    if (scalingNotation) return scalingNotation;
     const lines = getSpellDescriptionLines(spell);
     for (const line of lines) {
       diceNotationRegex.lastIndex = 0;

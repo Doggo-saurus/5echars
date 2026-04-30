@@ -1,4 +1,8 @@
-import { itemRequiresAttunement, mergeCatalogItemWithInherits } from "../app/catalog/inventory-item-rules.js";
+import {
+  isInventoryQuantityEntry,
+  itemRequiresAttunement,
+  mergeCatalogItemWithInherits,
+} from "../app/catalog/inventory-item-rules.js";
 
 export function createPickers(deps) {
   const {
@@ -376,12 +380,41 @@ export function createPickers(deps) {
       { label: "Rarity", value: item.rarity },
       { label: "Requires Attunement", value: item.reqAttune ? "Yes" : "" },
     ].filter((row) => String(row.value ?? "").trim());
+    const quantityControls = item.inventoryQuantityControls && typeof item.inventoryQuantityControls === "object"
+      ? item.inventoryQuantityControls
+      : null;
+    const quantityValue = Math.max(0, Math.floor(toNumber(quantityControls?.value, 1)));
+    const quantityEditorHtml = quantityControls
+      ? `
+      <div class="inventory-modal-controls">
+        <label>Quantity
+          <div class="num-input-wrap num-input-wrap-inline inventory-modal-quantity-wrap">
+            <input
+              id="inventory-item-quantity-input"
+              type="number"
+              min="0"
+              step="1"
+              inputmode="numeric"
+              value="${esc(quantityValue)}"
+              data-inventory-item-quantity-index="${esc(quantityControls.index)}"
+              aria-label="Item quantity"
+            >
+            <div class="num-stepper num-stepper-inline">
+              <button type="button" class="num-step-btn" data-inventory-item-quantity-step="-1" aria-label="Decrease item quantity">-</button>
+              <button type="button" class="num-step-btn" data-inventory-item-quantity-step="1" aria-label="Increase item quantity">+</button>
+            </div>
+          </div>
+        </label>
+      </div>
+    `
+      : "";
     openModal({
       title: String(item.name ?? "Item"),
       bodyHtml: `
       <div class="spell-meta-grid">
         ${metaRows.map((row) => `<div><strong>${esc(row.label)}:</strong> ${esc(row.value)}</div>`).join("")}
       </div>
+      ${quantityEditorHtml}
       <div class="spell-description">${descriptionHtml}</div>
     `,
       actions: [{ label: "Close", secondary: true, onClick: (done) => done() }],
@@ -467,7 +500,7 @@ export function createPickers(deps) {
       return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
     }
 
-    function inferInventoryCounter({ item, variantItem, inherits, typeCode, name }) {
+    function inferInventoryCounter({ item, variantItem, inherits, typeCode, name, isQuantityItem }) {
       const charges = parseCounterQuantity(firstNonEmpty(variantItem?.charges, inherits?.charges, item?.charges));
       if (charges > 0) {
         return {
@@ -494,6 +527,14 @@ export function createPickers(deps) {
         return {
           counterKind: "quantity",
           counter: packQuantity,
+          counterMax: 0,
+        };
+      }
+
+      if (isQuantityItem) {
+        return {
+          counterKind: "quantity",
+          counter: 1,
           counterMax: 0,
         };
       }
@@ -544,7 +585,23 @@ export function createPickers(deps) {
         Boolean(inherits?.armor) ||
         Boolean(item?.armor) ||
         ["LA", "MA", "HA", "S"].includes(typeCode);
-      const counterInfo = inferInventoryCounter({ item, variantItem, inherits, typeCode, name });
+      const requiresAttunement = itemRequiresAttunement(resolvedItemForBonuses);
+      const counterInfo = inferInventoryCounter({
+        item,
+        variantItem,
+        inherits,
+        typeCode,
+        name,
+        isQuantityItem: isInventoryQuantityEntry(
+          {
+            itemType: typeCode,
+            weapon: weaponFlag,
+            armor: armorFlag,
+            requiresAttunement,
+          },
+          resolvedItemForBonuses
+        ),
+      });
       return {
         id: buildEntityId(["inv", name, source, Date.now(), Math.random()]),
         itemId: buildEntityId(["item", variantItem?.name || item?.name, source]),
@@ -568,7 +625,7 @@ export function createPickers(deps) {
         counterKind: counterInfo.counterKind,
         counter: counterInfo.counter,
         counterMax: counterInfo.counterMax,
-        requiresAttunement: itemRequiresAttunement(resolvedItemForBonuses),
+        requiresAttunement,
         attuned: false,
         equipped: false,
       };
