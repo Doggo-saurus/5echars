@@ -4173,8 +4173,8 @@ body.play-mode .ability-save-grid .save-prof-btn {
 
 .skill-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  column-gap: 0.75rem;
-  row-gap: 0.55rem;
+  column-gap: 0.6rem;
+  row-gap: 0.35rem;
 }
 
 .skill-row {
@@ -4191,7 +4191,12 @@ body.play-mode .ability-save-grid .save-prof-btn {
 }
 
 .skill-roll-btn-inline {
-  margin-left: 0.35rem;
+  min-width: 2.4ch;
+  margin-left: 0.2rem;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
   pointer-events: none;
 }
 
@@ -4200,12 +4205,12 @@ body.play-mode .ability-save-grid .save-prof-btn {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 0.65rem;
+  gap: 0.5rem;
   background: rgba(255, 255, 255, 0.04);
   border: 1px solid rgba(255, 255, 255, 0.18);
   border-radius: 10px;
   color: var(--text);
-  padding: 0.45rem 0.6rem;
+  padding: 0.28rem 0.45rem;
   cursor: default;
   text-align: left;
   box-shadow: none;
@@ -4296,7 +4301,7 @@ button.skill-btn-clickable-roll[data-skill-roll-row]:focus-visible {
 .skill-left {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: 0.4rem;
   min-width: 0;
 }
 

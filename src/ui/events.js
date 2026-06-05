@@ -428,6 +428,31 @@ export function createEvents(deps) {
     return [...poolMap.values()];
   }
 
+  function recoverLongRestHitDice(rawSpent, pools) {
+    const spentMap = normalizeHitDiceSpent(rawSpent);
+    const poolEntries = pools
+      .map((pool) => {
+        const max = Math.max(0, Math.floor(toNumber(pool.max, 0)));
+        const spent = Math.min(max, Math.max(0, Math.floor(toNumber(spentMap[pool.key], 0))));
+        return { key: pool.key, max, spent };
+      })
+      .filter((entry) => entry.key && entry.max > 0);
+    const nextSpentMap = Object.fromEntries(poolEntries.filter((entry) => entry.spent > 0).map((entry) => [entry.key, entry.spent]));
+    let recoverRemaining = Math.max(1, Math.floor(poolEntries.reduce((sum, entry) => sum + entry.max, 0) / 2));
+    poolEntries
+      .filter((entry) => entry.spent > 0)
+      .sort((a, b) => b.spent - a.spent)
+      .forEach((entry) => {
+        if (recoverRemaining < 1) return;
+        const recovered = Math.min(entry.spent, recoverRemaining);
+        const remaining = entry.spent - recovered;
+        recoverRemaining -= recovered;
+        if (remaining > 0) nextSpentMap[entry.key] = remaining;
+        else delete nextSpentMap[entry.key];
+      });
+    return nextSpentMap;
+  }
+
   function refreshShortRestResources(play) {
     play.deathSavesSuccess = 0;
     play.deathSavesFail = 0;
@@ -2964,7 +2989,7 @@ export function createEvents(deps) {
     app.querySelector("#long-rest")?.addEventListener("click", () => {
       openModal({
         title: "Confirm Long Rest",
-        bodyHtml: "<p>Apply a long rest? This restores HP, resets spell slots and features, and recovers spent hit dice.</p>",
+        bodyHtml: "<p>Apply a long rest? This restores HP, resets spell slots and features, and recovers up to half your hit dice.</p>",
         actions: [
           { label: "Cancel", secondary: true, onClick: (close) => close() },
           {
@@ -2991,23 +3016,7 @@ export function createEvents(deps) {
                 });
                 play.featureUses = featureUses;
                 play.featureUseMeta = {};
-
-                const nextSpentMap = normalizeHitDiceSpent(play.hitDiceSpent);
-                const totalHitDice = pools.reduce((sum, pool) => sum + Math.max(0, toNumber(pool.max, 0)), 0);
-                let recoverRemaining = Math.max(1, Math.floor(totalHitDice / 2));
-                const recoverOrder = pools
-                  .map((pool) => ({ key: pool.key, spent: Math.max(0, toNumber(nextSpentMap[pool.key], 0)) }))
-                  .sort((a, b) => b.spent - a.spent);
-                recoverOrder.forEach((entry) => {
-                  if (recoverRemaining < 1) return;
-                  if (entry.spent < 1) return;
-                  const recovered = Math.min(entry.spent, recoverRemaining);
-                  const remaining = entry.spent - recovered;
-                  recoverRemaining -= recovered;
-                  if (remaining > 0) nextSpentMap[entry.key] = remaining;
-                  else delete nextSpentMap[entry.key];
-                });
-                play.hitDiceSpent = nextSpentMap;
+                play.hitDiceSpent = recoverLongRestHitDice(play.hitDiceSpent, pools);
               });
               setDiceResult("Long Rest applied.");
               close();
