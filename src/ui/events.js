@@ -2306,7 +2306,7 @@ export function createEvents(deps) {
     app.querySelectorAll("[data-ability-feature-view]").forEach((button) => {
       button.addEventListener("click", () => {
         const mode = String(button.dataset.abilityFeatureView ?? "").trim().toLowerCase();
-        if (mode !== "usable" && mode !== "all") return;
+        if (mode !== "compact" && mode !== "all") return;
         withUpdatedPlay(state, (play) => {
           play.abilityFeatureView = mode;
         });

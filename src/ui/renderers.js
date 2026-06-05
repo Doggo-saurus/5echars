@@ -4,6 +4,7 @@ import {
   itemRequiresAttunement,
   resolveInventoryCatalogItem,
 } from "../app/catalog/inventory-item-rules.js";
+import { shouldShowSpeciesTraitEntry } from "../app/rules/species-traits.js";
 
 export function createRenderers(deps) {
   const {
@@ -696,7 +697,6 @@ export function createRenderers(deps) {
 
   function getSpeciesTraitRows(raceEntry) {
     if (!raceEntry || typeof raceEntry !== "object") return [];
-    const ignoredTraitNames = new Set(["age", "alignment", "size", "language", "languages", "creature type"]);
     const entries = Array.isArray(raceEntry?.entries) ? raceEntry.entries : [];
     const saveAdvantageTagMatchers = [
       ["All Saves", /\b(all|every)\s+saving throws?\b/],
@@ -729,10 +729,8 @@ export function createRenderers(deps) {
     };
     return entries
       .map((entry, index) => {
-        if (!entry || typeof entry !== "object") return null;
+        if (!shouldShowSpeciesTraitEntry(raceEntry, entry)) return null;
         const name = String(entry?.name ?? "").trim();
-        if (!name) return null;
-        if (ignoredTraitNames.has(name.toLowerCase())) return null;
         const source = normalizeSourceTag(raceEntry?.source);
         const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-");
         const id = `species:${source}:${slug}`;
@@ -2495,10 +2493,11 @@ export function createRenderers(deps) {
       play.featureUseMeta && typeof play.featureUseMeta === "object" && !Array.isArray(play.featureUseMeta)
         ? play.featureUseMeta
         : {};
-    const abilityFeatureView = play.abilityFeatureView === "usable" ? "usable" : "all";
-    const showOnlyUsableAbilities = abilityFeatureView === "usable";
+    const rawAbilityFeatureView = String(play.abilityFeatureView ?? "").trim().toLowerCase();
+    const abilityFeatureView = rawAbilityFeatureView === "compact" || rawAbilityFeatureView === "usable" ? "compact" : "all";
+    const showCompactAbilities = abilityFeatureView === "compact";
     const showAbilityFeatureSummaries = abilityFeatureView === "all";
-    const abilityUsableToggleClass = abilityFeatureView === "usable" ? "mode-toggle-btn is-active" : "mode-toggle-btn";
+    const abilityCompactToggleClass = abilityFeatureView === "compact" ? "mode-toggle-btn is-active" : "mode-toggle-btn";
     const abilityAllToggleClass = abilityFeatureView === "all" ? "mode-toggle-btn is-active" : "mode-toggle-btn";
     const buildResourceEntityId = (parts) =>
       parts
@@ -2710,7 +2709,7 @@ export function createRenderers(deps) {
                   title="${esc(title)}"
                 >
                   <span class="feat-tile-head">
-                    <strong class="feat-tile-title">${esc(titleText)}</strong>
+                    <span class="feat-tile-title">${esc(titleText)}</span>
                     ${actionControlsHtml}
                   </span>
                   ${showAbilityFeatureSummaries && summaryText ? `<p class="feat-tile-summary ability-feature-summary">${esc(summaryText)}</p>` : ""}
@@ -2719,10 +2718,25 @@ export function createRenderers(deps) {
             </div>
           `;
     };
+    const matchesAbilityFeatureBucket = (isUsable, bucket = "all") => {
+      if (bucket === "usable") return Boolean(isUsable);
+      if (bucket === "other") return !isUsable;
+      return true;
+    };
+    const normalizeAbilityFeatureSortText = (value) =>
+      String(value ?? "")
+        .trim()
+        .toLowerCase();
+    const compareAbilityFeatureEntries = (left, right) =>
+      normalizeAbilityFeatureSortText(left?.sortText).localeCompare(normalizeAbilityFeatureSortText(right?.sortText));
+    const renderAbilityFeatureEntries = (entries) =>
+      (Array.isArray(entries) ? entries : [])
+        .filter((entry) => entry?.html)
+        .sort(compareAbilityFeatureEntries)
+        .map((entry) => entry.html)
+        .join("");
     const compareFeatureRows = (left, right) => {
-      const levelDelta = toNumber(left?.level, 0) - toNumber(right?.level, 0);
-      if (levelDelta !== 0) return levelDelta;
-      return String(left?.name ?? "").localeCompare(String(right?.name ?? ""));
+      return normalizeAbilityFeatureSortText(left?.name).localeCompare(normalizeAbilityFeatureSortText(right?.name));
     };
     const consolidateResourceFeatureRows = (features) => {
       const normalRows = [];
@@ -2866,7 +2880,7 @@ export function createRenderers(deps) {
         summaryText: getClassFeatureSummaryText(feature),
       };
     };
-    const renderFeatureRows = (features) =>
+    const getFeatureRowEntries = (features, bucket = "all") =>
       consolidateScalingFeatureRows(consolidateResourceFeatureRows(features))
         .filter((feature) => !shouldHideFeatureFromAbilitiesList(feature))
         .map((feature) => {
@@ -2879,22 +2893,29 @@ export function createRenderers(deps) {
           const controlsHtml = `${getFeatureActivationControlsHtml(feature, tracker)}${
             shouldShowFeatureTracker(feature, useKey, tracker) ? getFeatureUseControlsHtml(useKey, tracker) : ""
           }`;
-          if (showOnlyUsableAbilities && !controlsHtml) return "";
+          if (!matchesAbilityFeatureBucket(Boolean(controlsHtml), bucket)) return "";
+          const selectedOptionalFeature = getSelectedOptionalFeatureForClassFeature(feature);
+          if (bucket === "other" && selectedOptionalFeature && isDirectlyUsableFeature(selectedOptionalFeature)) return "";
           const actionControlsHtml = controlsHtml ? `<span class="feat-tile-actions">${controlsHtml}</span>` : "";
           const metaLabel = feature.level ? `Lv ${feature.level}` : "Level ?";
           const fallbackOpenAttr = `data-open-feature="${esc(featureOpenRef)}"`;
           const tileDisplay = getFeatureTileDisplay(feature, `${displayName}${subtitle}`, fallbackOpenAttr);
-          return renderFeatureTile({
-            openAttr: tileDisplay.openAttr,
-            title: `${metaLabel} - ${feature.className || "class feature"}`,
-            titleText: tileDisplay.titleText,
-            actionControlsHtml,
-            summaryText: tileDisplay.summaryText || getClassFeatureSummaryText(feature),
-          });
+          return {
+            sortText: tileDisplay.titleText,
+            html: renderFeatureTile({
+              openAttr: tileDisplay.openAttr,
+              title: `${metaLabel} - ${feature.className || "class feature"}`,
+              titleText: tileDisplay.titleText,
+              actionControlsHtml,
+              summaryText: tileDisplay.summaryText || getClassFeatureSummaryText(feature),
+            }),
+          };
         })
-        .join("");
+        .filter((entry) => entry?.html);
     const baseClassFeatureRows = unlockedFeatures.filter((feature) => !movedReferencedFeatureIds.has(String(feature?.id ?? "")));
     const visibleBaseClassFeatureRows = baseClassFeatureRows.filter((feature) => !shouldHideFeatureFromAbilitiesList(feature));
+    const visibleClassFeatureRows = visibleBaseClassFeatureRows.filter((feature) => String(feature?.type ?? "").trim().toLowerCase() !== "subclass");
+    const visibleSubclassFeatureRows = visibleBaseClassFeatureRows.filter((feature) => String(feature?.type ?? "").trim().toLowerCase() === "subclass");
     const resourceKeysRenderedByClassFeatures = new Set(
       consolidateResourceFeatureRows(visibleBaseClassFeatureRows)
         .map((feature) => {
@@ -2910,14 +2931,24 @@ export function createRenderers(deps) {
       const tracker = featureUses[resourceKey];
       return Boolean(tracker && typeof tracker === "object");
     };
-    const featureListHtml = visibleBaseClassFeatureRows.length ? renderFeatureRows(visibleBaseClassFeatureRows) : "";
+    const featureListEntries = visibleClassFeatureRows.length ? getFeatureRowEntries(visibleClassFeatureRows) : [];
+    const featureListHtml = renderAbilityFeatureEntries(featureListEntries);
+    const featureListUsableEntries = showCompactAbilities && visibleClassFeatureRows.length ? getFeatureRowEntries(visibleClassFeatureRows, "usable") : [];
+    const featureListOtherEntries = showCompactAbilities && visibleClassFeatureRows.length ? getFeatureRowEntries(visibleClassFeatureRows, "other") : featureListEntries;
+    const featureListOtherHtml = renderAbilityFeatureEntries(featureListOtherEntries);
+    const subclassFeatureListEntries = visibleSubclassFeatureRows.length ? getFeatureRowEntries(visibleSubclassFeatureRows) : [];
+    const subclassFeatureListHtml = renderAbilityFeatureEntries(subclassFeatureListEntries);
+    const subclassFeatureUsableEntries = showCompactAbilities && visibleSubclassFeatureRows.length ? getFeatureRowEntries(visibleSubclassFeatureRows, "usable") : [];
+    const subclassFeatureOtherEntries = showCompactAbilities && visibleSubclassFeatureRows.length ? getFeatureRowEntries(visibleSubclassFeatureRows, "other") : subclassFeatureListEntries;
+    const subclassFeatureOtherListHtml = renderAbilityFeatureEntries(subclassFeatureOtherEntries);
     const featureModeIdsRenderedByClassFeatureTiles = new Set(
       visibleBaseClassFeatureRows
         .map((feature) => getFeatureModeForFeature(feature)?.id ?? "")
         .filter(Boolean)
     );
-    const classTableEffectListHtml = classTableEffects.length
-      ? classTableEffects
+    const getClassTableEffectRowEntries = (bucket = "all") =>
+      classTableEffects.length
+        ? classTableEffects
           .filter((effect) => !shouldHideClassTableEffect(effect))
           .map((effect) => {
             const effectLabel = `${String(effect?.className ?? "").trim()} - ${String(effect?.label ?? "").trim()}`.trim();
@@ -2931,24 +2962,34 @@ export function createRenderers(deps) {
                     rollNotation
                   )}" data-class-table-roll-label="${esc(effectLabel)}">${esc(effect.value ?? "")}</button>`
                 : "";
-            if (showOnlyUsableAbilities && !rollControlHtml && !trackerHtml) return "";
+            if (!matchesAbilityFeatureBucket(Boolean(rollControlHtml || trackerHtml), bucket)) return "";
             const actionControlsHtml =
               rollControlHtml || trackerHtml
                 ? `<span class="feat-tile-actions feat-tile-actions-nowrap">${rollControlHtml}${trackerHtml}</span>`
                 : "";
-            return renderFeatureTile({
-              openAttr: `data-open-class-table-effect="${esc(effectId)}"`,
-              title: `${effect?.className || "class feature"} - Class table effect`,
-              titleText: String(effect?.label ?? "Class feature"),
-              actionControlsHtml,
-              rowClass: "feature-row-table-effect",
-              summaryText: String(effect?.summary ?? effect?.description ?? "").trim(),
-            });
+            const titleText = String(effect?.label ?? "Class feature");
+            return {
+              sortText: titleText,
+              html: renderFeatureTile({
+                openAttr: `data-open-class-table-effect="${esc(effectId)}"`,
+                title: `${effect?.className || "class feature"} - Class table effect`,
+                titleText,
+                actionControlsHtml,
+                rowClass: "feature-row-table-effect",
+                summaryText: String(effect?.summary ?? effect?.description ?? "").trim(),
+              }),
+            };
           })
-          .join("")
-      : "";
-    const featListHtml = selectedFeats.length
-      ? selectedFeats
+          .filter((entry) => entry?.html)
+        : [];
+    const classTableEffectEntries = getClassTableEffectRowEntries();
+    const classTableEffectListHtml = renderAbilityFeatureEntries(classTableEffectEntries);
+    const classTableEffectUsableEntries = showCompactAbilities ? getClassTableEffectRowEntries("usable") : [];
+    const classTableEffectOtherEntries = showCompactAbilities ? getClassTableEffectRowEntries("other") : classTableEffectEntries;
+    const classTableEffectOtherHtml = renderAbilityFeatureEntries(classTableEffectOtherEntries);
+    const getFeatRowEntries = (bucket = "all") =>
+      selectedFeats.length
+        ? selectedFeats
           .map((feat) => {
             const featName = String(feat?.name ?? "").trim();
             const featSource = String(feat?.source ?? "").trim();
@@ -2974,26 +3015,50 @@ export function createRenderers(deps) {
             const useKey = `${autoResourceIdPrefix}${feat.id}`;
             const tracker = featureUses[useKey];
             const trackerHtml = getFeatureUseControlsHtml(useKey, tracker);
-            if (showOnlyUsableAbilities && !trackerHtml) return "";
+            if (!matchesAbilityFeatureBucket(Boolean(trackerHtml), bucket)) return "";
             const actionControlsHtml = `<span class="feat-tile-actions"><span class="pill">${esc(sourceLabel)}</span>${trackerHtml}</span>`;
-            return renderFeatureTile({
-              openAttr: `data-open-feat="${esc(feat.id)}"`,
-              title: featMetaText,
-              titleText: featName,
-              actionControlsHtml,
-              summaryText,
-            });
+            return {
+              sortText: featName,
+              html: renderFeatureTile({
+                openAttr: `data-open-feat="${esc(feat.id)}"`,
+                title: featMetaText,
+                titleText: featName,
+                actionControlsHtml,
+                summaryText,
+              }),
+            };
           })
-          .join("")
-      : "";
-    const referencedFeatureListHtml = unlockedFeatures.length
-      ? renderFeatureRows(
-          unlockedFeatures
-            .filter((feature) => movedReferencedFeatureIds.has(String(feature?.id ?? "")))
-        )
-      : "";
-    const classOptionalFeatureListHtml = selectedOptionalFeatures.length
-      ? selectedOptionalFeatures
+          .filter((entry) => entry?.html)
+        : [];
+    const featEntries = getFeatRowEntries();
+    const featListHtml = renderAbilityFeatureEntries(featEntries);
+    const featUsableEntries = showCompactAbilities ? getFeatRowEntries("usable") : [];
+    const featOtherEntries = showCompactAbilities ? getFeatRowEntries("other") : featEntries;
+    const featOtherListHtml = renderAbilityFeatureEntries(featOtherEntries);
+    const referencedFeatureRows = unlockedFeatures.filter((feature) => movedReferencedFeatureIds.has(String(feature?.id ?? "")));
+    const referencedClassFeatureRows = referencedFeatureRows.filter((feature) => String(feature?.type ?? "").trim().toLowerCase() !== "subclass");
+    const referencedSubclassFeatureRows = referencedFeatureRows.filter((feature) => String(feature?.type ?? "").trim().toLowerCase() === "subclass");
+    const referencedFeatureEntries = referencedClassFeatureRows.length ? getFeatureRowEntries(referencedClassFeatureRows) : [];
+    const referencedFeatureListHtml = renderAbilityFeatureEntries(referencedFeatureEntries);
+    const referencedFeatureUsableEntries = showCompactAbilities && referencedClassFeatureRows.length
+      ? getFeatureRowEntries(referencedClassFeatureRows, "usable")
+      : [];
+    const referencedFeatureOtherEntries = showCompactAbilities && referencedClassFeatureRows.length
+      ? getFeatureRowEntries(referencedClassFeatureRows, "other")
+      : referencedFeatureEntries;
+    const referencedFeatureOtherListHtml = renderAbilityFeatureEntries(referencedFeatureOtherEntries);
+    const referencedSubclassFeatureEntries = referencedSubclassFeatureRows.length ? getFeatureRowEntries(referencedSubclassFeatureRows) : [];
+    const referencedSubclassFeatureListHtml = renderAbilityFeatureEntries(referencedSubclassFeatureEntries);
+    const referencedSubclassFeatureUsableEntries = showCompactAbilities && referencedSubclassFeatureRows.length
+      ? getFeatureRowEntries(referencedSubclassFeatureRows, "usable")
+      : [];
+    const referencedSubclassFeatureOtherEntries = showCompactAbilities && referencedSubclassFeatureRows.length
+      ? getFeatureRowEntries(referencedSubclassFeatureRows, "other")
+      : referencedSubclassFeatureEntries;
+    const referencedSubclassFeatureOtherListHtml = renderAbilityFeatureEntries(referencedSubclassFeatureOtherEntries);
+    const getClassOptionalFeatureRowEntries = (bucket = "all") =>
+      selectedOptionalFeatures.length
+        ? selectedOptionalFeatures
           .filter((feature) => isDirectlyUsableFeature(feature))
           .map((feature) => {
             const featureName = String(feature?.name ?? "").trim();
@@ -3024,64 +3089,131 @@ export function createRenderers(deps) {
               tracker
             );
             const trackerControlsHtml = getFeatureUseControlsHtml(useKey, tracker);
-            if (showOnlyUsableAbilities && !activationControlsHtml && !trackerControlsHtml) return "";
+            if (!matchesAbilityFeatureBucket(Boolean(activationControlsHtml || trackerControlsHtml), bucket)) return "";
             const controlsHtml = `<span class="pill">${esc(sourceLabel)}</span>${activationControlsHtml}${trackerControlsHtml}`;
             const actionControlsHtml = `<span class="feat-tile-actions">${controlsHtml}</span>`;
-            return renderFeatureTile({
-              openAttr: `data-open-optional-feature="${esc(feature.id)}"`,
-              title: featureMetaText,
-              titleText: featureName,
-              actionControlsHtml,
-              summaryText,
-            });
+            return {
+              sortText: featureName,
+              html: renderFeatureTile({
+                openAttr: `data-open-optional-feature="${esc(feature.id)}"`,
+                title: featureMetaText,
+                titleText: featureName,
+                actionControlsHtml,
+                summaryText,
+              }),
+            };
           })
-          .join("")
-      : "";
-    const featureModeSelectionsListHtml = featureModes.length
-      ? featureModes
+          .filter((entry) => entry?.html)
+        : [];
+    const classOptionalFeatureEntries = getClassOptionalFeatureRowEntries();
+    const classOptionalFeatureListHtml = renderAbilityFeatureEntries(classOptionalFeatureEntries);
+    const classOptionalFeatureUsableEntries = showCompactAbilities ? getClassOptionalFeatureRowEntries("usable") : [];
+    const classOptionalFeatureOtherEntries = showCompactAbilities ? getClassOptionalFeatureRowEntries("other") : classOptionalFeatureEntries;
+    const classOptionalFeatureOtherListHtml = renderAbilityFeatureEntries(classOptionalFeatureOtherEntries);
+    const getFeatureModeSelectionRowEntries = (bucket = "all") =>
+      featureModes.length
+        ? featureModes
           .filter((mode) => !featureModeIdsRenderedByClassFeatureTiles.has(String(mode?.id ?? "")))
-          .filter(() => !showOnlyUsableAbilities)
+          .filter(() => matchesAbilityFeatureBucket(false, bucket))
           .map((mode) => {
             const selectedValues = resolveFeatureModeSelections(mode, play);
             const actionControlsHtml = selectedValues.length
               ? `<span class="feat-tile-actions">${selectedValues.map((value) => `<span class="pill">${esc(value)}</span>`).join("")}</span>`
               : "";
-            return renderFeatureTile({
-              openAttr: "",
-              title: "Feature choice",
-              titleText: mode.featureName,
-              actionControlsHtml,
-              summaryText: getClassFeatureSummaryText(getFeatureForMode(mode)),
-            });
+            return {
+              sortText: mode.featureName,
+              html: renderFeatureTile({
+                openAttr: "",
+                title: "Feature choice",
+                titleText: mode.featureName,
+                actionControlsHtml,
+                summaryText: getClassFeatureSummaryText(getFeatureForMode(mode)),
+              }),
+            };
           })
-          .join("")
-      : "";
-    const classAndTableFeatureListHtml = `${classTableEffectListHtml}${featureModeSelectionsListHtml}${featureListHtml}${referencedFeatureListHtml}${classOptionalFeatureListHtml}`;
-    const renderAbilityFeatureSection = (title, listHtml, emptyMessage) => `
+          .filter((entry) => entry?.html)
+        : [];
+    const featureModeSelectionEntries = getFeatureModeSelectionRowEntries();
+    const featureModeSelectionsListHtml = renderAbilityFeatureEntries(featureModeSelectionEntries);
+    const featureModeSelectionOtherEntries = showCompactAbilities ? getFeatureModeSelectionRowEntries("other") : featureModeSelectionEntries;
+    const featureModeSelectionsOtherListHtml = renderAbilityFeatureEntries(featureModeSelectionOtherEntries);
+    const classAndTableFeatureEntries = [
+      ...classTableEffectEntries,
+      ...featureModeSelectionEntries,
+      ...featureListEntries,
+      ...referencedFeatureEntries,
+      ...classOptionalFeatureEntries,
+    ];
+    const classAndTableFeatureUsableEntries = [
+      ...classTableEffectUsableEntries,
+      ...featureListUsableEntries,
+      ...referencedFeatureUsableEntries,
+      ...classOptionalFeatureUsableEntries,
+    ];
+    const classAndTableFeatureOtherEntries = [
+      ...classTableEffectOtherEntries,
+      ...featureModeSelectionOtherEntries,
+      ...featureListOtherEntries,
+      ...referencedFeatureOtherEntries,
+      ...classOptionalFeatureOtherEntries,
+    ];
+    const classAndTableFeatureListHtml = renderAbilityFeatureEntries(classAndTableFeatureEntries);
+    const classAndTableFeatureOtherListHtml = renderAbilityFeatureEntries(classAndTableFeatureOtherEntries);
+    const subclassFeatureEntriesCombined = [...subclassFeatureListEntries, ...referencedSubclassFeatureEntries];
+    const subclassFeatureUsableEntriesCombined = [...subclassFeatureUsableEntries, ...referencedSubclassFeatureUsableEntries];
+    const subclassFeatureOtherEntriesCombined = [...subclassFeatureOtherEntries, ...referencedSubclassFeatureOtherEntries];
+    const subclassFeatureListCombinedHtml = renderAbilityFeatureEntries(subclassFeatureEntriesCombined);
+    const subclassFeatureOtherListCombinedHtml = renderAbilityFeatureEntries(subclassFeatureOtherEntriesCombined);
+    const renderAbilityFeatureSection = (title, listHtml, emptyMessage, listClass = "") => `
           <section class="ability-feature-section">
             <h4>${esc(title)}</h4>
-            ${listHtml ? `<div class="class-feature-list ability-feature-list">${listHtml}</div>` : `<p class='muted'>${esc(emptyMessage)}</p>`}
+            ${listHtml ? `<div class="class-feature-list ability-feature-list${listClass ? ` ${listClass}` : ""}">${listHtml}</div>` : `<p class='muted'>${esc(emptyMessage)}</p>`}
           </section>
         `;
-    const speciesTraitListHtml = speciesTraits.length
-      ? speciesTraits
+    const getSpeciesTraitRowEntries = (bucket = "all") =>
+      speciesTraits.length
+        ? speciesTraits
           .map(
             (trait) => {
               const tracker = featureUses[trait.resourceKey];
               const trackerHtml = getFeatureUseControlsHtml(trait.resourceKey, tracker);
-              if (showOnlyUsableAbilities && !trackerHtml) return "";
+              if (!matchesAbilityFeatureBucket(Boolean(trackerHtml), bucket)) return "";
               const actionControlsHtml = trackerHtml ? `<span class="feat-tile-actions">${trackerHtml}</span>` : "";
-              return renderFeatureTile({
-                openAttr: `data-open-species-trait="${esc(trait.name)}"`,
-                title: "Species trait",
-                titleText: trait.name,
-                actionControlsHtml,
-                summaryText: trait.summaryText,
-              });
+              return {
+                sortText: trait.name,
+                html: renderFeatureTile({
+                  openAttr: `data-open-species-trait="${esc(trait.name)}"`,
+                  title: "Species trait",
+                  titleText: trait.name,
+                  actionControlsHtml,
+                  summaryText: trait.summaryText,
+                }),
+              };
             }
           )
-          .join("")
-      : "";
+          .filter((entry) => entry?.html)
+        : [];
+    const speciesTraitEntries = getSpeciesTraitRowEntries();
+    const speciesTraitListHtml = renderAbilityFeatureEntries(speciesTraitEntries);
+    const speciesTraitUsableEntries = showCompactAbilities ? getSpeciesTraitRowEntries("usable") : [];
+    const speciesTraitOtherEntries = showCompactAbilities ? getSpeciesTraitRowEntries("other") : speciesTraitEntries;
+    const speciesTraitOtherListHtml = renderAbilityFeatureEntries(speciesTraitOtherEntries);
+    const compactUsableEntries = [
+      ...featUsableEntries,
+      ...classAndTableFeatureUsableEntries,
+      ...subclassFeatureUsableEntriesCombined,
+      ...speciesTraitUsableEntries,
+    ];
+    const compactUsableListHtml = renderAbilityFeatureEntries(compactUsableEntries);
+    const displayedFeatListHtml = showCompactAbilities ? featOtherListHtml : featListHtml;
+    const displayedClassAndTableFeatureListHtml = showCompactAbilities ? classAndTableFeatureOtherListHtml : classAndTableFeatureListHtml;
+    const displayedSubclassFeatureListHtml = showCompactAbilities ? subclassFeatureOtherListCombinedHtml : subclassFeatureListCombinedHtml;
+    const displayedSpeciesTraitListHtml = showCompactAbilities ? speciesTraitOtherListHtml : speciesTraitListHtml;
+    const compactOtherListHtml = `${displayedFeatListHtml}${displayedClassAndTableFeatureListHtml}${displayedSubclassFeatureListHtml}${displayedSpeciesTraitListHtml}`;
+    const compactAbilitySeparatorHtml =
+      showCompactAbilities && compactOtherListHtml
+        ? '<div class="ability-feature-compact-separator" aria-hidden="true"></div>'
+        : "";
     const selectedSpells = Array.isArray(character?.spells) ? character.spells.filter(Boolean) : [];
     const hasSelectedSpells = selectedSpells.length > 0;
     const usesPreparedSpells = doesClassUsePreparedSpells(state.catalogs, character);
@@ -3282,20 +3414,30 @@ export function createRenderers(deps) {
           <div class="abilities-panel-head">
             <h3 class="title">Abilities</h3>
             <div class="mode-toggle ability-feature-view-toggle" role="group" aria-label="Abilities view">
-              <button type="button" class="${abilityUsableToggleClass}" data-ability-feature-view="usable" aria-pressed="${abilityFeatureView === "usable" ? "true" : "false"}">Usable</button>
+              <button type="button" class="${abilityCompactToggleClass}" data-ability-feature-view="compact" aria-pressed="${abilityFeatureView === "compact" ? "true" : "false"}">Compact</button>
               <button type="button" class="${abilityAllToggleClass}" data-ability-feature-view="all" aria-pressed="${abilityFeatureView === "all" ? "true" : "false"}">All</button>
             </div>
           </div>
           <div class="ability-feature-sections">
             ${
-              !showOnlyUsableAbilities || featListHtml
-                ? renderAbilityFeatureSection("Feats", featListHtml, showOnlyUsableAbilities ? "No usable feats." : "No feats selected.")
+              showCompactAbilities
+                ? `${renderAbilityFeatureSection("Usable", compactUsableListHtml, "No usable abilities.")}${compactAbilitySeparatorHtml}`
                 : ""
             }
-            ${renderAbilityFeatureSection("Class Features", classAndTableFeatureListHtml, showOnlyUsableAbilities ? "No usable class features." : "No unlocked class features.")}
             ${
-              !showOnlyUsableAbilities || speciesTraitListHtml
-                ? renderAbilityFeatureSection("Species Traits", speciesTraitListHtml, showOnlyUsableAbilities ? "No usable species traits." : "No species traits found.")
+              !showCompactAbilities || displayedFeatListHtml
+                ? renderAbilityFeatureSection("Feats", displayedFeatListHtml, showCompactAbilities ? "No other feats." : "No feats selected.", "ability-feature-list-columns")
+                : ""
+            }
+            ${renderAbilityFeatureSection("Class Features", displayedClassAndTableFeatureListHtml, showCompactAbilities ? "No other class features." : "No unlocked class features.", "ability-feature-list-columns")}
+            ${
+              !showCompactAbilities || displayedSubclassFeatureListHtml
+                ? renderAbilityFeatureSection("Subclass Features", displayedSubclassFeatureListHtml, showCompactAbilities ? "No other subclass features." : "No unlocked subclass features.", "ability-feature-list-columns")
+                : ""
+            }
+            ${
+              !showCompactAbilities || displayedSpeciesTraitListHtml
+                ? renderAbilityFeatureSection("Species Traits", displayedSpeciesTraitListHtml, showCompactAbilities ? "No other species traits." : "No species traits found.", "ability-feature-list-columns")
                 : ""
             }
           </div>

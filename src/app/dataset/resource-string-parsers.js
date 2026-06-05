@@ -117,7 +117,7 @@ export function parseResourceCountFromTable(detail, classLevel) {
 export function parseResourceCountFromProficiencyBonus(lines, proficiencyBonus) {
   const pb = Math.max(0, toNumber(proficiencyBonus, 0));
   if (pb <= 0) return null;
-  const resourceContextRegex = /\b(dice?|die|charges?|points?|pool|uses?|tokens?|trinkets?)\b/i;
+  const resourceContextRegex = /\b(dice?|die|charges?|points?|pool|uses?|tokens?|trinkets?|times?)\b/i;
   const resourceNounRegex = /\b(dice?|die|charges?|points?|pool|uses?|tokens?|trinkets?|times?)\b/i;
   const proficiencyRegex = /equal to\s+(?:(twice|double|thrice|triple|\d+\s+times?|one\s+time|two\s+times?|three\s+times?|four\s+times?|five\s+times?|six\s+times?|seven\s+times?|eight\s+times?|nine\s+times?|ten\s+times?)[\s-]+)?your proficiency bonus/i;
   for (const line of lines) {

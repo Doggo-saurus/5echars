@@ -1,3 +1,5 @@
+import { shouldShowSpeciesTraitEntry } from "../rules/species-traits.js";
+
 export function createCharacterDetailsModals({
   openModal,
   esc,
@@ -174,12 +176,9 @@ export function createCharacterDetailsModals({
     const sourceOrder = getPreferredSourceOrder(state.character);
     const raceEntry = getEffectiveRaceEntry(state.catalogs, state.character, sourceOrder);
     if (!raceEntry) return;
-    const ignoredTraitNames = new Set(["age", "alignment", "size", "language", "languages", "creature type"]);
     const traitEntry = (Array.isArray(raceEntry?.entries) ? raceEntry.entries : []).find((entry) => {
-      if (!entry || typeof entry !== "object") return false;
+      if (!shouldShowSpeciesTraitEntry(raceEntry, entry)) return false;
       const name = String(entry?.name ?? "").trim();
-      if (!name) return false;
-      if (ignoredTraitNames.has(name.toLowerCase())) return false;
       return name.toLowerCase() === selectedTraitName.toLowerCase();
     });
     const lines = getRuleDescriptionLines(traitEntry);

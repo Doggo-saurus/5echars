@@ -1,4 +1,5 @@
 import { getActiveInventoryCatalogItems } from "../catalog/inventory-item-rules.js";
+import { shouldShowSpeciesTraitEntry } from "./species-traits.js";
 
 export function createFeatureResourceRules({
   toNumber,
@@ -335,6 +336,8 @@ export function createFeatureResourceRules({
         /\bonce per day\b/.test(text)
         || /\bonce a day\b/.test(text)
         || /\byou can use (?:this|it) once\b/.test(text)
+        || /\byou can cast\b.{0,180}?\bonce\b.{0,120}?\b(?:with|using|through) this (?:trait|feature|ability|benefit)\b/.test(text)
+        || /\bregain the ability to (?:do so|cast (?:it|this spell|the spell)) when you finish a (?:short|long) rest\b/.test(text)
         || /\bonce before you finish a (?:short|long) rest\b/.test(text)
         || /\bonce you use this (?:feature|ability|benefit)\b/.test(text)
         || /\byou can't (?:do so|use (?:this|it)) again until you finish a (?:short|long) rest\b/.test(text)
@@ -397,12 +400,10 @@ export function createFeatureResourceRules({
     const raceEntry = catalogLookupDomain.getEffectiveRaceEntry(catalogs, character, sourceOrder);
     if (!catalogLookupDomain.isRecordObject(raceEntry)) return [];
     const traitEntries = Array.isArray(raceEntry?.entries) ? raceEntry.entries : [];
-    const ignoredTraitNames = new Set(["age", "alignment", "size", "language", "languages", "creature type"]);
     const byId = new Map();
     traitEntries.forEach((entry) => {
-      if (!catalogLookupDomain.isRecordObject(entry)) return;
+      if (!shouldShowSpeciesTraitEntry(raceEntry, entry)) return;
       const name = String(entry?.name ?? "").trim();
-      if (!name || ignoredTraitNames.has(name.toLowerCase())) return;
       const descriptor = getResourceDescriptorFromEntry(entry, name, Math.max(1, toNumber(character?.level, 1)), character);
       if (!descriptor || descriptor.max <= 0) return;
       const id = getSpeciesTraitId(raceEntry, name);
