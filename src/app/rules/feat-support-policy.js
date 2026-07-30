@@ -19,6 +19,7 @@ export const FEAT_KEY_SUPPORT_POLICY = {
   vulnerable: { status: "supported", owner: "proficiencySummary.getCharacterToolAndDefenseSummary" },
   senses: { status: "supported", owner: "engine.computeDerivedStats + summary" },
   bonusSenses: { status: "supported", owner: "engine.computeDerivedStats + summary" },
+  initiative: { status: "supported", owner: "engine.getFeatInitiativeBonus (Alert)" },
   optionalfeatureProgression: { status: "not_supported_yet", owner: "unassigned" },
 };
 

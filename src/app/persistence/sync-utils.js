@@ -63,6 +63,8 @@ function readFiniteNumber(value) {
 }
 
 function deriveInitiativeFromState(state) {
+  const derivedInitiative = readFiniteNumber(state?.derived?.initiative);
+  if (derivedInitiative != null) return derivedInitiative;
   const dexMod = readFiniteNumber(state?.derived?.mods?.dex);
   const bonus = readFiniteNumber(state?.character?.play?.initiativeBonus) ?? 0;
   if (dexMod == null) return null;

@@ -185,6 +185,33 @@ function getFeatHitPointBonus(character, totalLevel) {
   return 0;
 }
 
+// Alert grants an initiative bonus. The 2014 (PHB) version is a flat +5, while
+// the 2024 (XPHB) version adds your proficiency bonus to initiative. We parse
+// the catalog entry text so the value tracks the selected source, and fall back
+// to a source-based default when the text can't be read.
+function getFeatInitiativeBonus(catalogs, character, proficiencyBonusValue) {
+  const feats = Array.isArray(character?.feats) ? character.feats : [];
+  let bonus = 0;
+  feats.forEach((feat) => {
+    if (normalizeFeatName(feat?.name) !== "alert") return;
+    const entry = findFeatCatalogEntry(catalogs, feat);
+    const text = collectTraitTextLines(entry?.entries ?? [], []).join(" ");
+    const flatMatch = text.match(/([+-]?\d+)\s+bonus to (?:your )?initiative/i);
+    if (flatMatch) {
+      bonus += toNumber(flatMatch[1], 0);
+      return;
+    }
+    if (/proficiency bonus/i.test(text) && /initiative/i.test(text)) {
+      bonus += toNumber(proficiencyBonusValue, 0);
+      return;
+    }
+    const source = String(entry?.source ?? feat?.source ?? "").trim().toUpperCase();
+    if (source === "XPHB") bonus += toNumber(proficiencyBonusValue, 0);
+    else bonus += 5;
+  });
+  return bonus;
+}
+
 export function getHitPointBreakdown(catalogs, character, options = {}) {
   const abilities = character?.abilities ?? {};
   const conMod = abilityMod(abilities.con);
@@ -529,6 +556,9 @@ export function computeDerivedStats(character, catalogs = null) {
     .reduce((sum, entry) => sum + toNumber(entry?.value, 0), 0);
   const itemSpellSaveDcBonus = getActiveItemNumericBonusEntries(catalogs, character, "bonusSpellSaveDc")
     .reduce((sum, entry) => sum + toNumber(entry?.value, 0), 0);
+  const manualInitiativeBonus = toNumber(play.initiativeBonus, 0);
+  const featInitiativeBonus = getFeatInitiativeBonus(catalogs, character, prof);
+  const initiative = mods.dex + manualInitiativeBonus + featInitiativeBonus;
 
   return {
     mods,
@@ -542,5 +572,11 @@ export function computeDerivedStats(character, catalogs = null) {
     itemSavingThrowBonus,
     itemSpellAttackBonus,
     itemSpellSaveDcBonus,
+    initiative,
+    initiativeBreakdown: {
+      dex: mods.dex,
+      manual: manualInitiativeBonus,
+      feat: featInitiativeBonus,
+    },
   };
 }

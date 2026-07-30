@@ -474,6 +474,8 @@ export function createPartyFeature(deps) {
         return null;
       });
     const getInitiativeSummary = (snapshot, derived) => {
+      const derivedInitiative = readFiniteNumber(derived?.initiative);
+      if (derivedInitiative !== null) return derivedInitiative >= 0 ? `+${derivedInitiative}` : String(derivedInitiative);
       const dexMod = readFiniteNumber(derived?.mods?.dex);
       const bonus = readFiniteNumber(snapshot?.play?.initiativeBonus) ?? 0;
       if (dexMod !== null) {
@@ -481,8 +483,7 @@ export function createPartyFeature(deps) {
         return total >= 0 ? `+${total}` : String(total);
       }
       const direct =
-        readFiniteNumber(derived?.initiative)
-        ?? readFiniteNumber(snapshot?.initiative)
+        readFiniteNumber(snapshot?.initiative)
         ?? readFiniteNumber(snapshot?.play?.initiative);
       if (direct !== null) return direct >= 0 ? `+${direct}` : String(direct);
       return "Unknown";

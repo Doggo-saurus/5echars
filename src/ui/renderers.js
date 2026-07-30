@@ -2180,7 +2180,7 @@ export function createRenderers(deps) {
     const hpTotal = derived.hp;
     const hpCurrent = play.hpCurrent == null ? hpTotal : play.hpCurrent;
     const hpTemp = toNumber(play.hpTemp, 0);
-    const initiativeBonus = toNumber(derived?.mods?.dex, 0);
+    const initiativeBonus = toNumber(derived?.initiative, toNumber(derived?.mods?.dex, 0));
     const raceSourceOrder = getPreferredSourceOrder(character);
     const raceEntry = getEffectiveRaceEntry(state.catalogs, character, raceSourceOrder);
     const speedRaw = raceEntry?.speed;
@@ -4646,7 +4646,7 @@ export function createRenderers(deps) {
     const play = character?.play ?? {};
     const hpTotal = toNumber(derived?.hp, 0);
     const hpCurrent = play.hpCurrent == null ? hpTotal : toNumber(play.hpCurrent, hpTotal);
-    const initiativeBonus = toNumber(derived?.mods?.dex, 0);
+    const initiativeBonus = toNumber(derived?.initiative, toNumber(derived?.mods?.dex, 0));
     const classTableEffects = Array.isArray(character?.progression?.classTableEffects) ? character.progression.classTableEffects : [];
     const raceSourceOrder = getPreferredSourceOrder(character);
     const raceEntry = getEffectiveRaceEntry(state.catalogs, character, raceSourceOrder);

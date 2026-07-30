@@ -2259,11 +2259,11 @@ export function createEvents(deps) {
       bindClickAndLongPress(
         initiativeButton,
         () => {
-          const bonus = toNumber(state.derived?.mods?.dex, 0);
+          const bonus = toNumber(state.derived?.initiative, toNumber(state.derived?.mods?.dex, 0));
           rollVisualD20("Initiative", bonus);
         },
         (rollMode) => {
-          const bonus = toNumber(state.derived?.mods?.dex, 0);
+          const bonus = toNumber(state.derived?.initiative, toNumber(state.derived?.mods?.dex, 0));
           rollVisualD20("Initiative", bonus, rollMode);
         }
       );
