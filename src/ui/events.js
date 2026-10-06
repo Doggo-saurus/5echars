@@ -157,11 +157,13 @@ export function createEvents(deps) {
 
   function openArmorClassBreakdownModal(snapshot) {
     const dexMod = toNumber(snapshot.derived?.mods?.dex, 0);
+    const chaMod = toNumber(snapshot.derived?.mods?.cha, 0);
     const breakdown = getArmorClassBreakdown(
       snapshot.character,
       dexMod,
       getCharacterFightingStyleSet(snapshot.character, snapshot.catalogs),
-      snapshot.catalogs
+      snapshot.catalogs,
+      chaMod
     );
     const customModifier = Math.floor(toNumber(snapshot.character?.play?.customAcModifier, 0));
     const baseTotal = toNumber(breakdown.total, toNumber(snapshot.derived?.ac, 10)) - customModifier;
@@ -271,6 +273,9 @@ export function createEvents(deps) {
     if (toNumber(breakdown.featBonusHp, 0) !== 0) {
       rows.push({ label: "Feat bonuses", value: toNumber(breakdown.featBonusHp, 0) });
     }
+    if (toNumber(breakdown.subclassBonusHp, 0) !== 0) {
+      rows.push({ label: "Subclass bonuses", value: toNumber(breakdown.subclassBonusHp, 0) });
+    }
     const rowsHtml = rows
       .map((entry) => {
         const value = toNumber(entry?.value, 0);
@@ -372,6 +377,12 @@ export function createEvents(deps) {
     }
     if (autoMode === "half") {
       return canExpertise ? ["half", "proficient", "expertise"] : ["half", "proficient"];
+    }
+    if (autoMode === "expertise") {
+      // Auto-granted expertise (e.g. from a feat like Skill Expert) must stay
+      // cycleable even for characters without class-based Expertise, otherwise
+      // clicking the skill would fall through to "none" and erase the grant.
+      return ["proficient", "expertise"];
     }
     return modes;
   }
@@ -2073,6 +2084,18 @@ export function createEvents(deps) {
           return;
         }
         const label = String(button.dataset.classTableRollLabel ?? "Class table effect").trim();
+        rollVisualNotation(label, notation);
+      });
+    });
+    app.querySelectorAll("[data-species-trait-roll]").forEach((button) => {
+      button.addEventListener("click", (event) => {
+        event.stopPropagation();
+        const notation = extractSimpleNotation(button.dataset.speciesTraitRoll);
+        if (!notation) {
+          setDiceResult("Species trait: invalid dice notation.", true);
+          return;
+        }
+        const label = String(button.dataset.speciesTraitRollLabel ?? "Species trait").trim();
         rollVisualNotation(label, notation);
       });
     });

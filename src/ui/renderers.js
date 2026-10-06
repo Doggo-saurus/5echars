@@ -56,6 +56,8 @@ export function createRenderers(deps) {
     getAutoAttacks,
     getCharacterChangeLog,
     extractSimpleNotation,
+    parseLevelScaledDiceNotation,
+    parseSaveDcAbilityFormula,
     manualBaseUrl,
     isUuid,
   } = deps;
@@ -695,8 +697,11 @@ export function createRenderers(deps) {
     return String(descriptionLines[0] ?? "").trim();
   }
 
-  function getSpeciesTraitRows(raceEntry) {
+  function getSpeciesTraitRows(raceEntry, options = {}) {
     if (!raceEntry || typeof raceEntry !== "object") return [];
+    const characterLevel = Math.max(1, toNumber(options?.characterLevel, 1));
+    const abilityMods = options?.abilityMods && typeof options.abilityMods === "object" ? options.abilityMods : {};
+    const proficiencyBonus = toNumber(options?.proficiencyBonus, 0);
     const entries = Array.isArray(raceEntry?.entries) ? raceEntry.entries : [];
     const saveAdvantageTagMatchers = [
       ["All Saves", /\b(all|every)\s+saving throws?\b/],
@@ -736,7 +741,10 @@ export function createRenderers(deps) {
         const id = `species:${source}:${slug}`;
         const lines = getRuleDescriptionLines(entry);
         const summaryText = getRuleSummaryTextFromLines(lines);
-        const rollNotation = extractSimpleNotation(lines.join(" "));
+        const rollNotation =
+          extractSimpleNotation(parseLevelScaledDiceNotation(lines, characterLevel)) || extractSimpleNotation(lines.join(" "));
+        const dcFormula = parseSaveDcAbilityFormula(lines);
+        const dc = dcFormula ? dcFormula.base + proficiencyBonus + toNumber(abilityMods?.[dcFormula.ability], 0) : null;
         return {
           id,
           sortOrder: index,
@@ -744,6 +752,7 @@ export function createRenderers(deps) {
           saveAdvantageTags: extractSaveAdvantageTags(entry),
           resourceKey: `${autoResourceIdPrefix}${id}`,
           rollNotation,
+          dc,
           summaryText,
         };
       })
@@ -1347,6 +1356,62 @@ export function createRenderers(deps) {
                 { metaByOption: skillMetaByOption, disabledValues: blockedSkillValues, checkedDisabledValues: blockedSkillValues }
               )}
             </div>
+          `);
+        }
+      }
+    }
+
+    const expertiseOptions = Array.isArray(entry?.expertise) ? entry.expertise : [];
+    const expertiseOptionIndex = expertiseOptions.findIndex((option) => option && typeof option === "object");
+    const expertiseOption = expertiseOptionIndex >= 0 ? expertiseOptions[expertiseOptionIndex] : null;
+    if (expertiseOption && typeof expertiseOption === "object") {
+      const fixedExpertiseSkills = Object.entries(expertiseOption)
+        .filter(([key, value]) => key !== "anyProficientSkill" && value === true)
+        .map(([key]) => normalizeSkillKey(key))
+        .filter(Boolean);
+      const anyProficientCount = Math.max(0, toNumber(expertiseOption.anyProficientSkill, 0));
+      if (anyProficientCount > 0) {
+        const choiceId = `ex:${expertiseOptionIndex}:anyProficientSkill`;
+        const autoSkillModes =
+          character?.play?.autoSkillProficiencyModes && typeof character.play.autoSkillProficiencyModes === "object"
+            ? character.play.autoSkillProficiencyModes
+            : {};
+        const storedSelectionMap = getAutoChoiceSelectionMap(character, sourceKey);
+        const storedRaw = storedSelectionMap[choiceId];
+        const storedTokens = new Set(
+          (Array.isArray(storedRaw) ? storedRaw : [storedRaw]).map((value) => normalizeSkillKey(value)).filter(Boolean)
+        );
+        // A skill must be proficient (but not already benefiting from expertise) to be
+        // eligible, unless it's the value already stored for this exact choice - that
+        // skill's mode may now read as "expertise" precisely because of this choice.
+        const pool = skills
+          .map((skill) => skill.key)
+          .filter((skillKey) => !fixedExpertiseSkills.includes(skillKey))
+          .filter((skillKey) => {
+            if (storedTokens.has(skillKey)) return true;
+            return String(autoSkillModes?.[skillKey] ?? "").trim().toLowerCase() === "proficient";
+          });
+        const count = Math.max(0, Math.min(pool.length, anyProficientCount));
+        if (count > 0) {
+          const selected = getSelectedChoiceValues(character, sourceKey, choiceId, pool, count);
+          blocks.push(`
+            <div class="auto-choice-card">
+              ${renderAutoChoiceCardHeading(`${sourceLabel} expertise choice`, count)}
+              ${renderChoiceCheckboxes(
+                sourceKey,
+                choiceId,
+                count,
+                pool,
+                selected,
+                (skillKey) => skills.find((skill) => skill.key === skillKey)?.label ?? skillKey
+              )}
+            </div>
+          `);
+        } else {
+          blocks.push(`
+            <p class="muted auto-choice-card-heading">${esc(
+              `${sourceLabel} expertise: no eligible proficient skill available yet.`
+            )}</p>
           `);
         }
       }
@@ -2274,7 +2339,11 @@ export function createRenderers(deps) {
 
     const savesHtml = renderSaveRowsImpl(state, { canToggle: false, includeRollButtons: true });
     const skillsHtml = renderSkillRowsImpl(state, { canToggle: false, includeRollButtons: true });
-    const speciesTraits = getSpeciesTraitRows(raceEntry);
+    const speciesTraits = getSpeciesTraitRows(raceEntry, {
+      characterLevel: character?.level,
+      abilityMods: derived?.mods,
+      proficiencyBonus: derived?.proficiencyBonus,
+    });
     const traitSummary = getCharacterToolAndDefenseSummary(state.catalogs, character);
     const renderTraitChip = (entry) => `<span class="play-trait-chip">${esc(entry.label)}</span>`;
     const renderTraitGroup = (title, entries) => {
@@ -3177,8 +3246,22 @@ export function createRenderers(deps) {
             (trait) => {
               const tracker = featureUses[trait.resourceKey];
               const trackerHtml = getFeatureUseControlsHtml(trait.resourceKey, tracker);
-              if (!matchesAbilityFeatureBucket(Boolean(trackerHtml), bucket)) return "";
-              const actionControlsHtml = trackerHtml ? `<span class="feat-tile-actions">${trackerHtml}</span>` : "";
+              const rollNotation = String(trait.rollNotation ?? "").trim();
+              const rollTitle = Number.isFinite(trait.dc)
+                ? `Roll ${rollNotation} damage (DC ${trait.dc})`
+                : `Roll ${rollNotation}`;
+              const rollControlHtml = rollNotation
+                ? `<button type="button" class="pill pill-btn class-table-effect-roll-btn" data-species-trait-roll="${esc(
+                    rollNotation
+                  )}" data-species-trait-roll-label="${esc(trait.name)}" title="${esc(rollTitle)}">${esc(rollNotation)}${
+                    Number.isFinite(trait.dc) ? ` (DC ${esc(trait.dc)})` : ""
+                  }</button>`
+                : "";
+              if (!matchesAbilityFeatureBucket(Boolean(trackerHtml || rollControlHtml), bucket)) return "";
+              const actionControlsHtml =
+                rollControlHtml || trackerHtml
+                  ? `<span class="feat-tile-actions feat-tile-actions-nowrap">${rollControlHtml}${trackerHtml}</span>`
+                  : "";
               return {
                 sortText: trait.name,
                 html: renderFeatureTile({
@@ -3653,6 +3736,10 @@ export function createRenderers(deps) {
         ability: selectedRace?.ability,
         skillProficiencies: selectedRace?.skillProficiencies,
         toolProficiencies: selectedRace?.toolProficiencies,
+        resist: selectedRace?.resist,
+        immune: selectedRace?.immune,
+        conditionImmune: selectedRace?.conditionImmune,
+        vulnerable: selectedRace?.vulnerable,
       }, "race", character, catalogs, {
         skillMetaByOption: raceBackgroundSkillMap,
       });
@@ -4378,6 +4465,7 @@ export function createRenderers(deps) {
       baseDelta: 0,
       conDelta: 0,
       featDelta: 0,
+      subclassDelta: 0,
       gainedEntries: [],
       levelDelta: 0,
       conMod: 0,
@@ -4554,6 +4642,7 @@ export function createRenderers(deps) {
             <div class="levelup-save-row"><span class="muted">Hit Die Contribution</span><span>${hitPointPlan.baseDelta > 0 ? "+" : ""}${esc(hitPointPlan.baseDelta)}</span></div>
             <div class="levelup-save-row"><span class="muted">Constitution (${hitPointPlan.conMod >= 0 ? "+" : ""}${esc(hitPointPlan.conMod)} x ${esc(hitPointPlan.levelDelta)})</span><span>${hitPointPlan.conDelta > 0 ? "+" : ""}${esc(hitPointPlan.conDelta)}</span></div>
             <div class="levelup-save-row"><span class="muted">Feat Contribution</span><span>${hitPointPlan.featDelta > 0 ? "+" : ""}${esc(hitPointPlan.featDelta)}</span></div>
+            <div class="levelup-save-row"><span class="muted">Subclass Contribution</span><span>${hitPointPlan.subclassDelta > 0 ? "+" : ""}${esc(hitPointPlan.subclassDelta)}</span></div>
           </div>
           <div class="levelup-preview-block">
             <h5>Save Proficiencies</h5>

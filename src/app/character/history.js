@@ -158,9 +158,11 @@ export function createCharacterHistory({
   function renderCharacterHistorySelector(selectId, selectedCharacterId = null, options = {}) {
     const className = String(options.className ?? "character-history-control");
     const entries = loadCharacterHistory();
+    const hasSelectedEntry = entries.some((entry) => entry.id === selectedCharacterId);
     return `
       <label class="${esc(className)}">
         <select id="${esc(selectId)}" data-character-history-select>
+          <option value="" ${hasSelectedEntry ? "" : "selected"} disabled hidden>Select a character&hellip;</option>
           ${entries
             .map((entry) => {
               const selected = selectedCharacterId === entry.id ? "selected" : "";

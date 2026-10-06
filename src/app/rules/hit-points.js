@@ -107,6 +107,7 @@ export function createHitPointRules({
     const currentMaxHp = currentHpBreakdown.total;
     const nextMaxHp = nextHpBreakdown.total;
     const featDelta = nextHpBreakdown.featBonusHp - currentHpBreakdown.featBonusHp;
+    const subclassDelta = nextHpBreakdown.subclassBonusHp - currentHpBreakdown.subclassBonusHp;
     return {
       levelDelta,
       conMod,
@@ -116,6 +117,7 @@ export function createHitPointRules({
       baseDelta,
       conDelta,
       featDelta,
+      subclassDelta,
       gainedEntries: resolvedGainedEntries,
       nextRollOverrides,
     };

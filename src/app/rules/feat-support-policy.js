@@ -8,7 +8,7 @@ export const FEAT_KEY_SUPPORT_POLICY = {
   skillProficiencies: { status: "supported", owner: "proficiencies.getAutomaticSkillProficiencies" },
   toolProficiencies: { status: "supported", owner: "proficiencySummary.getCharacterToolAndDefenseSummary" },
   skillToolLanguageProficiencies: { status: "partially_supported", owner: "renderers + proficiencies + summary" },
-  expertise: { status: "supported", owner: "proficiencies.getAutomaticSkillProficiencyModes" },
+  expertise: { status: "supported", owner: "proficiencies.getAutomaticSkillProficiencyModes + renderers auto-choice card" },
   additionalSpells: { status: "supported", owner: "spells.getAutoGrantedSpellData" },
   weaponProficiencies: { status: "partially_supported", owner: "inventory.getCharacterWeaponProficiencyTokens + summary" },
   armorProficiencies: { status: "supported", owner: "proficiencySummary.getCharacterToolAndDefenseSummary" },

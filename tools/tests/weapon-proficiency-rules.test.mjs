@@ -31,6 +31,43 @@ function getClassCatalogEntry(catalogs, className) {
   return classes.find((entry) => String(entry?.name ?? "").trim().toLowerCase() === wanted) ?? null;
 }
 
+function collectRuleDescriptionLines(entry, out = []) {
+  if (entry == null) return out;
+  if (typeof entry === "string") {
+    const line = String(entry).trim();
+    if (line) out.push(line);
+    return out;
+  }
+  if (Array.isArray(entry)) {
+    entry.forEach((value) => collectRuleDescriptionLines(value, out));
+    return out;
+  }
+  if (typeof entry !== "object") return out;
+  collectRuleDescriptionLines(entry.entry, out);
+  collectRuleDescriptionLines(entry.text, out);
+  collectRuleDescriptionLines(entry.entries, out);
+  collectRuleDescriptionLines(entry.items, out);
+  return out;
+}
+
+function getRuleDescriptionLines(entry) {
+  return collectRuleDescriptionLines(entry?.entries ?? entry, []);
+}
+
+function createWeaponsForFeatures(features, resolveDetail) {
+  return createInventoryWeapons({
+    cleanSpellInlineTags: (value) => String(value ?? "").replace(/\{@[a-z]+ ([^}|]+)(?:\|[^}]+)?\}/gi, "$1"),
+    extractSimpleNotation: (value) => String(value ?? "").trim(),
+    toNumber,
+    signed,
+    getRuleDescriptionLines,
+    getClassLevelTracks,
+    getClassCatalogEntry,
+    getUnlockedFeatures: () => features,
+    resolveFeatureEntryFromCatalogs: resolveDetail,
+  });
+}
+
 const inventoryWeapons = createInventoryWeapons({
   cleanSpellInlineTags: (value) => String(value ?? ""),
   extractSimpleNotation: (value) => String(value ?? "").trim(),
@@ -103,34 +140,143 @@ test("weapon proficiency categories normalize to canonical labels", () => {
   ]);
 });
 
-test("cleric protector adds one martial weapons proficiency token", () => {
-  const clericWeapons = createInventoryWeapons({
-    cleanSpellInlineTags: (value) => String(value ?? ""),
-    extractSimpleNotation: (value) => String(value ?? "").trim(),
-    toNumber,
-    signed,
-    getRuleDescriptionLines: () => [],
-    getClassLevelTracks,
-    getClassCatalogEntry,
-    getUnlockedFeatures: () => [{ className: "Cleric", name: "Protector" }],
-    resolveFeatureEntryFromCatalogs: () => null,
-  });
+function getClericCatalog() {
+  return {
+    classes: [
+      {
+        name: "Cleric",
+        startingProficiencies: {
+          weapons: ["simple"],
+        },
+      },
+    ],
+  };
+}
 
-  const tokens = clericWeapons.getCharacterWeaponProficiencyTokens(
+test("cleric protector adds one martial weapons proficiency token", () => {
+  const clericWeapons = createWeaponsForFeatures([{ className: "Cleric", name: "Protector" }], () => null);
+
+  const tokens = clericWeapons.getCharacterWeaponProficiencyTokens(getClericCatalog(), { class: "Cleric" });
+
+  assert.deepEqual([...tokens].sort(), ["martial weapons", "simple weapons"]);
+});
+
+test("subclass bonus proficiency text grants martial weapons", () => {
+  const cases = [
+    {
+      name: "Tempest Domain",
+      className: "Cleric",
+      text: "At 1st level, you gain proficiency with martial weapons and heavy armor.",
+    },
+    {
+      name: "War Domain",
+      className: "Cleric",
+      text: "You gain proficiency with martial weapons and heavy armor.",
+    },
+    {
+      name: "Death Domain",
+      className: "Cleric",
+      text: "You gain proficiency with martial weapons.",
+    },
+    {
+      name: "Twilight Domain",
+      className: "Cleric",
+      text: "You gain proficiency with martial weapons and heavy armor.",
+    },
+    {
+      name: "College of Valor",
+      className: "Bard",
+      text: "You gain proficiency with medium armor, shields, and martial weapons.",
+    },
+    {
+      name: "The Hexblade",
+      className: "Warlock",
+      text: "You gain proficiency with medium armor, shields, and martial weapons.",
+    },
+    {
+      name: "Battle Smith",
+      className: "Artificer",
+      text: "When you adopt this specialization at 3rd level, you gain proficiency with martial weapons.",
+    },
+    {
+      name: "Protector",
+      className: "Cleric",
+      text: "You gain proficiency with Martial weapons and training with Heavy armor.",
+    },
+  ];
+
+  cases.forEach((entry) => {
+    const weapons = createWeaponsForFeatures(
+      [{ className: entry.className, name: "Bonus Proficiency", type: "subclass", subclassName: entry.name }],
+      () => ({
+        name: "Bonus Proficiency",
+        entries: [entry.text],
+      })
+    );
+    const classCatalog = {
+      classes: [
+        {
+          name: entry.className,
+          startingProficiencies: {
+            weapons: ["simple"],
+          },
+        },
+      ],
+    };
+    const tokens = weapons.getCharacterWeaponProficiencyTokens(classCatalog, { class: entry.className });
+    assert.equal(tokens.has("martial weapons"), true, `${entry.name} should grant martial weapons`);
+  });
+});
+
+test("life domain bonus proficiency does not grant martial weapons", () => {
+  const weapons = createWeaponsForFeatures(
+    [{ className: "Cleric", name: "Bonus Proficiency", type: "subclass", subclassName: "Life Domain" }],
+    () => ({
+      name: "Bonus Proficiency",
+      entries: ["When you choose this domain at 1st level, you gain proficiency with heavy armor."],
+    })
+  );
+  const tokens = weapons.getCharacterWeaponProficiencyTokens(getClericCatalog(), { class: "Cleric" });
+  assert.deepEqual([...tokens].sort(), ["simple weapons"]);
+});
+
+test("hitting with a martial weapon does not grant martial weapon proficiency", () => {
+  const weapons = createWeaponsForFeatures(
+    [{ className: "Cleric", name: "Divine Strike", type: "subclass", subclassName: "Tempest Domain" }],
+    () => ({
+      name: "Divine Strike",
+      entries: [
+        "Once on each of your turns when you hit a creature with a weapon attack, you can cause the attack to deal an extra 1d8 thunder damage to the target.",
+      ],
+    })
+  );
+  const tokens = weapons.getCharacterWeaponProficiencyTokens(getClericCatalog(), { class: "Cleric" });
+  assert.equal(tokens.has("martial weapons"), false);
+});
+
+test("named weapon grants from item tags are collected", () => {
+  const weapons = createWeaponsForFeatures(
+    [{ className: "Bard", name: "Bonus Proficiencies", type: "subclass", subclassName: "College of Swords" }],
+    () => ({
+      name: "Bonus Proficiencies",
+      entries: ["You gain proficiency with medium armor and the {@item scimitar|PHB}."],
+    })
+  );
+  const tokens = weapons.getCharacterWeaponProficiencyTokens(
     {
       classes: [
         {
-          name: "Cleric",
+          name: "Bard",
           startingProficiencies: {
             weapons: ["simple"],
           },
         },
       ],
     },
-    { class: "Cleric" }
+    { class: "Bard" }
   );
-
-  assert.deepEqual([...tokens].sort(), ["martial weapons", "simple weapons"]);
+  assert.equal(tokens.has("scimitar"), true);
+  assert.equal(tokens.has("martial weapons"), false);
 });
 
 test("auto attacks add proficiency bonus only when proficient", () => {

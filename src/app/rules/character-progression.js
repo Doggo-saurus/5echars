@@ -614,6 +614,26 @@ export function createCharacterProgressionDomain({
     return effects;
   }
 
+  // Some subclass features (e.g. the Sorcerer's Draconic Bloodline "Dragon Ancestor" and
+  // "Elemental Affinity") present a damage-type choice as prose plus a reference table rather
+  // than the catalog's structured "options" schema, so the generic scan below can't detect
+  // them. Recognize the well-known ones by name so they still get a pickable choice UI.
+  const KNOWN_FEATURE_CHOICE_OPTIONS = {
+    "dragon ancestor": ["Black", "Blue", "Brass", "Bronze", "Copper", "Gold", "Green", "Red", "Silver", "White"],
+  };
+
+  function getSyntheticFeatureChoiceOptionValues(feature, detail) {
+    const normalizedName = String(feature?.name ?? "").trim().toLowerCase();
+    if (KNOWN_FEATURE_CHOICE_OPTIONS[normalizedName]) return KNOWN_FEATURE_CHOICE_OPTIONS[normalizedName];
+    if (normalizedName === "elemental affinity") {
+      // The 2014 (PHB) Elemental Affinity inherits its damage type from Dragon Ancestor and has
+      // no choice of its own. The 2024 (XPHB) version grants an independent damage type choice.
+      const text = getRuleDescriptionLines(detail).join(" ");
+      if (/choose one of (?:these|those) types/i.test(text)) return ["Acid", "Cold", "Fire", "Lightning", "Poison"];
+    }
+    return null;
+  }
+
   function extractFeatureModeDescriptors(catalogs, features) {
     const getOptionLabel = (option) => {
       if (!option) return "";
@@ -662,6 +682,19 @@ export function createCharacterProgressionDomain({
           count,
         });
       });
+      if (!optionEntries.length) {
+        const syntheticOptionValues = getSyntheticFeatureChoiceOptionValues(feature, detail);
+        if (syntheticOptionValues && syntheticOptionValues.length >= 2) {
+          modes.push({
+            id: buildEntityId(["feature-mode", feature.id, "synthetic"]),
+            featureId: feature.id,
+            featureName: feature.name,
+            className: feature.className,
+            optionValues: syntheticOptionValues,
+            count: 1,
+          });
+        }
+      }
     });
     return modes;
   }

@@ -80,8 +80,10 @@ import {
   normalizeResourceLabel,
   parseDieFacesByClassLevel,
   parseExplicitResourceCostFromLines,
+  parseLevelScaledDiceNotation,
   parseResourceCountFromProficiencyBonus,
   parseResourceCountFromTable,
+  parseSaveDcAbilityFormula,
   scoreResourceLabelMatch,
 } from "./app/dataset/resource-string-parsers.js";
 import { cleanSpellInlineTags, parseCountToken, toTitleCase } from "./app/dataset/text-utils.js";
@@ -945,6 +947,8 @@ const renderers = createRenderers({
   getAutoAttacks: autoAttackRules.getAutoAttacks,
   getCharacterChangeLog: () => uiState.characterChangeLog,
   extractSimpleNotation: diceRoller.extractSimpleNotation,
+  parseLevelScaledDiceNotation,
+  parseSaveDcAbilityFormula,
   manualBaseUrl: MANUAL_BASE_URL,
   isUuid,
 });

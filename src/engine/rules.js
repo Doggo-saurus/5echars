@@ -215,7 +215,7 @@ function getFeatInitiativeBonus(catalogs, character, proficiencyBonusValue) {
 export function getHitPointBreakdown(catalogs, character, options = {}) {
   const abilities = character?.abilities ?? {};
   const conMod = abilityMod(abilities.con);
-  const { totalLevel } = getCharacterClassLevels(character);
+  const { totalLevel, primaryLevel } = getCharacterClassLevels(character);
   const primaryFaces = getClassHitDieFaces(catalogs, character?.class);
   const overrides = sanitizeHitPointRollOverrides(options.rollOverrides ?? character?.hitPointRollOverrides);
   const additionalBaseHp = getAdditionalHitPointEntries(catalogs, character).reduce((sum, entry) => {
@@ -226,7 +226,8 @@ export function getHitPointBreakdown(catalogs, character, options = {}) {
   const firstLevelHp = primaryFaces + conMod;
   const conFromAdditionalLevels = Math.max(0, totalLevel - 1) * conMod;
   const featBonusHp = getFeatHitPointBonus(character, totalLevel);
-  const total = Math.max(1, firstLevelHp + additionalBaseHp + conFromAdditionalLevels + featBonusHp);
+  const subclassBonusHp = getSubclassHitPointBonus(catalogs, character, primaryLevel);
+  const total = Math.max(1, firstLevelHp + additionalBaseHp + conFromAdditionalLevels + featBonusHp + subclassBonusHp);
   return {
     total,
     conMod,
@@ -235,6 +236,7 @@ export function getHitPointBreakdown(catalogs, character, options = {}) {
     additionalBaseHp,
     conFromAdditionalLevels,
     featBonusHp,
+    subclassBonusHp,
   };
 }
 
@@ -308,6 +310,7 @@ function getSpeciesUnarmoredAcRule(catalogs, character) {
     if (base <= 0) continue;
     return {
       base,
+      abilities: ["dex"],
       label: traitName || "Species Trait",
     };
   }
@@ -387,6 +390,75 @@ function findSubclassCatalogEntrySimple(catalogs, character, primaryClassName) {
   return classMatches[0];
 }
 
+function findSubclassFeatureCatalogEntry(catalogs, { name, className, subclassShortName, source } = {}) {
+  const entries = Array.isArray(catalogs?.subclassFeatures) ? catalogs.subclassFeatures : [];
+  const normalizedName = normalizeFeatName(name);
+  const normalizedClassName = String(className ?? "").trim().toLowerCase();
+  const normalizedSubclassShortName = String(subclassShortName ?? "").trim().toLowerCase();
+  const matches = entries.filter((entry) => {
+    if (normalizeFeatName(entry?.name) !== normalizedName) return false;
+    if (normalizedClassName && String(entry?.className ?? "").trim().toLowerCase() !== normalizedClassName) return false;
+    if (normalizedSubclassShortName && String(entry?.subclassShortName ?? "").trim().toLowerCase() !== normalizedSubclassShortName) return false;
+    return true;
+  });
+  if (!matches.length) return null;
+  const normalizedSource = normalizeSourceTag(source);
+  if (normalizedSource) {
+    const bySource = matches.find((entry) => normalizeSourceTag(entry?.source) === normalizedSource);
+    if (bySource) return bySource;
+  }
+  return matches[0];
+}
+
+// Draconic Resilience (Sorcerer: Draconic Bloodline / Draconic Sorcery) grants an
+// unarmored AC formula and a hit point maximum bonus. Both the 2014 (PHB) and 2024
+// (XPHB) versions are supported by matching the selected subclass's own feature text/source.
+function getDraconicResilienceCatalogEntry(catalogs, character) {
+  const primaryClassName = String(character?.class ?? "").trim();
+  if (!primaryClassName) return null;
+  const subclassEntry = findSubclassCatalogEntrySimple(catalogs, character, primaryClassName);
+  if (!subclassEntry) return null;
+  return {
+    entry: findSubclassFeatureCatalogEntry(catalogs, {
+      name: "Draconic Resilience",
+      className: primaryClassName,
+      subclassShortName: subclassEntry?.shortName ?? subclassEntry?.name,
+      source: subclassEntry?.source,
+    }),
+    subclassEntry,
+  };
+}
+
+function getDraconicResilienceUnarmoredAcRule(entry) {
+  if (!entry) return null;
+  const text = collectTraitTextLines(entry?.entries ?? [], []).join(" ");
+  const dualMatch = text.match(/(?:armor class|\bac\b)[^\d]{0,40}(\d{1,2})\s*(?:\+|plus)\s*(?:your\s+)?dexterity and charisma modifiers/i);
+  if (dualMatch) return { base: toNumber(dualMatch[1], 10), abilities: ["dex", "cha"] };
+  const singleMatch = text.match(/(?:armor class|\bac\b)[^\d]{0,40}(\d{1,2})\s*\+\s*(?:your\s+)?dexterity modifier/i);
+  if (singleMatch) return { base: toNumber(singleMatch[1], 13), abilities: ["dex"] };
+  // Fall back to the known defaults for each printing if the entry text can't be parsed.
+  return normalizeSourceTag(entry?.source) === "XPHB" ? { base: 10, abilities: ["dex", "cha"] } : { base: 13, abilities: ["dex"] };
+}
+
+function getClassUnarmoredAcRule(catalogs, character) {
+  const { entry } = getDraconicResilienceCatalogEntry(catalogs, character) ?? {};
+  if (!entry) return null;
+  const { primaryLevel } = getCharacterClassLevels(character);
+  if (primaryLevel < Math.max(1, toNumber(entry?.level, 1))) return null;
+  const rule = getDraconicResilienceUnarmoredAcRule(entry);
+  return rule ? { ...rule, label: entry?.name || "Draconic Resilience" } : null;
+}
+
+// Both printings of Draconic Resilience simplify to the same total: the hit point
+// maximum bonus always equals the character's Sorcerer level once the feature is unlocked
+// (PHB: +1 at level 1, +1/level after; XPHB: +3 at level 3, +1/level after).
+function getSubclassHitPointBonus(catalogs, character, primaryLevel) {
+  const { entry } = getDraconicResilienceCatalogEntry(catalogs, character) ?? {};
+  if (!entry) return 0;
+  const unlockLevel = Math.max(1, toNumber(entry?.level, 1));
+  return primaryLevel >= unlockLevel ? primaryLevel : 0;
+}
+
 function getCharacterSenseSummary(catalogs, character) {
   const senseMap = {};
   const raceEntry = getSelectedRaceEntry(catalogs, character);
@@ -429,7 +501,7 @@ function getActiveItemNumericBonusEntries(catalogs, character, fieldKey) {
     .filter(Boolean);
 }
 
-export function getArmorClassBreakdown(character, dexMod, fightingStyles = new Set(), catalogs = null) {
+export function getArmorClassBreakdown(character, dexMod, fightingStyles = new Set(), catalogs = null, chaMod = 0) {
   const equippedItems = getEquippedInventoryEntries(character);
   let bestArmorTotal = null;
   let bestArmorBase = 0;
@@ -473,19 +545,32 @@ export function getArmorClassBreakdown(character, dexMod, fightingStyles = new S
 
   const defenseBonus = isWearingArmor && fightingStyles.has("defense") ? 1 : 0;
   const isArmored = bestArmorTotal != null;
-  const speciesUnarmoredRule = isArmored ? null : getSpeciesUnarmoredAcRule(catalogs, character);
-  const baseLabel = isArmored ? (bestArmorName || "Equipped Armor") : speciesUnarmoredRule?.label || "Base AC";
-  const baseValue = isArmored ? bestArmorBase : toNumber(speciesUnarmoredRule?.base, 10);
-  const dexValue = isArmored ? bestArmorDex : dexMod;
-  const dexLabel =
-    isArmored && bestArmorTypeCode === "MA"
-      ? "Dexterity (max +2)"
-      : isArmored && bestArmorTypeCode === "HA"
-        ? "Dexterity"
-        : "Dexterity";
+
+  // Unarmored AC formulas (species traits like Tortle, subclass features like Draconic
+  // Resilience) can't be combined, so pick whichever available rule yields the highest AC.
+  const abilityModsByKey = { dex: dexMod, cha: chaMod };
+  const abilityLabelsByKey = { dex: "Dexterity", cha: "Charisma", wis: "Wisdom", str: "Strength", con: "Constitution", int: "Intelligence" };
+  const unarmoredAcRules = isArmored
+    ? []
+    : [getSpeciesUnarmoredAcRule(catalogs, character), getClassUnarmoredAcRule(catalogs, character)].filter(Boolean);
+  const bestUnarmoredRule = unarmoredAcRules.reduce((best, rule) => {
+    const abilities = rule.abilities?.length ? rule.abilities : ["dex"];
+    const total = toNumber(rule.base, 0) + abilities.reduce((sum, key) => sum + toNumber(abilityModsByKey[key], 0), 0);
+    return !best || total > best.total ? { ...rule, abilities, total } : best;
+  }, null);
+
+  const baseLabel = isArmored ? (bestArmorName || "Equipped Armor") : bestUnarmoredRule?.label || "Base AC";
+  const baseValue = isArmored ? bestArmorBase : toNumber(bestUnarmoredRule?.base, 10);
+  const abilityComponents = isArmored
+    ? [{ label: bestArmorTypeCode === "MA" ? "Dexterity (max +2)" : "Dexterity", value: bestArmorDex, source: "Ability" }]
+    : (bestUnarmoredRule?.abilities?.length ? bestUnarmoredRule.abilities : ["dex"]).map((key) => ({
+        label: abilityLabelsByKey[key] || key.toUpperCase(),
+        value: toNumber(abilityModsByKey[key], 0),
+        source: "Ability",
+      }));
   const components = [
     { label: baseLabel, value: baseValue, source: isArmored ? "Armor" : "Unarmored" },
-    { label: dexLabel, value: dexValue, source: "Ability" },
+    ...abilityComponents,
   ];
   if (shieldBonus > 0) {
     components.push({
@@ -521,8 +606,8 @@ export function getArmorClassBreakdown(character, dexMod, fightingStyles = new S
   return { total, components, isArmored };
 }
 
-function getArmorClassFromEquipment(character, dexMod, fightingStyles = new Set(), catalogs = null) {
-  return getArmorClassBreakdown(character, dexMod, fightingStyles, catalogs).total;
+function getArmorClassFromEquipment(character, dexMod, fightingStyles = new Set(), catalogs = null, chaMod = 0) {
+  return getArmorClassBreakdown(character, dexMod, fightingStyles, catalogs, chaMod).total;
 }
 
 export function computeDerivedStats(character, catalogs = null) {
@@ -539,7 +624,7 @@ export function computeDerivedStats(character, catalogs = null) {
   const prof = proficiencyBonus(character.level);
   const hp = getHitPointBreakdown(catalogs, character).total;
   const fightingStyles = getCharacterFightingStyleSet(character, catalogs);
-  const ac = getArmorClassFromEquipment(character, mods.dex, fightingStyles, catalogs);
+  const ac = getArmorClassFromEquipment(character, mods.dex, fightingStyles, catalogs, mods.cha);
   const getPassiveSkillValue = (skillKey, abilityKey) => {
     const mode = normalizeSkillProficiencyMode(
       play.skillProficiencyModes?.[skillKey] ?? (play.skillProficiencies?.[skillKey] ? "proficient" : "none")

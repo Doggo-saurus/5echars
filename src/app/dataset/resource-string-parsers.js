@@ -229,6 +229,52 @@ export function parseDieFacesByClassLevel(lines, classLevel) {
   return bestFaces > 0 ? bestFaces : 0;
 }
 
+export function parseLevelScaledDiceNotation(lines, characterLevel) {
+  const joined = lines.join(" ");
+  if (!/\bdamage\b/i.test(joined)) return "";
+  const baseMatch = joined.match(/\d+d\d+/i);
+  if (!baseMatch) return "";
+  const level = Math.max(1, Math.floor(toNumber(characterLevel, 1)));
+  const thresholds = [{ level: 1, notation: baseMatch[0].toLowerCase().replace(/\s+/g, "") }];
+
+  const atLevelRegex = /(\d+d\d+)\s+at\s+(\d{1,2})(?:st|nd|rd|th)?\s+level/gi;
+  for (const match of joined.matchAll(atLevelRegex)) {
+    const thresholdLevel = toNumber(match[2], 0);
+    if (thresholdLevel > 0) thresholds.push({ level: thresholdLevel, notation: String(match[1]).toLowerCase() });
+  }
+
+  const levelWithParenDiceRegex = /\b(\d{1,2})(?:st|nd|rd|th)?\s*\(\s*(\d+d\d+)\s*\)/gi;
+  for (const match of joined.matchAll(levelWithParenDiceRegex)) {
+    const thresholdLevel = toNumber(match[1], 0);
+    if (thresholdLevel > 0) thresholds.push({ level: thresholdLevel, notation: String(match[2]).toLowerCase() });
+  }
+
+  const applicable = thresholds.filter((entry) => entry.level <= level).sort((a, b) => b.level - a.level)[0];
+  return (applicable ?? thresholds[0]).notation;
+}
+
+export function parseSaveDcAbilityFormula(lines) {
+  const joined = lines.join(" ");
+  const abilityPattern = "(strength|dexterity|constitution|intelligence|wisdom|charisma)";
+  const match = joined.match(
+    new RegExp(`\\bDC\\b[\\s\\S]{0,60}?(\\d+)[\\s\\S]{0,80}?\\byour\\s+${abilityPattern}\\s+modifier\\b[\\s\\S]{0,80}?\\bproficiency bonus\\b`, "i")
+  );
+  if (!match?.[1] || !match?.[2]) return null;
+  const base = toNumber(match[1], 0);
+  if (base <= 0) return null;
+  const abilityKeyByName = {
+    strength: "str",
+    dexterity: "dex",
+    constitution: "con",
+    intelligence: "int",
+    wisdom: "wis",
+    charisma: "cha",
+  };
+  const ability = abilityKeyByName[String(match[2] ?? "").trim().toLowerCase()] ?? "";
+  if (!ability) return null;
+  return { base, ability };
+}
+
 export function hasFirstUseFreeAfterLongRestRule(lines) {
   const text = lines.join(" ").toLowerCase();
   return /first time you use this power after each long rest[, ]+you (?:do not|don't) expend/i.test(text);

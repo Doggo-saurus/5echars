@@ -51,6 +51,97 @@ export function createInventoryWeapons({
     return out;
   }
 
+  function collectRawEntryStrings(entry, out = []) {
+    if (entry == null) return out;
+    if (typeof entry === "string") {
+      const line = entry.trim();
+      if (line) out.push(line);
+      return out;
+    }
+    if (Array.isArray(entry)) {
+      entry.forEach((value) => collectRawEntryStrings(value, out));
+      return out;
+    }
+    if (typeof entry !== "object") return out;
+    collectRawEntryStrings(entry.entry, out);
+    collectRawEntryStrings(entry.text, out);
+    collectRawEntryStrings(entry.entries, out);
+    collectRawEntryStrings(entry.items, out);
+    return out;
+  }
+
+  function sentenceGrantsEquipmentProficiency(sentence) {
+    const text = String(sentence ?? "").replace(/\s+/g, " ").trim();
+    if (!text) return false;
+    const mentionsProficiencyBonus = /\bproficiency bonus\b/i.test(text);
+    const hasGrantLanguage = /\b(?:proficien(?:cy|cies|t)|training|trained)\b/i.test(text);
+    if (!hasGrantLanguage) return false;
+    if (mentionsProficiencyBonus && !/\b(?:proficient|training|trained|proficiency with|proficiencies)\b/i.test(text)) {
+      return false;
+    }
+    return true;
+  }
+
+  function collectNamedWeaponTokensFromRawText(rawText, out = []) {
+    const matches = String(rawText ?? "").matchAll(/\{@item\s+([^}|]+)/gi);
+    for (const match of matches) {
+      const rawName = String(match?.[1] ?? "").trim();
+      if (!rawName) continue;
+      if (/\b(?:armor|shield|mail|plate|helmet)\b/i.test(rawName)) continue;
+      const token = normalizeWeaponProficiencyToken(rawName);
+      if (token) out.push(token);
+    }
+    return out;
+  }
+
+  function collectWeaponProficienciesFromEntryText(entry, out = []) {
+    if (!entry) return out;
+    const helperLines = typeof getRuleDescriptionLines === "function" ? getRuleDescriptionLines(entry) : [];
+    const rawChunks = collectRawEntryStrings(entry?.entries ?? entry);
+    const textLines = (Array.isArray(helperLines) ? helperLines : [])
+      .map((line) => String(line ?? "").trim())
+      .filter(Boolean);
+    const cleanedLines = textLines.length
+      ? textLines
+      : rawChunks.map((chunk) => cleanSpellInlineTags(chunk)).filter(Boolean);
+    const sentences = cleanedLines
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .split(/[.!?]\s+/)
+      .map((sentence) => sentence.trim())
+      .filter(Boolean);
+    sentences.forEach((sentence) => {
+      if (!sentenceGrantsEquipmentProficiency(sentence)) return;
+      if (!/\bweapons?\b/i.test(sentence) && !/\bfirearms?\b/i.test(sentence) && !/\bimprovised\b/i.test(sentence)) return;
+      if (/\ball weapons\b/i.test(sentence)) {
+        out.push("simple weapons");
+        out.push("martial weapons");
+      }
+      if (/\bmartial weapons?\b/i.test(sentence)) out.push("martial weapons");
+      if (/\bsimple weapons?\b/i.test(sentence)) out.push("simple weapons");
+      if (/\bfirearms?\b/i.test(sentence)) out.push("firearms");
+      if (/\bimprovised weapons?\b/i.test(sentence)) out.push("improvised");
+    });
+    rawChunks.forEach((chunk) => {
+      const cleaned = cleanSpellInlineTags(chunk);
+      if (!sentenceGrantsEquipmentProficiency(cleaned)) return;
+      collectNamedWeaponTokensFromRawText(chunk, out);
+    });
+    return out;
+  }
+
+  function collectWeaponProficienciesFromFeatureDetail(detail, out = []) {
+    if (!detail || typeof detail !== "object") return out;
+    const entryData = detail?.entryData && typeof detail.entryData === "object" ? detail.entryData : {};
+    collectWeaponProficiencyStrings(detail?.weaponProficiencies, out);
+    collectWeaponProficiencyStrings(entryData?.weaponProficiencies, out);
+    collectWeaponProficiencyStrings(detail?.startingProficiencies?.weapons, out);
+    collectWeaponProficiencyStrings(entryData?.startingProficiencies?.weapons, out);
+    collectWeaponProficienciesFromEntryText(detail, out);
+    if (entryData && entryData !== detail) collectWeaponProficienciesFromEntryText(entryData, out);
+    return out;
+  }
+
   function getCharacterWeaponProficiencyTokens(catalogs, character) {
     const tracks = getClassLevelTracks(character);
     const tokens = new Set();
@@ -67,8 +158,7 @@ export function createInventoryWeapons({
     const unlockedFeatures = getUnlockedFeatures(catalogs, character);
     unlockedFeatures.forEach((feature) => {
       const detail = resolveFeatureEntryFromCatalogs(catalogs, feature);
-      collectWeaponProficiencyStrings(detail?.weaponProficiencies).forEach((token) => tokens.add(token));
-      collectWeaponProficiencyStrings(detail?.startingProficiencies?.weapons).forEach((token) => tokens.add(token));
+      collectWeaponProficienciesFromFeatureDetail(detail).forEach((token) => tokens.add(token));
       const featureName = String(feature?.name ?? "").trim().toLowerCase();
       const className = String(feature?.className ?? "").trim().toLowerCase();
       if (className === "cleric" && featureName === "protector") {
@@ -377,6 +467,7 @@ export function createInventoryWeapons({
     normalizeItemTypeCode,
     normalizeWeaponProficiencyToken,
     collectWeaponProficiencyStrings,
+    collectWeaponProficienciesFromEntryText,
     getCharacterWeaponProficiencyTokens,
     getInventoryItemName,
     isInventoryWeapon,

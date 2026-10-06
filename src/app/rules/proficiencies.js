@@ -652,7 +652,7 @@ export function createProficiencyRules({
     return activeSaves;
   }
 
-  function collectExpertiseSkillKeysFromEntity(entry, sourceKey, play, currentlyProficientKeys = new Set()) {
+  function collectExpertiseSkillKeysFromEntity(entry, sourceKey, play, eligibleSkillKeys = new Set()) {
     const expertiseSkills = new Set();
     const options = Array.isArray(entry?.expertise) ? entry.expertise : [];
     const optionIndex = options.findIndex((option) => isRecordObject(option));
@@ -664,9 +664,11 @@ export function createProficiencyRules({
     });
     const anyProficientCount = Math.max(0, toNumber(selected?.anyProficientSkill, 0));
     if (anyProficientCount > 0) {
+      // Eligible skills are those the character is proficient in but doesn't already
+      // have expertise in, per the "isn't already benefiting from ... Expertise" restriction.
       const pool = skills
         .map((skill) => skill.key)
-        .filter((skillKey) => currentlyProficientKeys.has(skillKey))
+        .filter((skillKey) => eligibleSkillKeys.has(skillKey))
         .filter((skillKey) => !expertiseSkills.has(skillKey));
       const count = Math.max(0, Math.min(pool.length, anyProficientCount));
       if (count > 0) {
@@ -766,32 +768,23 @@ export function createProficiencyRules({
     const sourceOrder = getPreferredSourceOrder(character);
     const { featEntries, optionalFeatureEntries } = getSelectedFeatAndOptionalFeatureEntries(catalogs, character, sourceOrder);
     const itemEntries = getActiveItemEntries(catalogs, character);
-    const currentlyProficient = new Set(
-      skills
-        .map((skill) => skill.key)
-        .filter((skillKey) => modes[skillKey] === skillProficiencyProficient || modes[skillKey] === skillProficiencyExpertise)
-    );
-    featEntries.forEach(({ entry, sourceKey }) => {
-      collectExpertiseSkillKeysFromEntity(entry, sourceKey, play, currentlyProficient).forEach((skillKey) => {
-        if (modes[skillKey] === skillProficiencyProficient || modes[skillKey] === skillProficiencyExpertise) {
-          modes[skillKey] = skillProficiencyExpertise;
-        }
+    // Recomputed fresh before each source is processed so a skill that just
+    // gained expertise (e.g. from an earlier feat) isn't offered again as an
+    // "any proficient skill" target for a later source.
+    const getSkillsEligibleForExpertise = () =>
+      new Set(skills.map((skill) => skill.key).filter((skillKey) => modes[skillKey] === skillProficiencyProficient));
+    const applyExpertiseFromEntries = (entries) => {
+      entries.forEach(({ entry, sourceKey }) => {
+        collectExpertiseSkillKeysFromEntity(entry, sourceKey, play, getSkillsEligibleForExpertise()).forEach((skillKey) => {
+          if (modes[skillKey] === skillProficiencyProficient || modes[skillKey] === skillProficiencyExpertise) {
+            modes[skillKey] = skillProficiencyExpertise;
+          }
+        });
       });
-    });
-    optionalFeatureEntries.forEach(({ entry, sourceKey }) => {
-      collectExpertiseSkillKeysFromEntity(entry, sourceKey, play, currentlyProficient).forEach((skillKey) => {
-        if (modes[skillKey] === skillProficiencyProficient || modes[skillKey] === skillProficiencyExpertise) {
-          modes[skillKey] = skillProficiencyExpertise;
-        }
-      });
-    });
-    itemEntries.forEach(({ entry, sourceKey }) => {
-      collectExpertiseSkillKeysFromEntity(entry, sourceKey, play, currentlyProficient).forEach((skillKey) => {
-        if (modes[skillKey] === skillProficiencyProficient || modes[skillKey] === skillProficiencyExpertise) {
-          modes[skillKey] = skillProficiencyExpertise;
-        }
-      });
-    });
+    };
+    applyExpertiseFromEntries(featEntries);
+    applyExpertiseFromEntries(optionalFeatureEntries);
+    applyExpertiseFromEntries(itemEntries);
     return modes;
   }
 

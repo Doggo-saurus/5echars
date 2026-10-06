@@ -332,16 +332,16 @@ export function createFeatureResourceRules({
 
     if (max <= 0) {
       const text = lines.join(" ").toLowerCase();
+      const restClause = "(?:finish|complete)\\s+a\\s+(?:short or long|long or short|short|long)\\s+rest";
       const hasOnceUsePattern =
         /\bonce per day\b/.test(text)
         || /\bonce a day\b/.test(text)
         || /\byou can use (?:this|it) once\b/.test(text)
         || /\byou can cast\b.{0,180}?\bonce\b.{0,120}?\b(?:with|using|through) this (?:trait|feature|ability|benefit)\b/.test(text)
-        || /\bregain the ability to (?:do so|cast (?:it|this spell|the spell)) when you finish a (?:short|long) rest\b/.test(text)
-        || /\bonce before you finish a (?:short|long) rest\b/.test(text)
+        || new RegExp(`\\bregain the ability to (?:do so|cast (?:it|this spell|the spell)) when you ${restClause}\\b`).test(text)
+        || new RegExp(`\\bonce before you ${restClause}\\b`).test(text)
         || /\bonce you use this (?:feature|ability|benefit)\b/.test(text)
-        || /\byou can't (?:do so|use (?:this|it)) again until you finish a (?:short|long) rest\b/.test(text)
-        || /\byou can(?:not|'t) (?:do so|use (?:this|it)) again until you finish a (?:short|long) rest\b/.test(text);
+        || new RegExp(`\\byou can(?:not|'t) (?:do so|use (?:this|it)) again until you ${restClause}\\b`).test(text);
       if (hasOnceUsePattern) max = 1;
     }
 

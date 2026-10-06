@@ -37,6 +37,26 @@ export function createProficiencySummaryRules({
   const CHOICE_LANGUAGE_OPTIONS = ALL_LANGUAGE_OPTIONS.filter(
     (language) => proficiencyRules.normalizeChoiceToken(language) !== "common"
   );
+  function getSelectedFeatureModeOptionValue(character, featureNamePattern) {
+    const modes = Array.isArray(character?.progression?.featureModes) ? character.progression.featureModes : [];
+    const mode = modes.find((entry) => featureNamePattern.test(String(entry?.featureName ?? "").trim()));
+    if (!mode) return "";
+    const raw = character?.play?.featureModes?.[mode.id];
+    const value = String((Array.isArray(raw) ? raw[0] : raw) ?? "").trim();
+    if (value) return value;
+    const optionValues = Array.isArray(mode?.optionValues) ? mode.optionValues : [];
+    return String(optionValues[0] ?? "").trim();
+  }
+
+  // The Sorcerer's Draconic Bloodline "Dragon Ancestor" (2014 PHB) determines a damage type but
+  // only grants a passive Resistance to it via "Elemental Affinity" in the 2024 (XPHB) printing;
+  // the PHB version instead costs a Sorcery Point for a temporary 1-hour Resistance, so it isn't
+  // added here as a permanent Resistance.
+  function getDraconicBloodlinePassiveResistance(character) {
+    const elementalAffinityChoice = getSelectedFeatureModeOptionValue(character, /^elemental affinity$/i);
+    return elementalAffinityChoice || "";
+  }
+
   function formatSourceSummaryLabel(value) {
     const token = String(value ?? "").trim();
     if (!token) return "";
@@ -663,7 +683,10 @@ export function createProficiencySummaryRules({
     lines.forEach((line) => {
       const normalizedLine = String(line ?? "").replace(/\s+/g, " ").trim();
       if (!normalizedLine) return;
-      if (!/\bproficien(?:cy|cies|t)\b/i.test(normalizedLine)) return;
+      if (!/\b(?:proficien(?:cy|cies|t)|training|trained)\b/i.test(normalizedLine)) return;
+      if (/\bproficiency bonus\b/i.test(normalizedLine) && !/\b(?:proficient|training|trained|proficiency with|proficiencies)\b/i.test(normalizedLine)) {
+        return;
+      }
       if (!/\b(?:armor|shield)s?\b/i.test(normalizedLine)) return;
       if (/\ball armor\b/i.test(normalizedLine)) {
         armorCollector.add("Light Armor", sourceLabel);
@@ -1065,6 +1088,11 @@ export function createProficiencySummaryRules({
     addSenseEntries(senseCollector, raceEntry?.senses, "Race");
     addSenseEntries(senseCollector, raceEntry?.bonusSenses, "Race");
     addCharacterLanguages(languageCollector, character, "Additional");
+
+    const draconicBloodlinePassiveResistance = getDraconicBloodlinePassiveResistance(character);
+    if (draconicBloodlinePassiveResistance) {
+      resistanceCollector.add(formatDefenseTypeLabel(draconicBloodlinePassiveResistance), "Elemental Affinity");
+    }
 
     return {
       tools: toolCollector.list(),
