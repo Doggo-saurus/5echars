@@ -275,6 +275,24 @@ export function parseSaveDcAbilityFormula(lines) {
   return { base, ability };
 }
 
+export function parseResourceCountFromPlainUsagePhrase(lines, fallbackResourceName = "Uses") {
+  const joined = lines.join(" ");
+  const countWordPattern =
+    "(twice|two times|thrice|three times|double|triple|four times|five times|six times|seven times|eight times|nine times|ten times|\\d+\\s+times?)";
+  const pattern = new RegExp(
+    `\\byou can (?:use|cast)\\s+(?:this|it)(?:\\s+(?:feature|trait|ability|action|benefit|option|spell))?\\s+${countWordPattern}\\b`,
+    "i"
+  );
+  const match = joined.match(pattern);
+  if (!match?.[1]) return null;
+  const max = getResourceWordMultiplier(match[1]);
+  if (max < 2) return null;
+  return {
+    max,
+    resourceName: fallbackResourceName,
+  };
+}
+
 export function hasFirstUseFreeAfterLongRestRule(lines) {
   const text = lines.join(" ").toLowerCase();
   return /first time you use this power after each long rest[, ]+you (?:do not|don't) expend/i.test(text);

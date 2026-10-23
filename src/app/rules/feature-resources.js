@@ -17,6 +17,7 @@ export function createFeatureResourceRules({
   hasFirstUseFreeAfterLongRestRule,
   inferResourceLabelFromLines,
   parseExplicitResourceCostFromLines,
+  parseResourceCountFromPlainUsagePhrase,
   parseResourceCountFromProficiencyBonus,
   parseResourceCountFromTable,
   scoreResourceLabelMatch,
@@ -331,6 +332,13 @@ export function createFeatureResourceRules({
     }
 
     if (max <= 0) {
+      const plainUsage = parseResourceCountFromPlainUsagePhrase(lines);
+      if (plainUsage && plainUsage.max > 0) {
+        max = plainUsage.max;
+      }
+    }
+
+    if (max <= 0) {
       const text = lines.join(" ").toLowerCase();
       const restClause = "(?:finish|complete)\\s+a\\s+(?:short or long|long or short|short|long)\\s+rest";
       const hasOnceUsePattern =
@@ -383,6 +391,7 @@ export function createFeatureResourceRules({
       return 1;
     }
     if (/second wind/i.test(name)) return 1;
+    if (/^wild shape$/i.test(name)) return 2;
     return 0;
   }
 
@@ -758,10 +767,21 @@ export function createFeatureResourceRules({
       });
       return best;
     };
-    const next = {};
-    trackers.forEach((tracker) => {
+    // Multiple sources (e.g. a classFeature's descriptor text and a class table column) can both
+    // produce a tracker for the same autoId. Keep the one with the highest max instead of letting
+    // whichever source happens to run last silently win with a possibly-lower value.
+    const bestTrackersById = new Map();
+    (Array.isArray(trackers) ? trackers : []).forEach((tracker) => {
       const key = String(tracker?.autoId ?? "").trim();
       if (!key) return;
+      const existing = bestTrackersById.get(key);
+      if (!existing || toNumber(tracker?.max, 0) >= toNumber(existing?.max, 0)) {
+        bestTrackersById.set(key, tracker);
+      }
+    });
+
+    const next = {};
+    bestTrackersById.forEach((tracker, key) => {
       const prev = getPreviousTrackerForAutoResource(key, tracker);
       const max = Math.max(0, toNumber(tracker.max, 0));
       const prevMax = prev && typeof prev === "object" ? Math.max(0, toNumber(prev.max, max)) : max;

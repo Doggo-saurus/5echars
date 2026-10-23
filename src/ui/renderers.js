@@ -2745,6 +2745,17 @@ export function createRenderers(deps) {
         activation && activation.firstUseFreeAfterLongRest
           ? `<span class="pill" title="Resets on long rest">${hasUsedFreeActivation ? "0/1 Free" : "1/1 Free"}</span>`
           : "";
+      const sharedPoolTracker =
+        activation && activation.trackerKey && featureUses[activation.trackerKey] && typeof featureUses[activation.trackerKey] === "object"
+          ? featureUses[activation.trackerKey]
+          : null;
+      const sharedPoolRechargeHtml = formatRecharge(sharedPoolTracker?.recharge) ? ` ${esc(formatRecharge(sharedPoolTracker.recharge))}` : "";
+      const sharedPoolPillHtml =
+        activation && activation.trackerKey && !tracker
+          ? `<span class="pill" title="${esc(activation.resourceLabel || "Uses")}">${esc(activation.current)}/${esc(
+              activation.max
+            )}${sharedPoolRechargeHtml}</span>`
+          : "";
       const activationButtonHtml =
         activation && activation.trackerKey && !tracker
           ? `
@@ -2759,7 +2770,7 @@ export function createRenderers(deps) {
               </button>
             `
           : "";
-      return `${firstUseFreePillHtml}${activationButtonHtml}`;
+      return `${firstUseFreePillHtml}${sharedPoolPillHtml}${activationButtonHtml}`;
     };
     const renderFeatureTile = ({ openAttr = "", title, titleText, actionControlsHtml = "", rowClass = "", summaryText = "" }) => {
       const interactiveAttrs = String(openAttr ?? "").trim()
